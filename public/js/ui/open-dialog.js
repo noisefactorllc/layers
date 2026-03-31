@@ -20,6 +20,7 @@ class OpenDialog {
         this._onSolid = null
         this._onGradient = null
         this._onTransparent = null
+        this._onClipboard = null
         this._onLoadProject = null
         this._mode = 'choose'
         this._hasProjects = false
@@ -31,6 +32,7 @@ class OpenDialog {
         this._onSolid = options.onSolid
         this._onGradient = options.onGradient
         this._onTransparent = options.onTransparent
+        this._onClipboard = options.onClipboard
         this._onLoadProject = options.onLoadProject
         this._canClose = options.canClose || false
 
@@ -141,6 +143,13 @@ class OpenDialog {
                         <label for="open-file-input">Choose an image or video clip</label>
                         <input type="file" id="open-file-input" accept="image/*,video/*">
                     </div>
+                    <div class="section-divider" style="margin-top: 16px;">
+                        <span>or</span>
+                    </div>
+                    <button class="action-btn" id="open-clipboard-btn">
+                        <span class="icon-material">content_paste</span>
+                        Paste from Clipboard
+                    </button>
                 </div>
             </div>
         `
@@ -178,6 +187,13 @@ class OpenDialog {
         fileInput.addEventListener('change', () => {
             if (fileInput.files.length > 0) {
                 this._handleMediaSelect(fileInput.files[0])
+            }
+        })
+
+        const clipboardBtn = this._modal.querySelector('#open-clipboard-btn')
+        clipboardBtn.addEventListener('click', () => {
+            if (this._onClipboard) {
+                this._onClipboard()
             }
         })
 

@@ -214,4 +214,42 @@ function applyImageMask(ctx, mask, bounds) {
     ctx.putImageData(imageData, 0, 0)
 }
 
-export { copySelection, pasteFromClipboard, getSelectionBounds, applyPolygonMask, applyImageMask }
+/**
+ * Check if clipboard contains image data
+ * @returns {Promise<boolean>}
+ */
+async function clipboardHasImage() {
+    try {
+        const items = await navigator.clipboard.read()
+        for (const item of items) {
+            if (item.types.includes('image/png') || item.types.includes('image/jpeg')) {
+                return true
+            }
+        }
+        return false
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Copy a canvas to clipboard as PNG
+ * @param {HTMLCanvasElement} canvas
+ * @returns {Promise<boolean>}
+ */
+async function copyCanvasToClipboard(canvas) {
+    try {
+        const blob = await new Promise((resolve, reject) => {
+            canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob returned null')), 'image/png')
+        })
+        await navigator.clipboard.write([
+            new ClipboardItem({ 'image/png': blob })
+        ])
+        return true
+    } catch (err) {
+        console.error('[Clipboard] Failed to copy canvas:', err)
+        return false
+    }
+}
+
+export { copySelection, pasteFromClipboard, clipboardHasImage, copyCanvasToClipboard, getSelectionBounds, applyPolygonMask, applyImageMask }

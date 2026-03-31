@@ -24,7 +24,7 @@ import { exportPng, exportJpg, getTimestampedFilename } from './utils/export.js'
 import { saveProject, loadProject } from './utils/project-storage.js'
 import { registerServiceWorker } from './sw-register.js'
 import { SelectionManager } from './selection/selection-manager.js'
-import { copySelection, pasteFromClipboard, getSelectionBounds } from './selection/clipboard-ops.js'
+import { copySelection, pasteFromClipboard, copyCanvasToClipboard, getSelectionBounds } from './selection/clipboard-ops.js'
 import { MoveTool } from './tools/move-tool.js'
 import { TransformTool } from './tools/transform-tool.js'
 import { BrushTool } from './tools/brush-tool.js'
@@ -567,6 +567,9 @@ class LayersApp {
             onTransparent: async (width, height) => {
                 await this._handleCreateTransparentBase(width, height)
             },
+            onClipboard: async () => {
+                await this._handleNewFromClipboard()
+            },
             onLoadProject: () => {
                 this._showLoadProjectDialog(true)
             }
@@ -706,6 +709,35 @@ class LayersApp {
         // Close the open dialog
         openDialog.element.close()
         toast.success(`Opened ${file.name}`)
+    }
+
+    /**
+     * Handle new project from clipboard image
+     * @private
+     */
+    async _handleNewFromClipboard({ resetLayers = false } = {}) {
+        const result = await pasteFromClipboard()
+        if (!result) {
+            toast.error('No image found in clipboard')
+            return
+        }
+
+        if (resetLayers) this._resetLayers()
+        const file = new File([result.blob], 'Clipboard Image.png', { type: 'image/png' })
+        await this._handleOpenMedia(file, 'image')
+    }
+
+    /**
+     * Copy composite canvas to clipboard
+     * @private
+     */
+    async _handleCopyImage() {
+        const ok = await copyCanvasToClipboard(this._canvas)
+        if (ok) {
+            toast.success('Copied image to clipboard')
+        } else {
+            toast.error('Failed to copy image')
+        }
     }
 
     /**
@@ -2010,12 +2042,21 @@ class LayersApp {
                         this._resetLayers()
                         await this._handleCreateTransparentBase(width, height)
                     },
+                    onClipboard: async () => {
+                        await this._handleNewFromClipboard({ resetLayers: true })
+                    },
                     onLoadProject: () => {
                         this._showLoadProjectDialog(true)
                     }
                 })
             })
         }
+
+        // File menu - New from Clipboard
+        document.getElementById('newFromClipboardMenuItem')?.addEventListener('click', async () => {
+            if (!await this._confirmUnsavedChanges()) return
+            await this._handleNewFromClipboard({ resetLayers: true })
+        })
 
         // File menu - Save Project (uses Save As if no project ID)
         document.getElementById('saveProjectMenuItem')?.addEventListener('click', () => {
@@ -2063,6 +2104,16 @@ class LayersApp {
         // Edit menu - Redo
         document.getElementById('redoMenuItem')?.addEventListener('click', () => {
             this._redo()
+        })
+
+        // Edit menu - Copy Image
+        document.getElementById('copyImageMenuItem')?.addEventListener('click', async () => {
+            await this._handleCopyImage()
+        })
+
+        // Edit menu - Paste Image
+        document.getElementById('pasteImageMenuItem')?.addEventListener('click', () => {
+            this._handlePaste()
         })
 
         // Image menu - Crop to selection
