@@ -715,9 +715,8 @@ export class LayersRenderer {
         if (!state || !this._renderer.pipeline) return
 
         const { canvas } = state
-        // Text textures are square
         canvas.width = this.width
-        canvas.height = this.width
+        canvas.height = this.height
 
         const ctx = canvas.getContext('2d')
 
