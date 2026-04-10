@@ -6,7 +6,7 @@
  * - Minified for production
  */
 
-const SHADER_CDN = 'https://shaders.noisedeck.app/0.9.0'
+const SHADER_CDN = 'https://shaders.noisedeck.app/0'
 const BUNDLE_VERSION = SHADER_CDN.split('/').pop()
 
 const isLocalDev = typeof window !== 'undefined' && (

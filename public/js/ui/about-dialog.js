@@ -19,20 +19,11 @@ fetch('./deployment-meta.json', { cache: 'no-store' }).then(async (res) => {
     about.setBuild({ hash, deployed })
 }).catch(() => {})
 
-const NM_VERSION = '0.9.0'
-fetch(`https://shaders.noisedeck.app/${NM_VERSION}/noisemaker-shaders-core.esm.js`, { cache: 'no-store' }).then(async (res) => {
-    if (!res.ok) return
-    const reader = res.body.getReader()
-    const { value } = await reader.read()
-    reader.cancel()
-    const headerText = new TextDecoder().decode(value).slice(0, 500)
-    const hashMatch = headerText.match(/^\s*\*\s*Build:\s*(\S+)/m)
-    const dateMatch = headerText.match(/^\s*\*\s*Date:\s*(\S+)/m)
-    about.setNoisemaker({
-        version: NM_VERSION,
-        hash: hashMatch ? hashMatch[1] : null,
-        deployed: dateMatch ? new Date(dateMatch[1]) : null,
-    })
-}).catch(() => {})
+// Noisemaker engine metadata: the AboutDialog fetches it directly from
+// shaders.noisedeck.app/0/deployment-meta.json (a proper JSON file
+// emitted by the scaffold library-release workflow on every noisemaker
+// release). The /0/ rolling symlink auto-tracks the latest patch within
+// major 0.
+about.setNoisemakerFromUrl('https://shaders.noisedeck.app/0/deployment-meta.json')
 
 export { about as aboutDialog }
