@@ -24,7 +24,7 @@ export class LayersRenderer {
             basePath: 'https://shaders.noisedeck.app/0',
             preferWebGPU: false,
             useBundles: true,
-            bundlePath: 'https://shaders.noisedeck.app/0/effects',
+            bundlePath: 'https://shaders.noisedeck.app/1/effects',
             alpha: true,
             onFPS: options.onFPS,
             onError: options.onError
