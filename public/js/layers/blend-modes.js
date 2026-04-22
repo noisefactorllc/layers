@@ -22,7 +22,7 @@ export const BLEND_MODES = [
     { id: 'burn', name: 'Color Burn', description: 'Darkens base by increasing contrast' },
     { id: 'add', name: 'Add', description: 'Adds colors together (linear dodge)' },
     { id: 'subtract', name: 'Subtract', description: 'Subtracts blend from base' },
-    { id: 'diff', name: 'Difference', description: 'Absolute difference of colors' },
+    { id: 'difference', name: 'Difference', description: 'Absolute difference of colors' },
     { id: 'exclusion', name: 'Exclusion', description: 'Similar to difference but lower contrast' },
     { id: 'negation', name: 'Negation', description: 'Inverts colors where they overlap' },
     { id: 'phoenix', name: 'Phoenix', description: 'Min minus max plus 1' }

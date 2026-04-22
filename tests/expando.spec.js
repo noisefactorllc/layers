@@ -75,7 +75,7 @@ test.describe('Layer params expando', () => {
 
         await expect(effectParams.locator('.control-group').first()).toBeVisible()
         expect(await effectParams.locator('.control-label').count()).toBeGreaterThan(0)
-        expect(await effectParams.locator('.control-slider').count()).toBeGreaterThan(0)
+        expect(await effectParams.locator('slider-value').count()).toBeGreaterThan(0)
 
         // Collapse and verify hidden
         await toggleBtn.click()

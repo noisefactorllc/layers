@@ -194,7 +194,7 @@ test.describe('Child effects', () => {
     test('multiple children chain in order', async ({ page }) => {
         const parentId = await page.evaluate(() => window.layersApp._layers[1].id)
 
-        // Add blur first, then inv
+        // Add blur first, then invert
         await page.evaluate(async (id) => {
             await window.layersApp._handleAddChildEffect(id, 'filter/blur')
         }, parentId)
@@ -211,15 +211,15 @@ test.describe('Child effects', () => {
         )
         expect(childCount).toBe(2)
 
-        // Get DSL and verify blur appears before inv
+        // Get DSL and verify blur appears before invert
         const dsl = await page.evaluate(() =>
             window.layersApp._renderer._currentDsl
         )
         const blurIndex = dsl.indexOf('blur(')
-        const invIndex = dsl.indexOf('inv(')
+        const invertIndex = dsl.indexOf('invert(')
 
         expect(blurIndex).toBeGreaterThan(-1)
-        expect(invIndex).toBeGreaterThan(-1)
-        expect(blurIndex).toBeLessThan(invIndex)
+        expect(invertIndex).toBeGreaterThan(-1)
+        expect(blurIndex).toBeLessThan(invertIndex)
     })
 })

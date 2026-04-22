@@ -447,7 +447,7 @@ export class LayersRenderer {
         if (blendPassIndex >= 0 && blendPassIndex < blendPasses.length) {
             const { stepIndex } = blendPasses[blendPassIndex]
             this._renderer.applyStepParameterValues?.({
-                [`step_${stepIndex}`]: { mixAmt: this._opacityToMixAmt(opacity) }
+                [`step_${stepIndex}`]: { mixAmt: this._opacityToMixAmt(opacity, layer.blendMode) }
             })
         }
     }
@@ -892,10 +892,11 @@ export class LayersRenderer {
                     const layerCall = (layer.sourceType === 'media' || layer.sourceType === 'drawing')
                         ? this._buildMediaCall()
                         : this._buildEffectCall(layer)
-                    const mixAmt = this._opacityToMixAmt(layer.opacity)
+                    const mixAmt = this._opacityToMixAmt(layer.opacity, layer.blendMode)
+                    const shaderMode = this._shaderBlendMode(layer.blendMode)
                     lines.push(`solid(color: #000000, alpha: 0).write(o${currentOutput})`)
                     lines.push(`${layerCall}.write(o${currentOutput + 1})`)
-                    lines.push(`read(o${currentOutput}).blendMode(tex: read(o${currentOutput + 1}), mode: ${layer.blendMode}, mixAmt: ${mixAmt}).write(o${currentOutput + 2})`)
+                    lines.push(`read(o${currentOutput}).blendMode(tex: read(o${currentOutput + 1}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${currentOutput + 2})`)
                     currentOutput += 2
                     currentOutput = this._buildChildChain(layer, currentOutput, lines)
 
@@ -910,16 +911,25 @@ export class LayersRenderer {
                 // Non-base layers - blend with previous
                 const prevOutput = currentOutput
                 currentOutput++
-                const mixAmt = this._opacityToMixAmt(layer.opacity)
+                const mixAmt = this._opacityToMixAmt(layer.opacity, layer.blendMode)
 
                 if (layer.sourceType === 'media' || layer.sourceType === 'drawing') {
                     lines.push(`${this._buildMediaCall()}.write(o${currentOutput})`)
                 } else if (layer.sourceType === 'effect') {
                     const effectCall = this._buildEffectCall(layer)
                     const isSynth = this._isEffectSynth(layer.effectId)
+                    const isOverlay = this._isOverlayEffect(layer.effectId)
 
                     if (isSynth) {
                         lines.push(`${effectCall}.write(o${currentOutput})`)
+                    } else if (isOverlay) {
+                        // Overlay effects (e.g. filter/text) source their content from an
+                        // external texture. Render them onto a transparent buffer so child
+                        // effects and blending isolate them from the composite below.
+                        lines.push(`solid(color: #000000, alpha: 0).write(o${currentOutput})`)
+                        const overlayOutput = currentOutput + 1
+                        lines.push(`read(o${currentOutput}).${effectCall}.write(o${overlayOutput})`)
+                        currentOutput = overlayOutput
                     } else {
                         lines.push(`read(o${prevOutput}).${effectCall}.write(o${currentOutput})`)
                     }
@@ -936,7 +946,8 @@ export class LayersRenderer {
                 }
 
                 const nextOutput = currentOutput + 1
-                lines.push(`read(o${prevOutput}).blendMode(tex: read(o${currentOutput}), mode: ${layer.blendMode}, mixAmt: ${mixAmt}).write(o${nextOutput})`)
+                const shaderMode = this._shaderBlendMode(layer.blendMode)
+                lines.push(`read(o${prevOutput}).blendMode(tex: read(o${currentOutput}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${nextOutput})`)
                 currentOutput = nextOutput
             }
         }
@@ -1013,11 +1024,28 @@ export class LayersRenderer {
     }
 
     /**
-     * Convert layer opacity (0-100) to blendMode mixAmt (-100 to 100)
+     * Convert layer opacity (0-100) to blendMode mixAmt (-100 to 100).
+     * The blendMode shader's amt axis treats 0.5 (mixAmt=0) as "full blend
+     * applied" and 1.0 (mixAmt=100) as "pure tex replace". For non-mix
+     * modes, amt>0.5 fades the blend toward pure color2 — at mixAmt=100
+     * the blend is invisible. Cap non-mix modes at mixAmt=0 so blend
+     * modes remain visible across the opacity range. Keep the full
+     * range for mix mode where pure replace at opacity 100 is desired.
      * @private
      */
-    _opacityToMixAmt(opacity) {
-        return (opacity - 50) * 2
+    _opacityToMixAmt(opacity, blendMode = 'mix') {
+        if (blendMode === 'mix') {
+            return (opacity - 50) * 2
+        }
+        return opacity - 100
+    }
+
+    // Translate layer-model blend mode ids to the shader's choice names.
+    // 'difference' is the user-facing name; the shader's choices list it as
+    // 'diff'. Other ids pass through unchanged.
+    _shaderBlendMode(blendMode) {
+        if (blendMode === 'difference') return 'diff'
+        return blendMode
     }
 
     _isEffectSynth(effectId) {
@@ -1026,6 +1054,20 @@ export class LayersRenderer {
         if (entry?.starter) return true
         const [namespace] = effectId.split('/')
         return namespace === 'synth' || namespace === 'synth3d'
+    }
+
+    // An "overlay" is an effect whose externalTexture is its primary content
+    // source (rather than a secondary input like a displacement map). Such
+    // effects must render onto a transparent input so child effects isolate
+    // their contribution from the composite below. `!starter` is the proxy:
+    // starter effects (e.g. synth/media) are already handled as content
+    // producers on the synth path; non-starter externalTexture effects
+    // (today: filter/text) are the case this routes around.
+    _isOverlayEffect(effectId) {
+        if (!effectId) return false
+        const entry = (this._renderer.manifest || {})[effectId]
+        if (!entry?.externalTexture) return false
+        return !entry.starter
     }
 
     _isHiddenNamespace(namespace, hiddenList) {
