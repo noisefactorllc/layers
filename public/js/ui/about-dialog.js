@@ -1,6 +1,6 @@
 import { AboutDialog } from 'handfish'
 
-const APP_VERSION = '0.9.0-SNAPSHOT'
+const APP_VERSION = '0.10'
 
 const about = new AboutDialog({
     name: 'Layers',

@@ -1,6 +1,6 @@
 {
   "name": "layers",
-  "version": "0.9.0-SNAPSHOT",
+  "version": "0.10",
   "description": "Layer-based media editor powered by Noisemaker shader pipeline",
   "type": "module",
   "scripts": {
