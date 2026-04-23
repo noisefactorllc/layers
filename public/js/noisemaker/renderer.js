@@ -888,14 +888,24 @@ export class LayersRenderer {
                         currentOutput = maskOutput
                     }
                 } else {
-                    // Media or effect base - blend over transparent background for opacity
-                    const layerCall = (layer.sourceType === 'media' || layer.sourceType === 'drawing')
+                    // Media or effect base - blend over transparent background for opacity.
+                    // Effects that require an input (non-synth: overlay like text, or
+                    // adjustments like blur) must chain off the transparent buffer so their
+                    // .write() isn't the first thing in the chain. Synths and media are
+                    // self-contained and write directly.
+                    const isMediaOrDrawing = layer.sourceType === 'media' || layer.sourceType === 'drawing'
+                    const needsInput = !isMediaOrDrawing && !this._isEffectSynth(layer.effectId)
+                    const layerCall = isMediaOrDrawing
                         ? this._buildMediaCall()
                         : this._buildEffectCall(layer)
                     const mixAmt = this._opacityToMixAmt(layer.opacity, layer.blendMode)
                     const shaderMode = this._shaderBlendMode(layer.blendMode)
                     lines.push(`solid(color: #000000, alpha: 0).write(o${currentOutput})`)
-                    lines.push(`${layerCall}.write(o${currentOutput + 1})`)
+                    if (needsInput) {
+                        lines.push(`read(o${currentOutput}).${layerCall}.write(o${currentOutput + 1})`)
+                    } else {
+                        lines.push(`${layerCall}.write(o${currentOutput + 1})`)
+                    }
                     lines.push(`read(o${currentOutput}).blendMode(tex: read(o${currentOutput + 1}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${currentOutput + 2})`)
                     currentOutput += 2
                     currentOutput = this._buildChildChain(layer, currentOutput, lines)

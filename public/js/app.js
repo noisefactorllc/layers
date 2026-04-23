@@ -3199,6 +3199,9 @@ class LayersApp {
             if (l.id !== layerId) l.visible = false
         }
         await this._rebuild()
+        // Wait for the renderer to paint the new DSL before snapshotting.
+        // Without this the canvas still shows the previous composite.
+        await new Promise(resolve => requestAnimationFrame(resolve))
 
         const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
         const ctx = offscreen.getContext('2d')
