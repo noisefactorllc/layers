@@ -1,0 +1,272 @@
+# Layers — Agent API
+
+> Layers is a browser-based image/video editor. Its `window.LayersAgent` API
+> exposes the same operations a human takes via the UI (add a layer, paint a
+> stroke, set a selection, export an image, etc.) as JSON commands. This file
+> is the contract for software agents driving Layers.
+
+There are two ways to use it.
+
+## 1. In-page (direct)
+
+When Layers is loaded in a browser, `window.LayersAgent` is attached after
+init. Every command is an async method that returns an envelope.
+
+```js
+await window.LayersAgent.ready                       // resolves once bootstrap is done
+const v = window.LayersAgent.version                  // current API version (e.g. "1.0")
+const env = await window.LayersAgent.getState({})     // any command
+```
+
+Use this path from headless browsers, Playwright tests, or DevTools.
+
+## 2. Via the layers-mcp sidecar (recommended for agents)
+
+`layers-mcp` is a Model Context Protocol server (stdio) that fronts a
+headless Chromium pointed at Layers. Every LayersAgent command becomes an
+MCP tool. Output files (image/video exports) are written to a configurable
+directory and the file path is returned in the envelope.
+
+- Repo: `https://github.com/noisefactorllc/layers-mcp` (when published)
+- Local: `~/platform/layers-mcp/`
+- Configure with `LAYERS_URL`, `LAYERS_MCP_OUTPUT_DIR`, `LAYERS_MCP_PROFILE_DIR`
+- Example client config: `layers-mcp/examples/claude-code.json`
+
+Agents using an MCP client speak normal `tools/list` and `tools/call`. The
+underlying envelope shape is the same as the in-page API; the MCP server
+wraps it in a content block.
+
+---
+
+## The envelope
+
+Every command response — success or failure — has this shape:
+
+```js
+// success
+{
+    ok: true,
+    command: "getState",
+    apiVersion: "1.0",
+    result: { /* command-specific */ },
+    state: { /* full state snapshot */ },
+    warnings: ["…"]               // optional
+}
+
+// failure
+{
+    ok: false,
+    command: "addLayer",
+    apiVersion: "1.0",
+    error: {
+        code: "INVALID_ARGS_ENUM",
+        message: "Unknown kind: …",
+        details: { field: "kind", got: "foo" }
+    },
+    state: { /* full state snapshot */ }
+}
+```
+
+**State is attached to every response, success or failure.** Agents don't need
+a separate `getState` round-trip after each mutation — read `env.state`.
+
+---
+
+## State snapshot shape
+
+```
+state: {
+    apiVersion, schemaVersion,
+    project:        { id, name, isDirty, canUndo, canRedo, canSaveAs },
+    canvas:         { width, height },
+    view:           { zoomMode, isPlaying, loopDuration },
+    foreground:     { color },
+    selection:      null | { kind, bounds, isEmpty, polygonPoints? },
+    layers:         [{ id, name, sourceType, visible, opacity, blendMode,
+                       locked, transform, media, effect, drawing, children, mask }],
+    selectedLayerIds, activeLayerId,
+    jobs:           [{ id, kind, status, startedAt, updatedAt, completedAt,
+                       progress, result, error }],   // most recent 20
+    recentExports:  [{ id, kind, filename, mimeType, sizeBytes, createdAt }],
+    settings:       { theme?, exportImage?, exportVideo? }
+}
+```
+
+`sourceType` is one of `effect | drawing | media | text`. `selection.kind` is
+`rectangle | oval | lasso | polygon | wand | color-range`. `jobs.status` is
+`queued | running | succeeded | failed | cancelled`.
+
+---
+
+## Tool discovery
+
+Don't hard-code command names. Discover them at runtime:
+
+```js
+// In-page: enumerate live LayersAgent
+const commands = Object.keys(window.LayersAgent)
+    .filter(k => typeof window.LayersAgent[k] === 'function' && !k.startsWith('_'))
+
+// Fetch the JSON-Schema-like map for each
+const { SCHEMAS } = await import('/js/agent/schemas.js')
+console.log(SCHEMAS.addLayer)
+// → { type:'object', properties:{ kind:{type:'string', enum:[...]}, ... }, required:['kind'] }
+```
+
+`_`-prefixed commands (`_ping`, `_echoNumber`, `_echoEnum`, `_echoNested`,
+`_sleep`) are test/diagnostic only. Skip them.
+
+Roughly 80+ commands cover: layer CRUD, layer props/transform, effect
+params, child effects, drawing (paintStroke/drawShape/fillRegion), masks,
+selections (rect/oval/polygon/lasso/wand/color-range and modify ops),
+project lifecycle, undo/redo, view + foreground + settings + zoom + play,
+canvas/image resize, auto-adjust (levels/contrast/white-balance), image
+export, video export, font install/list, jobs.
+
+---
+
+## Error codes
+
+| Code | When |
+|---|---|
+| `INVALID_ARGS_TYPE` | wrong type |
+| `INVALID_ARGS_REQUIRED` | missing required field |
+| `INVALID_ARGS_RANGE` | numeric out of range |
+| `INVALID_ARGS_ENUM` | not in allowed enum |
+| `NOT_FOUND_LAYER` | unknown layer id, child effect id, or stroke id |
+| `NOT_FOUND_EFFECT` | unknown effect id (response includes `didYouMean`) |
+| `NOT_FOUND_JOB` | unknown job id |
+| `CONFLICT_JOB_IN_PROGRESS` | a duplicate job is already running (e.g. installFontBundle) |
+| `JOB_LIMIT_EXCEEDED` | too many active jobs (cap = 20) |
+| `JOB_CANCELLED` | the job was cancelled (terminal state, not an error per se) |
+| `RESOURCE_DECODE_FAILED` | base64 / URL fetch / image decode failed |
+| `INTERNAL_ERROR` | unexpected handler throw |
+
+MCP-only:
+| `JOB_TIMEOUT` | `waitForJob` timed out (sidecar default 120s for export, 600s for fonts) |
+| `JOB_NOT_SUCCEEDED` | job settled `failed` or `cancelled` |
+| `UNKNOWN_TOOL` | unrecognized MCP tool name |
+| `HANDLER_THREW` | sidecar handler threw outside the normal envelope |
+
+`details` always includes the field/value that caused the error. For
+`NOT_FOUND_EFFECT`, `details.didYouMean` is the 3 closest effect ids by
+Levenshtein distance.
+
+---
+
+## Jobs (long-running operations)
+
+Some commands return immediately with a `jobId` and run in the background:
+
+- `installFontBundle` — downloads ~140 MB font bundle into IndexedDB
+- `exportVideo` — frame-by-frame video encode (can take minutes for long clips)
+
+Pattern (in-page):
+
+```js
+const { result: { jobId } } = await LayersAgent.exportVideo({
+    width: 1024, height: 1024, framerate: 30, duration: 5,
+    format: 'mp4', quality: 'high'
+})
+
+// Poll
+const job = (await LayersAgent.getJob({ jobId })).result
+// { id, kind, status, progress:{phase, current, total, message}, result, error }
+
+// Or block
+const settled = (await LayersAgent.waitForJob({ jobId, timeoutMs: 120000 })).result
+// settled.status === 'succeeded' | 'failed' | 'cancelled', plus settled.timedOut if applicable
+
+// Cancel
+await LayersAgent.cancelJob({ jobId })
+```
+
+`JOB_KINDS` is exported from `/js/agent/jobs.js`:
+
+```js
+import { JOB_KINDS } from '/js/agent/jobs.js'
+// JOB_KINDS.INSTALL_FONT_BUNDLE === 'install-font-bundle'
+// JOB_KINDS.EXPORT_VIDEO === 'export-video'
+```
+
+Cancellation is best-effort: `installFontBundle` only checks on each
+`onProgress` tick (the loader doesn't accept AbortSignal); `exportVideo`
+checks at every frame boundary and before encoder finalization.
+
+**Via the MCP sidecar**, `installFontBundle` and `exportVideo` are wrapped so
+the `tools/call` blocks until the job settles. The final envelope is the
+settled-job envelope — agents don't need to call `waitForJob` themselves.
+On timeout or non-success status the wrapper returns `ok:false` with
+`JOB_TIMEOUT` or `JOB_NOT_SUCCEEDED`.
+
+---
+
+## Exports & downloads
+
+`exportImage` and `exportVideo` both record an entry into `state.recentExports`:
+
+```js
+{ id, kind: 'image'|'video', filename, mimeType, sizeBytes, createdAt }
+```
+
+In the **in-page** path, exports trigger a browser download (`<a download>`).
+The agent doesn't get bytes directly except via `exportImage`'s `bytes`
+field (base64 PNG/JPEG/WebP).
+
+Via the **MCP sidecar**, the Playwright runtime captures the download and
+writes it to `LAYERS_MCP_OUTPUT_DIR`. The envelope's `result.filePath` is
+the absolute path. For `exportVideo` it's nested as `result.result.filePath`
+because the envelope wraps the settled-job state.
+
+---
+
+## Patterns
+
+**Run a command and react to state:**
+
+```js
+const env = await LayersAgent.addLayer({ kind: 'effect', effectId: 'NM/perlin' })
+if (!env.ok) throw new Error(`${env.error.code}: ${env.error.message}`)
+const newLayerId = env.result.layerId
+// `env.state.layers` already includes the new layer; no extra getState call.
+```
+
+**Discover an effect:**
+
+```js
+const env = await LayersAgent.searchEffects({ query: 'noise' })
+// env.result is a list of { effectId, name, category, … }
+const def = (await LayersAgent.getEffectDefinition({ effectId: 'NM/perlin' })).result
+// def includes param spec, defaults, name, category
+```
+
+**Make a rectangular selection and apply a fill:**
+
+```js
+await LayersAgent.setRectangleSelection({ x: 50, y: 50, width: 200, height: 200 })
+await LayersAgent.fillRegion({ layerId: '…', color: '#ff0000' })
+```
+
+**Export and locate the file (via MCP sidecar):**
+
+```js
+const env = await LayersAgent.exportImage({ format: 'png' })
+console.log(env.result.filePath)   // /Users/you/layers-mcp-exports/layers-2026-…-png
+```
+
+---
+
+## Pointers
+
+- Source of truth: `/js/agent/index.js` (registration), `/js/agent/commands.js`
+  (handlers), `/js/agent/schemas.js` (input schemas), `/js/agent/jobs.js`
+  (job registry + `JOB_KINDS`), `/js/agent/snapshot.js` (state builder)
+- Test/diagnostic back door: `window.__LAYERS_TEST_HOOKS.jobs` (Playwright
+  specs only — NOT a public API)
+- MCP sidecar: `~/platform/layers-mcp/` (separate repo). See its `README.md`
+  for config and `examples/claude-code.json` for client wiring
+- Commands return an MCP-content block when called via the sidecar; the
+  inner JSON is the envelope described above
+
+This file is reachable at `https://layers.noisefactor.io/llms.txt` once the
+agent build is deployed.
