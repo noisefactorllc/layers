@@ -117,7 +117,8 @@ test.describe('saveProject / openProject / deleteProject', () => {
         await bootApp(page)
         const env = await page.evaluate(() => window.LayersAgent.saveProject({ name: '' }))
         expect(env.ok).toBe(false)
-        expect(env.error.code).toBe('INVALID_ARGS_REQUIRED')
+        // Schema-level minLength:1 fires before the handler's own check.
+        expect(env.error.code).toBe('INVALID_ARGS_RANGE')
         expect(env.error.details.field).toBe('name')
     })
 
@@ -125,7 +126,8 @@ test.describe('saveProject / openProject / deleteProject', () => {
         await bootApp(page)
         const env = await page.evaluate(() => window.LayersAgent.saveProjectAs({ name: '' }))
         expect(env.ok).toBe(false)
-        expect(env.error.code).toBe('INVALID_ARGS_REQUIRED')
+        // Schema-level minLength:1 fires before the handler's own check.
+        expect(env.error.code).toBe('INVALID_ARGS_RANGE')
         expect(env.error.details.field).toBe('name')
     })
 

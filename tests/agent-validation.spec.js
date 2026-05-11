@@ -64,4 +64,29 @@ test.describe('LayersAgent schema validation', () => {
         expect(env.error.details.field).toBe('outer.inner')
         expect(env.error.message).toContain('outer.inner')
     })
+
+    test('minLength rejects empty string in name field', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() => window.LayersAgent.saveProject({ name: '' }))
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toMatch(/INVALID_ARGS_(RANGE|REQUIRED)/)
+    })
+
+    test('pattern rejects non-hex foreground color', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.setForegroundColor({ color: 'not-a-color' })
+        )
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_TYPE')
+    })
+
+    test('additionalProperties:false rejects unknown field in installFontBundle', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.installFontBundle({ thisFieldDoesNotExist: 'foo' })
+        )
+        expect(env.ok).toBe(false)
+        expect(['INVALID_ARGS_TYPE', 'INVALID_ARGS_UNKNOWN']).toContain(env.error.code)
+    })
 })

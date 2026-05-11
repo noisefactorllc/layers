@@ -1,9 +1,10 @@
 /**
  * Tiny JSON-Schema-like validator. Supports the subset we actually need:
- *   - { type: 'object', properties: { ... }, required: [...] }
+ *   - { type: 'object', properties: { ... }, required: [...], additionalProperties: false }
  *   - field types: 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object' | 'any'
  *   - numeric constraints: min, max
  *   - enum constraints: enum: [...]
+ *   - string constraints: minLength, pattern (RegExp source string)
  *   - nested object schemas via type: 'object' + properties
  *   - arrays via type: 'array' + items: <schema>
  *
@@ -53,6 +54,17 @@ function _validate(value, schema, path) {
             const r = _validate(value[key], sub, path ? `${path}.${key}` : key)
             if (!r.ok) return r
         }
+        if (schema.additionalProperties === false) {
+            const allowed = schema.properties || {}
+            for (const key of Object.keys(value)) {
+                if (!(key in allowed)) {
+                    const fullPath = path ? `${path}.${key}` : key
+                    return fail('INVALID_ARGS_UNKNOWN',
+                        `${fullPath}: unknown property`,
+                        { field: fullPath, expected: 'one of declared properties', got: 'unknown property' })
+                }
+            }
+        }
         return { ok: true }
     }
 
@@ -76,6 +88,19 @@ function _validate(value, schema, path) {
             return fail('INVALID_ARGS_TYPE',
                 `${path}: expected string, got ${typeName(value)}`,
                 { field: path, expected: 'string', got: typeName(value) })
+        }
+        if (typeof schema.minLength === 'number' && value.length < schema.minLength) {
+            return fail('INVALID_ARGS_RANGE',
+                `${path}: length ${value.length} is below minLength ${schema.minLength}`,
+                { field: path, got: value.length, min: schema.minLength })
+        }
+        if (schema.pattern) {
+            const re = _compiledPattern(schema)
+            if (!re.test(value)) {
+                return fail('INVALID_ARGS_TYPE',
+                    `${path}: '${value}' does not match /${schema.pattern}/`,
+                    { field: path, got: value, expected: `matches /${schema.pattern}/` })
+            }
         }
         if (schema.enum && !schema.enum.includes(value)) {
             return fail('INVALID_ARGS_ENUM',
@@ -130,6 +155,18 @@ function typeName(v) {
     if (v === null) return 'null'
     if (Array.isArray(v)) return 'array'
     return typeof v
+}
+
+/**
+ * Lazily compile and cache a RegExp on the schema object. Mutates the schema
+ * to attach `_patternRe` on first use so subsequent validations skip the
+ * `new RegExp()` cost.
+ */
+function _compiledPattern(schema) {
+    if (!schema._patternRe) {
+        schema._patternRe = new RegExp(schema.pattern)
+    }
+    return schema._patternRe
 }
 
 /**
@@ -614,28 +651,28 @@ export const SCHEMAS = {
     openProject: {
         type: 'object',
         required: ['projectId'],
-        properties: { projectId: { type: 'string' } }
+        properties: { projectId: { type: 'string', minLength: 1 } }
     },
     saveProject: {
         type: 'object',
-        properties: { name: { type: 'string' } }
+        properties: { name: { type: 'string', minLength: 1 } }
     },
     saveProjectAs: {
         type: 'object',
         required: ['name'],
-        properties: { name: { type: 'string' } }
+        properties: { name: { type: 'string', minLength: 1 } }
     },
     deleteProject: {
         type: 'object',
         required: ['projectId'],
-        properties: { projectId: { type: 'string' } }
+        properties: { projectId: { type: 'string', minLength: 1 } }
     },
     undo: null,
     redo: null,
     setForegroundColor: {
         type: 'object',
         required: ['color'],
-        properties: { color: { type: 'string' } }
+        properties: { color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$' } }
     },
     setZoom: {
         type: 'object',
