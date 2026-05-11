@@ -7,6 +7,8 @@
  * @module agent/jobs
  */
 
+import { MAX_ACTIVE_JOBS, MAX_JOBS } from './limits.js'
+
 /**
  * Job kinds emitted by the agent layer. Agents inspecting `snapshot.jobs`
  * can use this enum to dispatch on job type. Test-only kinds (those used
@@ -19,17 +21,30 @@ export const JOB_KINDS = Object.freeze({
 
 const _jobs = new Map()
 const _waiters = new Map()
-const MAX_JOBS = 50
-// Hard cap on concurrently active (non-settled) jobs. Settled jobs only get
-// pruned by `pruneJobs`; if every job in the registry is still active there's
-// nothing for `pruneJobs` to delete, so we'd grow unbounded. createJob throws
-// JOB_LIMIT_EXCEEDED once we hit this cap so callers fail fast.
-const MAX_ACTIVE_JOBS = 20
 let _idCounter = 0
 
 function makeId() {
     _idCounter++
-    return `job_${Date.now().toString(36)}_${_idCounter}`
+    // Random suffix dodges cross-tab collisions when two tabs allocate within
+    // the same millisecond with the same counter value. `job_` prefix is part
+    // of the convention used by snapshot consumers — keep it.
+    const rand = Math.random().toString(36).slice(2, 8)
+    return `job_${Date.now().toString(36)}_${_idCounter}_${rand}`
+}
+
+/**
+ * Deep clone a value via structuredClone if possible; fall back to the
+ * reference if the value contains non-cloneable bits (functions, Symbols,
+ * DOM nodes that aren't transferable, etc.). Used to keep registry-stored
+ * result/error objects insulated from caller mutation.
+ */
+function safeClone(v) {
+    if (v == null) return v
+    try {
+        return structuredClone(v)
+    } catch {
+        return v
+    }
 }
 
 function isSettled(status) {
@@ -45,12 +60,25 @@ function serializeJob(job) {
         startedAt: job.startedAt,
         updatedAt: job.updatedAt,
         completedAt: job.completedAt,
+        // progress.updatedAt is preserved through this shallow copy and tracks
+        // the last progress-event time, distinct from job.updatedAt which
+        // tracks any state change (progress OR settle).
         progress: { ...job.progress },
-        result: job.result,
-        error: job.error
+        // Deep clone result/error so caller mutations don't leak back into
+        // the registry — shallow copy of progress is fine because the runner
+        // already builds a fresh progress object on every reportProgress call.
+        result: safeClone(job.result),
+        error: safeClone(job.error)
     }
 }
 
+// Race-free waiter cleanup: if the timeout fires first, the timer handler
+// removes the waiter from `ws` and resolves with `{...job, timedOut: true}`.
+// If the job settles first, `notifyWaiters` clears the timer (via w.timer)
+// and resolves with the final state. The two resolution paths can never both
+// fire for the same waiter — once a Promise's resolve is called, subsequent
+// calls are no-ops, and we always clear the timer on the settle path so the
+// timeout callback never sees a stale waiter still in the set.
 function notifyWaiters(id) {
     const ws = _waiters.get(id)
     if (!ws) return
@@ -105,7 +133,10 @@ export function createJob(kind, runFn) {
         startedAt: Date.now(),
         updatedAt: Date.now(),
         completedAt: null,
-        progress: { phase: 'queued', current: 0, total: 0, message: null },
+        // progress.updatedAt is null until the first reportProgress call.
+        // After that, it tracks the last progress-event timestamp, distinct
+        // from job.updatedAt which advances on any state change (progress or settle).
+        progress: { phase: 'queued', current: 0, total: 0, message: null, updatedAt: null },
         result: null,
         error: null,
         _abort: ac
@@ -123,12 +154,27 @@ export function createJob(kind, runFn) {
                 throw e
             }
         },
+        /**
+         * Push a progress event for this job. Updates `job.progress` with the
+         * latest phase/current/total/message and a fresh `progress.updatedAt`
+         * timestamp, and bumps `job.updatedAt` to the same instant.
+         *
+         * Calls made AFTER the runFn promise settles (success/fail/cancel) are
+         * silent no-ops — once the job is in a terminal state, further progress
+         * updates are ignored. This makes it safe for slow encoders that fire
+         * one last onProgress callback as their teardown unwinds after we've
+         * already marked the job succeeded/failed/cancelled.
+         *
+         * `progress.updatedAt` tracks the last *progress-event* time, distinct
+         * from `job.updatedAt` which tracks any state change (progress OR settle).
+         */
         reportProgress(phase, current, total, message = null) {
             const j = _jobs.get(id)
             if (!j || isSettled(j.status)) return
             j.status = 'running'
-            j.progress = { phase, current, total, message }
-            j.updatedAt = Date.now()
+            const now = Date.now()
+            j.progress = { phase, current, total, message, updatedAt: now }
+            j.updatedAt = now
         }
     }
 

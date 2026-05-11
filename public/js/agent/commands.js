@@ -39,6 +39,7 @@ import {
 } from '../utils/auto-adjust.js'
 import * as jobsRegistry from './jobs.js'
 import { JOB_KINDS } from './jobs.js'
+import { MAX_EXPORT_FRAMES } from './limits.js'
 import { getFontaineLoader } from '../layers/fontaine-loader.js'
 import { runVideoExport } from '../ui/video-exporter.js'
 
@@ -155,6 +156,19 @@ export async function getJob({ jobId }) {
     return { result: j }
 }
 
+/**
+ * Wait for a job to settle, or timeout.
+ *
+ * IMPORTANT: when `timeoutMs` is exceeded, the returned envelope is STILL a
+ * success envelope (`ok: true`). The job state is returned with
+ * `result.timedOut === true` and the job's current (likely still 'running')
+ * status. Agents must check `result.timedOut` to distinguish "job not done
+ * yet" from "job actually settled".
+ *
+ * Only NOT_FOUND_JOB produces a failure envelope here. A genuine job failure
+ * is reported via `result.status === 'failed'` plus `result.error`, not via
+ * the command envelope.
+ */
 export async function waitForJob({ jobId, timeoutMs }) {
     const existing = jobsRegistry.getJob(jobId)
     if (!existing) throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
@@ -1519,12 +1533,6 @@ export async function installFontBundle(_args, _app) {
     }
     return { result: { jobId } }
 }
-
-// Cap on total frames per export. 18000 = 10 min @ 30 fps. Bigger jobs almost
-// always indicate misconfigured params (e.g. a loop count blown up by a long
-// duration) and grow memory/time without bound, so reject up-front instead of
-// burning minutes on a runaway encode.
-const MAX_EXPORT_FRAMES = 18000
 
 /**
  * Export the rendered canvas to a video file (MP4 via WebCodecs or a ZIP of

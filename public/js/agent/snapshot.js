@@ -25,11 +25,16 @@ export function buildSnapshot(app) {
         layers: buildLayers(app),
         selectedLayerIds: app?._layerStack?.selectedLayerIds?.slice() || [],
         activeLayerId: app?._layerStack?.selectedLayerId || null,
+        // Each job entry carries two timestamps:
+        //   - job.updatedAt       — last state change (progress OR settle)
+        //   - job.progress.updatedAt — last progress-event time only (null
+        //     until the runner makes its first reportProgress call)
+        // We sort by job.updatedAt so a long-running job whose runFn is
+        // still ticking progress can't drop out of view after many shorter
+        // jobs settle.
         jobs: listJobs()
             .sort((a, b) => b.updatedAt - a.updatedAt)
-            .slice(0, 20),                 // sorted by recency so a long-running
-                                           // job can't drop out of view after
-                                           // many shorter jobs settle.
+            .slice(0, 20),
         recentExports: getRecentExports(),
         settings: buildSettings(app)
     }

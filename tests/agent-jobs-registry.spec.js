@@ -6,6 +6,10 @@ test.describe('agent: jobs registry', () => {
         await page.evaluate(() => window.LayersAgent.ready)
         // jobs.js is now imported transitively via commands.js/snapshot.js,
         // so its side-effect attaches window.__LAYERS_TEST_HOOKS.jobs during agent bootstrap.
+        // _reset() is harmless today (each test runs in a fresh page) but
+        // protects against future test-style changes that share pages between
+        // tests in the same describe block.
+        await page.evaluate(() => window.__LAYERS_TEST_HOOKS?.jobs?._reset?.())
     })
 
     test('createJob reaches succeeded with result', async ({ page }) => {
