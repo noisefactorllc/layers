@@ -39,6 +39,7 @@ export const {
     unparse,
     extractEffectNamesFromDsl,
     extractEffectsFromDsl,
+    formatDslError,
     cloneParamValue,
     isStarterEffect,
     hasTexSurfaceParam,

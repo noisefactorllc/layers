@@ -7,7 +7,7 @@
  * @module noisemaker/renderer
  */
 
-import { CanvasRenderer, extractEffectNamesFromDsl, getAllEffects } from './bundle.js'
+import { CanvasRenderer, extractEffectNamesFromDsl, getAllEffects, formatDslError } from './bundle.js'
 
 export class LayersRenderer {
     constructor(canvas, options = {}) {
@@ -191,7 +191,7 @@ export class LayersRenderer {
 
             return { success: true }
         } catch (err) {
-            console.error('[LayersRenderer] Compilation error:', err)
+            this._logDslError('Compilation error', this._currentDsl, err)
             return { success: false, error: err.message || String(err) }
         }
     }
@@ -211,8 +211,23 @@ export class LayersRenderer {
             this._normalizeColorUniforms()
             return { success: true }
         } catch (err) {
-            console.error('[LayersRenderer] tryCompile failed:', err)
+            this._logDslError('tryCompile failed', dsl, err)
             return { success: false, error: err.message || String(err) }
+        }
+    }
+
+    /**
+     * Log a DSL compile error with caret-pointed source context when available.
+     * @private
+     */
+    _logDslError(label, source, err) {
+        const formatted = source && typeof formatDslError === 'function'
+            ? formatDslError(source, err)
+            : null
+        if (formatted) {
+            console.error(`[LayersRenderer] ${label}:\n${formatted}`)
+        } else {
+            console.error(`[LayersRenderer] ${label}:`, err)
         }
     }
 
@@ -1000,7 +1015,18 @@ export class LayersRenderer {
                     }
                 }
 
-                if (typeof value === 'string') return `${key}: "${value}"`
+                if (typeof value === 'string') {
+                    // Triple-quoted strings preserve internal " and newlines
+                    // verbatim, which `"${value}"` did not — Impact, "Arial
+                    // Black", ... and multi-line text() params blew up the
+                    // parser. Lexer collision on a literal `"""` in user input
+                    // is theoretically possible but vanishingly unlikely for
+                    // text/font/justify; we warn rather than escape.
+                    if (value.includes('"""')) {
+                        console.warn(`[LayersRenderer] Param ${key} contains '"""'; DSL emission may be ambiguous`)
+                    }
+                    return `${key}: """${value}"""`
+                }
                 if (Array.isArray(value)) return `${key}: vec${value.length}(${value.join(', ')})`
                 return `${key}: ${value}`
             })

@@ -177,4 +177,49 @@ test.describe('LayersAgent.addLayer — text kind', () => {
         expect(env.error.code).toBe('INVALID_ARGS_REQUIRED')
         expect(env.error.details.field).toBe('text')
     })
+
+    test('text param with embedded quotes compiles (regression: triple-quoted DSL emission)', async ({ page }) => {
+        await bootApp(page)
+        // Font stack with internal double quotes used to break the DSL parser:
+        //   font: "Impact, "Arial Black", ..."
+        // ...because renderer emitted "${value}" without escaping. Triple-quoted
+        // strings preserve internal quotes verbatim.
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({
+                kind: 'text',
+                text: 'STACKED',
+                params: { font: 'Impact, "Arial Black", "Helvetica Neue Bold", sans-serif' }
+            })
+        )
+        expect(env.ok).toBe(true)
+        const layer = env.state.layers.find(l => l.id === env.result.layerId)
+        expect(layer.effect.params.font).toContain('"Arial Black"')
+
+        // The render pipeline must have actually compiled (not silently fallen
+        // back to the previous compiled program). Adding a second text layer
+        // and verifying it compiles too proves stacking still works.
+        const env2 = await page.evaluate(() =>
+            window.LayersAgent.addLayer({
+                kind: 'text',
+                text: 'AGAIN',
+                params: { font: '"Helvetica Neue", sans-serif' }
+            })
+        )
+        expect(env2.ok).toBe(true)
+        expect(env2.state.layers.length).toBe(env.state.layers.length + 1)
+    })
+
+    test('text param with embedded newlines compiles', async ({ page }) => {
+        await bootApp(page)
+        // Multi-line text used to emit unterminated string literals in DSL.
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({
+                kind: 'text',
+                text: 'LINE ONE\nLINE TWO'
+            })
+        )
+        expect(env.ok).toBe(true)
+        const layer = env.state.layers.find(l => l.id === env.result.layerId)
+        expect(layer.effect.params.text).toContain('\n')
+    })
 })
