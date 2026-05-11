@@ -42,6 +42,7 @@ import { JOB_KINDS } from './jobs.js'
 import { MAX_EXPORT_FRAMES } from './limits.js'
 import { getFontaineLoader } from '../layers/fontaine-loader.js'
 import { runVideoExport } from '../ui/video-exporter.js'
+import { toast } from '../ui/toast.js'
 
 export async function getState(_args, app) {
     return { result: buildSnapshot(app) }
@@ -513,7 +514,7 @@ export async function addChildEffect({ layerId, effectId, params }, app) {
 }
 
 export async function removeChildEffect({ layerId, childId }, app) {
-    const { layer } = requireChildEffect(layerId, childId, app)
+    requireChildEffect(layerId, childId, app)
     await app._handleDeleteLayer(childId, layerId)
     return { result: { childId } }
 }
@@ -554,6 +555,10 @@ export async function setChildEffectProps({ layerId, childId, props }, app) {
         child.name = props.name
         app._updateLayerStack?.()
         app._markDirty?.()
+        // _handleLayerChange's visibility branch already pushes undo state, but
+        // the name path used to skip it — leaving renames non-undoable. Push
+        // here so an agent rename can be undone like any other edit.
+        app._pushUndoState?.()
     }
     return { result: { layerId, childId } }
 }
@@ -574,6 +579,51 @@ const FORMAT_TO_MIME = {
     png: 'image/png',
     jpg: 'image/jpeg',
     webp: 'image/webp'
+}
+
+/**
+ * Default JPG/WEBP quality used across imagery commands when the caller
+ * doesn't pass one. 0.92 mirrors Photoshop's default "Maximum" preset and
+ * preserves quality well enough for most agent-driven workflows.
+ */
+const DEFAULT_IMAGE_QUALITY = 0.92
+
+/**
+ * Whether OffscreenCanvas is available in this environment. Modern browsers
+ * (Chrome 69+, Firefox 105+, Safari 16.4+) have it; older Safari versions
+ * don't, and Node-style runners certainly don't. When absent, fall back to
+ * a regular `<canvas>` and `canvas.toBlob`.
+ */
+const HAS_OFFSCREEN_CANVAS = typeof OffscreenCanvas !== 'undefined'
+
+/**
+ * Allocate a drawable surface at width×height, returning `{ surface, ctx }`.
+ * Picks OffscreenCanvas when available, falls back to a detached <canvas>
+ * so the call sites don't need to branch.
+ */
+function makeDrawSurface(width, height) {
+    if (HAS_OFFSCREEN_CANVAS) {
+        const off = new OffscreenCanvas(width, height)
+        return { surface: off, ctx: off.getContext('2d') }
+    }
+    const cv = document.createElement('canvas')
+    cv.width = width
+    cv.height = height
+    return { surface: cv, ctx: cv.getContext('2d') }
+}
+
+/**
+ * Encode the surface returned by makeDrawSurface as a Blob.
+ * OffscreenCanvas exposes `convertToBlob`; HTMLCanvasElement exposes `toBlob`.
+ */
+async function drawSurfaceToBlob(surface, mimeType, quality) {
+    if (typeof surface.convertToBlob === 'function') {
+        return surface.convertToBlob({ type: mimeType, quality })
+    }
+    return new Promise((resolve, reject) => {
+        surface.toBlob(b => b ? resolve(b) : reject(new Error('toBlob produced null')),
+            mimeType, quality)
+    })
 }
 
 /**
@@ -605,8 +655,12 @@ async function blobToBase64(blob) {
 async function canvasToBytes(canvas, format, quality, targetW, targetH) {
     const mimeType = FORMAT_TO_MIME[format]
     if (!mimeType) {
-        throw commandError('INVALID_ARGS_ENUM',
-            `Unsupported format: ${format}`,
+        // Schema enums in dispatchers should catch a bad `format` long before
+        // we get here; an unknown format at this depth means the schema and
+        // FORMAT_TO_MIME drifted apart — flag it as an internal-consistency
+        // error rather than blaming the caller.
+        throw commandError('INTERNAL_ERROR',
+            `canvasToBytes received an unknown format: ${format}`,
             { field: 'format', allowed: Object.keys(FORMAT_TO_MIME), got: format })
     }
     const sw = canvas.width
@@ -621,12 +675,11 @@ async function canvasToBytes(canvas, format, quality, targetW, targetH) {
                 mimeType, quality)
         })
     } else {
-        const off = new OffscreenCanvas(tw, th)
-        const ctx = off.getContext('2d')
+        const { surface, ctx } = makeDrawSurface(tw, th)
         ctx.imageSmoothingEnabled = true
         ctx.imageSmoothingQuality = 'high'
         ctx.drawImage(canvas, 0, 0, sw, sh, 0, 0, tw, th)
-        blob = await off.convertToBlob({ type: mimeType, quality })
+        blob = await drawSurfaceToBlob(surface, mimeType, quality)
     }
 
     const base64 = await blobToBase64(blob)
@@ -643,7 +696,7 @@ async function canvasToBytes(canvas, format, quality, targetW, targetH) {
 
 export async function getCanvasImageBytes(args, app) {
     const format = args?.format || 'png'
-    const quality = args?.quality
+    const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
     const out = await canvasToBytes(app._canvas, format, quality)
     return {
         result: {
@@ -672,7 +725,7 @@ function thumbnailDimensions(srcWidth, srcHeight, maxDimension) {
 export async function getThumbnail(args, app) {
     const maxDim = args?.maxDimension ?? 256
     const format = args?.format || 'jpg'
-    const quality = args?.quality ?? 0.85
+    const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
     const { width: tw, height: th } = thumbnailDimensions(
         app._canvas.width, app._canvas.height, maxDim)
     const out = await canvasToBytes(app._canvas, format, quality, tw, th)
@@ -692,7 +745,7 @@ export async function getLayerThumbnail({ layerId, maxDimension, format, quality
     requireLayer(layerId, app)
     const maxDim = maxDimension ?? 256
     const fmt = format || 'jpg'
-    const q = quality ?? 0.85
+    const q = quality ?? DEFAULT_IMAGE_QUALITY
 
     // _renderLayerComposite returns an HTMLImageElement of the canvas after
     // rendering only the named layer (and its children/mask). Draw it into
@@ -708,14 +761,13 @@ export async function getLayerThumbnail({ layerId, maxDimension, format, quality
     const sh = sourceImg.naturalHeight || sourceImg.height
     const { width: tw, height: th } = thumbnailDimensions(sw, sh, maxDim)
 
-    const off = new OffscreenCanvas(tw, th)
-    const ctx = off.getContext('2d')
+    const { surface, ctx } = makeDrawSurface(tw, th)
     ctx.imageSmoothingEnabled = true
     ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(sourceImg, 0, 0, sw, sh, 0, 0, tw, th)
 
     const mimeType = FORMAT_TO_MIME[fmt]
-    const blob = await off.convertToBlob({ type: mimeType, quality: q })
+    const blob = await drawSurfaceToBlob(surface, mimeType, q)
     const base64 = await blobToBase64(blob)
     return {
         result: {
@@ -743,10 +795,17 @@ export function getRecentExports() {
 
 function recordExport(entry) {
     _recentExports.push(entry)
-    while (_recentExports.length > RECENT_EXPORTS_CAP) _recentExports.shift()
+    // One push per call, so we can only ever be exactly one entry over the cap.
+    if (_recentExports.length > RECENT_EXPORTS_CAP) _recentExports.shift()
 }
 
 function makeExportId() {
+    // crypto.randomUUID is RFC 4122 v4 — collision-resistant in a way
+    // Math.random can't promise. Fall back to the old timestamp+rand format
+    // only on browsers that pre-date it (Chrome <92, Firefox <95, Safari <15.4).
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return `export-${crypto.randomUUID()}`
+    }
     return `export-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 }
 
@@ -775,7 +834,7 @@ function triggerBrowserDownload(blob, filename) {
 
 export async function exportImage(args, app) {
     const format = args?.format || 'png'
-    const quality = args?.quality
+    const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
     const width = args?.width
     const height = args?.height
     const triggerDownload = args?.triggerDownload !== false   // defaults true
@@ -794,7 +853,10 @@ export async function exportImage(args, app) {
         mimeType: out.mimeType,
         sizeBytes: out.sizeBytes,
         createdAt: new Date().toISOString(),
-        kind: 'image'
+        kind: 'image',
+        // `format` mirrors the exportVideo entry — redundant with mimeType
+        // but easier for agents to switch on ('png' | 'jpg' | 'webp').
+        format: out.format
     }
     recordExport(entry)
 
@@ -1021,13 +1083,22 @@ function requireMaskedLayer(layerId, app) {
     return layer
 }
 
-export async function addLayerMask({ layerId }, app) {
+/**
+ * Look up a layer that DOES NOT have a mask; throw CONFLICT_LAYER_HAS_MASK
+ * if one is already attached. Mirror image of `requireMaskedLayer`.
+ */
+function requireUnmaskedLayer(layerId, app) {
     const layer = requireLayer(layerId, app)
     if (layer.mask) {
         throw commandError('CONFLICT_LAYER_HAS_MASK',
             `Layer ${layerId} already has a mask. Call deleteLayerMask first.`,
             { layerId })
     }
+    return layer
+}
+
+export async function addLayerMask({ layerId }, app) {
+    const layer = requireUnmaskedLayer(layerId, app)
     // Replicate the core of app._addLayerMask but skip _enterMaskEditMode.
     app._finalizePendingUndo?.()
     const w = app._canvas.width
@@ -1051,25 +1122,26 @@ export async function addLayerMask({ layerId }, app) {
 
 export async function deleteLayerMask({ layerId }, app) {
     requireMaskedLayer(layerId, app)
-    await app._deleteLayerMask(layerId)
+    // `_deleteLayerMask` is the same code-path the human menu uses, so it
+    // fires a user-facing "Layer mask deleted" toast. Agents have no
+    // foreground UI to acknowledge — suppress while the call runs.
+    await toast.suppress(() => app._deleteLayerMask(layerId))
     return { result: { layerId } }
 }
 
 export async function addMaskFromSelection({ layerId }, app) {
-    const layer = requireLayer(layerId, app)
-    if (layer.mask) {
-        throw commandError('CONFLICT_LAYER_HAS_MASK',
-            `Layer ${layerId} already has a mask. Call deleteLayerMask first.`,
-            { layerId })
-    }
+    requireUnmaskedLayer(layerId, app)
     requireSelection(app)   // throws CONFLICT_NO_SELECTION if missing
-    await app._maskFromSelection(layerId)
+    // Suppress the "Mask created from selection" toast that the human-UI
+    // path fires — agents drive this programmatically.
+    await toast.suppress(() => app._maskFromSelection(layerId))
     return { result: { layerId } }
 }
 
 export async function invertLayerMask({ layerId }, app) {
     requireMaskedLayer(layerId, app)
-    await app._invertLayerMask(layerId)
+    // Suppress the "Mask inverted" toast that the human-UI path fires.
+    await toast.suppress(() => app._invertLayerMask(layerId))
     return { result: { layerId } }
 }
 
@@ -1419,19 +1491,34 @@ export async function resizeCanvas({ width, height, anchor }, app) {
     return { result: { width, height, anchor: anchor || 'center' } }
 }
 
+/**
+ * Build the standard envelope for auto-correction commands: report whether
+ * an adjustment layer was actually added (`applied`) and, if so, which
+ * layer the agent should look at (`layerId`). Returning `applied:false`
+ * lets agents distinguish "no work needed" from a successful adjustment.
+ */
+function autoCorrectionResult(addedLayer) {
+    return {
+        result: {
+            applied: !!addedLayer,
+            layerId: addedLayer?.id || null
+        }
+    }
+}
+
 export async function autoLevels(_args, app) {
-    await app._handleAutoCorrection(autoLevelsFn)
-    return { result: { ok: true } }
+    const layer = await app._handleAutoCorrection(autoLevelsFn)
+    return autoCorrectionResult(layer)
 }
 
 export async function autoContrast(_args, app) {
-    await app._handleAutoCorrection(autoContrastFn)
-    return { result: { ok: true } }
+    const layer = await app._handleAutoCorrection(autoContrastFn)
+    return autoCorrectionResult(layer)
 }
 
 export async function autoWhiteBalance(_args, app) {
-    await app._handleAutoCorrection(autoWhiteBalanceFn)
-    return { result: { ok: true } }
+    const layer = await app._handleAutoCorrection(autoWhiteBalanceFn)
+    return autoCorrectionResult(layer)
 }
 
 /**
@@ -1440,6 +1527,12 @@ export async function autoWhiteBalance(_args, app) {
  * The catalog's font records expose `id`, `name`, `category`, and `tags`
  * (no `family` or top-level `style` — `style` is a per-file/variant attribute).
  * We map `name` → `family` to give agents the conventional CSS-style key.
+ *
+ * Note: the returned descriptor is `{id, family, category}` only — no
+ * `style` field. The fontaine catalog doesn't carry per-variant style
+ * metadata today (italic, weight, etc. live on individual font files, not
+ * on the family record). If per-variant style becomes available upstream,
+ * surface it here.
  */
 export async function listInstalledFonts(_args, _app) {
     const loader = getFontaineLoader()
@@ -1588,6 +1681,9 @@ export async function exportVideo(args, app) {
             })
 
             const filename = timestampedFilename(args?.filename, settings.format)
+            // Recorded only on success — cancelled jobs leave partial bytes
+            // in the user's browser-download dir but no recentExports entry.
+            // (runVideoExport throws on abort, so we never reach this point.)
             recordExport({
                 id: makeExportId(),
                 path: null,                  // sidecar fills this in Phase 7

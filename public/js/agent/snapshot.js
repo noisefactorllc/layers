@@ -93,10 +93,10 @@ function buildSettings(_app) {
 
 function buildLayers(app) {
     const layers = app?._layers || []
-    return layers.map(buildLayer)
+    return layers.map(layer => buildLayer(layer, app))
 }
 
-function buildLayer(layer) {
+function buildLayer(layer, app) {
     return {
         id: layer.id,
         name: layer.name,
@@ -114,7 +114,7 @@ function buildLayer(layer) {
             flipH: !!layer.flipH,
             flipV: !!layer.flipV
         },
-        media: buildMedia(layer),
+        media: buildMedia(layer, app),
         effect: buildEffect(layer),
         drawing: buildDrawing(layer),
         children: (layer.children || []).map(buildChildEffect),
@@ -122,15 +122,24 @@ function buildLayer(layer) {
     }
 }
 
-function buildMedia(layer) {
+function buildMedia(layer, app) {
     if (layer.sourceType !== 'media') return null
     const file = layer.mediaFile
+    // `mediaWidth`/`mediaHeight`/`mediaDurationSec` aren't set on the layer
+    // model today; the renderer's media cache (loadMedia) is authoritative for
+    // dimensions, and the HTMLVideoElement carries the live duration. Fall back
+    // to those when the layer fields aren't populated, then to null.
+    const mediaInfo = app?._renderer?.getMediaInfo?.(layer.id) || null
+    const videoElement = mediaInfo?.type === 'video' ? mediaInfo.element : null
+    const naturalDuration = videoElement && isFinite(videoElement.duration)
+        ? videoElement.duration
+        : null
     return {
         type: layer.mediaType,
         filename: file?.name || null,
-        width: layer.mediaWidth || null,
-        height: layer.mediaHeight || null,
-        durationSec: layer.mediaDurationSec || null
+        width: layer.mediaWidth || mediaInfo?.width || null,
+        height: layer.mediaHeight || mediaInfo?.height || null,
+        durationSec: layer.mediaDurationSec || naturalDuration
     }
 }
 

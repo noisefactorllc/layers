@@ -804,7 +804,7 @@ class LayersApp {
         const result = correctionFn(this._canvas)
         if (!result) {
             toast.info('No correction needed')
-            return
+            return null
         }
         this._finalizePendingUndo()
         const layer = createEffectLayer(result.effectId)
@@ -821,6 +821,9 @@ class LayersApp {
             this._layerStack.selectedLayerId = layer.id
         }
         toast.success(`Applied: ${result.name}`)
+        // Return the newly-created adjustment layer so callers (e.g. the
+        // agent's auto* commands) can report whether work was done.
+        return layer
     }
 
     // ── Mask management ─────────────────────────────────────────────────

@@ -12,6 +12,36 @@ class ToastManager {
     constructor() {
         this._container = null
         this._toasts = []
+        // When > 0, show() is a no-op. Agent commands bump this before
+        // invoking app methods that emit user-facing toasts (a wrapper-style
+        // counter rather than a flag so nested suppressions don't clobber
+        // each other).
+        this._suppressDepth = 0
+    }
+
+    /**
+     * Run `fn` with all toast emissions silenced. Returns whatever fn returns
+     * (or its resolved value, if it's async). The depth counter handles
+     * nested suppress() calls correctly.
+     *
+     * @template T
+     * @param {() => T | Promise<T>} fn
+     * @returns {Promise<T> | T}
+     */
+    suppress(fn) {
+        this._suppressDepth++
+        let result
+        try {
+            result = fn()
+        } catch (err) {
+            this._suppressDepth--
+            throw err
+        }
+        if (result && typeof result.then === 'function') {
+            return result.finally(() => { this._suppressDepth-- })
+        }
+        this._suppressDepth--
+        return result
     }
 
     /**
@@ -40,6 +70,7 @@ class ToastManager {
      * @param {boolean} [options.closable=true] - Show close button
      */
     show(message, options = {}) {
+        if (this._suppressDepth > 0) return null
         const {
             type = 'info',
             duration = 3000,
