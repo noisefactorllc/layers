@@ -13,31 +13,62 @@ async function bootApp(page) {
     }
 }
 
-test.describe('LayersAgent job stubs', () => {
-    test('getJob returns NOT_FOUND_JOB', async ({ page }) => {
+test.describe('LayersAgent job commands (registry-backed)', () => {
+    test('getJob returns NOT_FOUND_JOB for unknown id', async ({ page }) => {
         await bootApp(page)
-        const env = await page.evaluate(() =>
-            window.LayersAgent.getJob({ jobId: 'job-x' })
-        )
-        expect(env.ok).toBe(false)
-        expect(env.error.code).toBe('NOT_FOUND_JOB')
+        const r = await page.evaluate(() => window.LayersAgent.getJob({ jobId: 'nope' }))
+        expect(r.ok).toBe(false)
+        expect(r.error.code).toBe('NOT_FOUND_JOB')
     })
 
-    test('waitForJob returns NOT_FOUND_JOB', async ({ page }) => {
+    test('snapshot exposes empty jobs array when no jobs have run', async ({ page }) => {
         await bootApp(page)
-        const env = await page.evaluate(() =>
-            window.LayersAgent.waitForJob({ jobId: 'job-x' })
-        )
-        expect(env.ok).toBe(false)
-        expect(env.error.code).toBe('NOT_FOUND_JOB')
+        const before = await page.evaluate(() => {
+            window.__layersJobs._reset()
+            return window.LayersAgent.getState({})
+        })
+        expect(before.state.jobs).toEqual([])
     })
 
-    test('cancelJob returns NOT_FOUND_JOB', async ({ page }) => {
+    test('snapshot exposes jobs after a registry-created job settles', async ({ page }) => {
         await bootApp(page)
-        const env = await page.evaluate(() =>
-            window.LayersAgent.cancelJob({ jobId: 'job-x' })
-        )
-        expect(env.ok).toBe(false)
-        expect(env.error.code).toBe('NOT_FOUND_JOB')
+        const after = await page.evaluate(async () => {
+            window.__layersJobs._reset()
+            const { id } = window.__layersJobs.createJob('test-kind', async () => ({ ok: 1 }))
+            await window.__layersJobs.waitForJob(id, 2000)
+            return window.LayersAgent.getState({})
+        })
+        expect(after.state.jobs.length).toBeGreaterThan(0)
+        const j = after.state.jobs.find(x => x.kind === 'test-kind')
+        expect(j).toBeDefined()
+        expect(j.status).toBe('succeeded')
+    })
+
+    test('waitForJob with timeoutMs returns timedOut envelope', async ({ page }) => {
+        await bootApp(page)
+        const r = await page.evaluate(async () => {
+            const { id } = window.__layersJobs.createJob('test-kind', async () => {
+                await new Promise(r => setTimeout(r, 500))
+                return { ok: 1 }
+            })
+            return await window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 50 })
+        })
+        expect(r.ok).toBe(true)
+        expect(r.result.timedOut).toBe(true)
+    })
+
+    test('cancelJob transitions to cancelled', async ({ page }) => {
+        await bootApp(page)
+        const final = await page.evaluate(async () => {
+            const { id } = window.__layersJobs.createJob('test-kind', async (api) => {
+                while (!api.abortSignal.aborted) await new Promise(r => setTimeout(r, 5))
+                api.checkAbort()
+            })
+            await new Promise(r => setTimeout(r, 20))
+            await window.LayersAgent.cancelJob({ jobId: id })
+            const settled = await window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 1000 })
+            return settled.result
+        })
+        expect(final.status).toBe('cancelled')
     })
 })

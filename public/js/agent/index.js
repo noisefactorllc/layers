@@ -126,6 +126,9 @@ export function bootstrapAgent(app) {
     registerCommand(LayersAgent, 'autoLevels', commands.autoLevels)
     registerCommand(LayersAgent, 'autoContrast', commands.autoContrast)
     registerCommand(LayersAgent, 'autoWhiteBalance', commands.autoWhiteBalance)
+    registerCommand(LayersAgent, 'listInstalledFonts', commands.listInstalledFonts)
+    registerCommand(LayersAgent, 'installFontBundle', commands.installFontBundle)
+    registerCommand(LayersAgent, 'exportVideo', commands.exportVideo)
     if (typeof window !== 'undefined') {
         window.__buildSnapshot = buildSnapshot
     }

@@ -685,4 +685,20 @@ export const SCHEMAS = {
     autoLevels: null,
     autoContrast: null,
     autoWhiteBalance: null,
+    listInstalledFonts: { type: 'object', properties: {}, additionalProperties: false },
+    installFontBundle: { type: 'object', properties: {}, additionalProperties: false },
+    exportVideo: {
+        type: 'object',
+        properties: {
+            width: { type: 'integer', min: 2, max: 4096 },
+            height: { type: 'integer', min: 2, max: 4096 },
+            framerate: { type: 'integer', enum: [24, 30, 60] },
+            duration: { type: 'number', min: 0.1, max: 300 },
+            loopCount: { type: 'integer', min: 1, max: 10 },
+            format: { type: 'string', enum: ['mp4', 'zip'] },
+            quality: { type: 'string', enum: ['low', 'medium', 'high', 'very high', 'ultra'] },
+            playFrom: { type: 'string', enum: ['beginning', 'current'] },
+            filename: { type: 'string' }
+        }
+    },
 }

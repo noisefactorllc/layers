@@ -37,6 +37,9 @@ import {
     autoContrast as autoContrastFn,
     autoWhiteBalance as autoWhiteBalanceFn
 } from '../utils/auto-adjust.js'
+import * as jobsRegistry from './jobs.js'
+import { getFontaineLoader } from '../layers/fontaine-loader.js'
+import { runVideoExport } from '../ui/video-exporter.js'
 
 export async function getState(_args, app) {
     return { result: buildSnapshot(app) }
@@ -146,15 +149,23 @@ function levenshtein(a, b) {
 }
 
 export async function getJob({ jobId }) {
-    throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
+    const j = jobsRegistry.getJob(jobId)
+    if (!j) throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
+    return { result: j }
 }
 
-export async function waitForJob({ jobId }) {
-    throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
+export async function waitForJob({ jobId, timeoutMs }) {
+    const existing = jobsRegistry.getJob(jobId)
+    if (!existing) throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
+    const settled = await jobsRegistry.waitForJob(jobId, timeoutMs || 0)
+    return { result: settled }
 }
 
 export async function cancelJob({ jobId }) {
-    throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
+    const existing = jobsRegistry.getJob(jobId)
+    if (!existing) throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
+    const next = jobsRegistry.cancelJob(jobId)
+    return { result: next }
 }
 
 /**
@@ -1406,4 +1417,189 @@ export async function autoContrast(_args, app) {
 export async function autoWhiteBalance(_args, app) {
     await app._handleAutoCorrection(autoWhiteBalanceFn)
     return { result: { ok: true } }
+}
+
+/**
+ * Report the installed fontaine bundle state.
+ *
+ * The catalog's font records expose `id`, `name`, `category`, and `tags`
+ * (no `family` or top-level `style` — `style` is a per-file/variant attribute).
+ * We map `name` → `family` to give agents the conventional CSS-style key.
+ */
+export async function listInstalledFonts(_args, _app) {
+    const loader = getFontaineLoader()
+    const installed = await loader.isInstalled()
+    if (!installed) {
+        return { result: { installed: false, version: null, count: 0, fonts: [] } }
+    }
+    if (!loader.fontsLoaded) {
+        await loader.loadFromCache()
+    }
+    const raw = (loader.catalog?.fonts) || []
+    // The fontaine catalog records expose `name` as the family — there is no
+    // `f.family` field. Don't synthesize a fallback that would never trigger.
+    const fonts = raw.map(f => ({
+        id: f.id || f.name,
+        family: f.name,
+        category: f.category || null
+    }))
+    return {
+        result: {
+            installed: true,
+            version: loader.installedVersion || null,
+            count: fonts.length,
+            fonts
+        }
+    }
+}
+
+/**
+ * Install the fontaine font bundle (~140 MB) as a background job.
+ *
+ * Returns immediately with a jobId; agents can poll via getJob/waitForJob.
+ * The loader emits coarse-grained progress (percent + message) — we translate
+ * percent ranges into named phases (manifest/downloading/extracting/finalizing).
+ *
+ * Cancellation note: loader.install does not accept an AbortSignal; cancel
+ * only takes effect at the next onProgress callback (so big uninterruptible
+ * sections — fetch body read, ZIP extraction of a single font — must finish
+ * before checkAbort fires).
+ *
+ * @throws CONFLICT_JOB_IN_PROGRESS — when an install is already running.
+ *         `details.jobId` is the existing run; the caller should poll it via
+ *         getJob/waitForJob rather than retrying.
+ */
+export async function installFontBundle(_args, _app) {
+    const loader = getFontaineLoader()
+    // Reject duplicate runs: only one install-font-bundle job can be active.
+    // The loader writes to a singleton cache, so two concurrent installs would
+    // race over manifest/extraction. Existence of an unsettled job from a prior
+    // call means we should send the caller back to poll the original jobId.
+    const existing = jobsRegistry.listJobs().find(j =>
+        j.kind === 'install-font-bundle' &&
+        j.status !== 'succeeded' &&
+        j.status !== 'failed' &&
+        j.status !== 'cancelled'
+    )
+    if (existing) {
+        throw commandError('CONFLICT_JOB_IN_PROGRESS',
+            'A font bundle install is already running.',
+            { jobId: existing.id })
+    }
+    let jobId
+    try {
+        const { id } = jobsRegistry.createJob('install-font-bundle', async (api) => {
+            api.reportProgress('starting', 0, 100)
+            let lastPercent = 0
+            await loader.install({
+                onProgress: (percent, message) => {
+                    lastPercent = Math.round(percent)
+                    let phase = 'downloading'
+                    if (lastPercent < 10) phase = 'manifest'
+                    else if (lastPercent < 70) phase = 'downloading'
+                    else if (lastPercent < 95) phase = 'extracting'
+                    else phase = 'finalizing'
+                    api.reportProgress(phase, lastPercent, 100, message || null)
+                    api.checkAbort()
+                }
+            })
+            api.reportProgress('done', 100, 100)
+            const fonts = (loader.catalog?.fonts) || []
+            return { count: fonts.length, version: loader.installedVersion || null }
+        })
+        jobId = id
+    } catch (err) {
+        if (err?.code === 'JOB_LIMIT_EXCEEDED') {
+            throw commandError('JOB_LIMIT_EXCEEDED',
+                err.message,
+                err.details || {})
+        }
+        throw err
+    }
+    return { result: { jobId } }
+}
+
+// Cap on total frames per export. 18000 = 10 min @ 30 fps. Bigger jobs almost
+// always indicate misconfigured params (e.g. a loop count blown up by a long
+// duration) and grow memory/time without bound, so reject up-front instead of
+// burning minutes on a runaway encode.
+const MAX_EXPORT_FRAMES = 18000
+
+/**
+ * Export the rendered canvas to a video file (MP4 via WebCodecs or a ZIP of
+ * PNG frames) as a background job.
+ *
+ * Returns immediately with a jobId; agents can poll via getJob/waitForJob.
+ * The runner drives the frame loop, encoder lifecycle, and resolution restore;
+ * we translate frame progress into job progress and record a recentExports
+ * entry on success (mirrors exportImage).
+ *
+ * Phase 6 caveat: the runner always triggers a browser download via files.js.
+ * A future `captureOnly` path (return blob without download) is out of scope
+ * for now — it requires worker-protocol changes and MediaBunny output redirection.
+ */
+export async function exportVideo(args, app) {
+    const w = args?.width ?? app._canvas.width
+    const h = args?.height ?? app._canvas.height
+    const settings = {
+        width: Math.max(2, Math.floor(w / 2) * 2),
+        height: Math.max(2, Math.floor(h / 2) * 2),
+        framerate: args?.framerate ?? 30,
+        duration: args?.duration ?? 15,
+        loopCount: args?.loopCount ?? 1,
+        format: args?.format || 'mp4',
+        quality: args?.quality || 'very high',
+        playFrom: args?.playFrom || 'beginning'
+    }
+
+    const totalFrames = Math.ceil(settings.framerate * settings.duration * settings.loopCount)
+    if (totalFrames > MAX_EXPORT_FRAMES) {
+        throw commandError('INVALID_ARGS_RANGE',
+            `Total frames ${totalFrames} exceeds maximum ${MAX_EXPORT_FRAMES} ` +
+            `(framerate × duration × loopCount). Reduce duration, framerate, or loopCount.`,
+            {
+                field: 'duration|framerate|loopCount',
+                totalFrames,
+                max: MAX_EXPORT_FRAMES
+            })
+    }
+
+    let jobId
+    try {
+        const { id } = jobsRegistry.createJob('export-video', async (api) => {
+            const result = await runVideoExport({
+                settings,
+                canvas: app._canvas,
+                renderer: app._renderer,
+                files: app._files,
+                getResolution: () => ({ width: app._canvas.width, height: app._canvas.height }),
+                setResolution: (w, h) => app._resizeCanvas(w, h),
+                abortSignal: api.abortSignal,
+                onProgress: (current, total, phase) => api.reportProgress(phase, current, total)
+            })
+
+            const filename = timestampedFilename(args?.filename, settings.format)
+            recordExport({
+                id: makeExportId(),
+                path: null,                  // sidecar fills this in Phase 7
+                filename,
+                mimeType: settings.format === 'mp4' ? 'video/mp4' : 'application/zip',
+                sizeBytes: null,             // unknown — encoder writes directly to download
+                createdAt: new Date().toISOString(),
+                kind: 'video',
+                format: settings.format
+            })
+
+            return { ...result, filename }
+        })
+        jobId = id
+    } catch (err) {
+        if (err?.code === 'JOB_LIMIT_EXCEEDED') {
+            throw commandError('JOB_LIMIT_EXCEEDED',
+                err.message,
+                err.details || {})
+        }
+        throw err
+    }
+    return { result: { jobId } }
 }

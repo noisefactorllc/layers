@@ -9,6 +9,7 @@
 
 import { API_VERSION } from './index.js'
 import { getRecentExports } from './commands.js'
+import { listJobs } from './jobs.js'
 
 const SCHEMA_VERSION = '1.0'
 
@@ -24,7 +25,11 @@ export function buildSnapshot(app) {
         layers: buildLayers(app),
         selectedLayerIds: app?._layerStack?.selectedLayerIds?.slice() || [],
         activeLayerId: app?._layerStack?.selectedLayerId || null,
-        jobs: [],                  // populated when Phase 6 jobs ship
+        jobs: listJobs()
+            .sort((a, b) => b.updatedAt - a.updatedAt)
+            .slice(0, 20),                 // sorted by recency so a long-running
+                                           // job can't drop out of view after
+                                           // many shorter jobs settle.
         recentExports: getRecentExports(),
         settings: buildSettings(app)
     }

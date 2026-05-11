@@ -6,6 +6,8 @@
  * @module ui/export-video-dialog
  */
 
+import { runVideoExport } from './video-exporter.js'
+
 export class ExportVideoDialog {
     constructor(options) {
         this.files = options.files
@@ -112,145 +114,39 @@ export class ExportVideoDialog {
         const settings = this._gatherSettings()
         this.totalFrames = Math.ceil(settings.framerate * settings.duration * settings.loopCount)
         this.currentFrame = 0
+        this.startTime = performance.now()
 
         this._savePreferences(settings)
-
         this._elements.dialogView.style.display = 'none'
         this._elements.progressView.style.display = 'block'
         this._updateProgress()
 
-        this.originalResolution = this.getResolution()
-
         try {
-            if (settings.width !== this.originalResolution.width || settings.height !== this.originalResolution.height) {
-                this.setResolution(settings.width, settings.height)
-                await this._waitFrame()
-            }
-
-            if (settings.playFrom === 'beginning') {
-                await this._seekAllVideos(0)
-            }
-
-            const exportSettings = {
-                width: settings.width,
-                height: settings.height,
-                framerate: settings.framerate,
-                videoQuality: settings.quality,
-                totalFrames: this.totalFrames
-            }
-
-            if (settings.format === 'mp4') {
-                await this.files.startRecordingMP4(this.canvas, exportSettings)
-            } else {
-                this.files.saveZip(exportSettings)
-            }
-
             this.state = 'exporting'
-            this.startTime = performance.now()
-
-            await this._runExportLoop(settings)
-
-        } catch (err) {
-            console.error('Export failed:', err)
-            this._handleExportError(err)
-            return
-        } finally {
-            if (this.originalResolution) {
-                const current = this.getResolution()
-                if (current.width !== this.originalResolution.width ||
-                    current.height !== this.originalResolution.height) {
-                    this.setResolution(this.originalResolution.width, this.originalResolution.height)
+            await runVideoExport({
+                settings,
+                canvas: this.canvas,
+                renderer: this.renderer,
+                files: this.files,
+                getResolution: this.getResolution,
+                setResolution: this.setResolution,
+                abortSignal: this.abortController.signal,
+                onProgress: (current, total, _phase) => {
+                    this.currentFrame = current
+                    this.totalFrames = total
+                    this._updateProgress()
                 }
-            }
-        }
-    }
-
-    async _runExportLoop(settings) {
-        const frameDurationMs = 1000 / settings.framerate
-        const exportDurationSec = settings.duration
-        const timeOffset = settings.playFrom === 'beginning' ? 0 : this.pausedNormalizedTime
-
-        for (let n = 0; n < this.totalFrames; n++) {
-            if (this.abortController.signal.aborted) break
-
-            this.currentFrame = n
-            const targetTimeMs = n * frameDurationMs
-            const targetTimeSec = targetTimeMs / 1000
-
-            const timeInLoop = targetTimeSec % exportDurationSec
-            const baseNormalizedTime = timeInLoop / exportDurationSec
-            const normalizedTime = (baseNormalizedTime + timeOffset) % 1
-
-            await this._seekAllVideos(targetTimeSec)
-            this.renderer._updateVideoTextures()
-
-            this.renderer.render(normalizedTime)
-            await this._waitFrame()
-
-            if (settings.format === 'mp4') {
-                this.files.encodeVideoFrame(this.canvas, {
-                    framerate: settings.framerate,
-                    videoQuality: settings.quality
-                })
-            } else {
-                const gl = this.canvas.getContext('webgl2')
-                if (gl) {
-                    const pixels = new Uint8Array(this.canvas.width * this.canvas.height * 4)
-                    gl.readPixels(0, 0, this.canvas.width, this.canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
-                    this.files.addZipFrame(pixels, {
-                        width: this.canvas.width,
-                        height: this.canvas.height,
-                        totalFrames: this.totalFrames
-                    })
-                }
-            }
-
-            if (n % 5 === 0) {
-                this._updateProgress()
-                await new Promise(resolve => setTimeout(resolve, 0))
-            }
-        }
-
-        if (!this.abortController.signal.aborted) {
-            await this._finalizeExport(settings)
-        }
-    }
-
-    async _seekAllVideos(timeSec) {
-        const mediaTextures = this.renderer._mediaTextures
-        const promises = []
-
-        for (const [, media] of mediaTextures) {
-            if (media.type !== 'video') continue
-            const video = media.element
-            if (video.duration && isFinite(video.duration)) {
-                const seekTime = timeSec % video.duration
-                if (Math.abs(video.currentTime - seekTime) > 0.01) {
-                    promises.push(new Promise(resolve => {
-                        const onSeeked = () => {
-                            video.removeEventListener('seeked', onSeeked)
-                            resolve()
-                        }
-                        video.addEventListener('seeked', onSeeked)
-                        video.currentTime = seekTime
-                    }))
-                }
-            }
-        }
-
-        await Promise.all(promises)
-    }
-
-    async _finalizeExport(settings) {
-        try {
-            if (settings.format === 'mp4') {
-                await this.files.endRecordingMP4()
-            }
+            })
             this.close()
             this.onComplete(settings.format)
         } catch (err) {
-            console.error('Export finalization failed:', err)
-            this._handleExportError(err)
+            if (err?.code === 'JOB_CANCELLED') {
+                this.close()
+                this.onCancel()
+            } else {
+                console.error('Export failed:', err)
+                this._handleExportError(err)
+            }
         }
     }
 
@@ -259,20 +155,9 @@ export class ExportVideoDialog {
             this.close()
             return
         }
-
         if (this.state !== 'preparing' && this.state !== 'exporting') return
-
         this.abortController?.abort()
-
-        const settings = this._gatherSettings()
-        if (settings.format === 'mp4') {
-            await this.files.cancelMP4()
-        } else {
-            this.files.cancelZIP()
-        }
-
-        this.close()
-        this.onCancel()
+        // The runner's catch block + beginExport's catch above handle cleanup + close.
     }
 
     _ensureEven(value) {
@@ -336,10 +221,6 @@ export class ExportVideoDialog {
         const minutes = Math.floor(totalSeconds / 60)
         const seconds = totalSeconds % 60
         return `${minutes}:${seconds.toString().padStart(2, '0')}`
-    }
-
-    _waitFrame() {
-        return new Promise(resolve => requestAnimationFrame(resolve))
     }
 
     _handleExportError(err) {
