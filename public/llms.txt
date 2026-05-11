@@ -213,9 +213,10 @@ import { JOB_KINDS } from '/js/agent/jobs.js'
 // JOB_KINDS.EXPORT_VIDEO === 'export-video'
 ```
 
-Cancellation is best-effort: `installFontBundle` only checks on each
-`onProgress` tick (the loader doesn't accept AbortSignal); `exportVideo`
-checks at every frame boundary and before encoder finalization.
+Cancellation: `installFontBundle` propagates AbortSignal into the loader's
+fetch + extraction calls, so cancel takes effect at the next chunk/font
+boundary (typically <1s). `exportVideo` checks at every frame boundary
+and before encoder finalization.
 
 **Via the MCP sidecar**, `installFontBundle` and `exportVideo` are wrapped so
 the `tools/call` blocks until the job settles. The final envelope is the

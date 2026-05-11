@@ -2169,6 +2169,11 @@ export async function setSettings(args = {}, _app) {
  * Resample the entire image to a new width and height. Layers are
  * stretched/squashed proportionally; selection is cleared.
  *
+ * NOTE: if width/height match the current canvas size, this is a no-op —
+ * `app._resizeImage` early-returns without pushing undo state or rebuilding.
+ * The envelope still succeeds (callers shouldn't rely on a "did anything
+ * change?" signal beyond inspecting `state.canvas` themselves).
+ *
  * @param {{width: number, height: number}} args
  * @returns {Promise<{result: {width: number, height: number}}>}
  */
@@ -2181,6 +2186,10 @@ export async function resizeImage({ width, height }, app) {
  * Change the canvas size without resampling layers — they keep their
  * pixel dimensions and shift relative to the new canvas. `anchor` (default
  * 'center') controls how layers are positioned within the new canvas.
+ *
+ * NOTE: if width/height match the current canvas size, this is a no-op —
+ * `app._changeCanvasSize` early-returns without pushing undo state or
+ * rebuilding. The envelope still succeeds.
  *
  * @param {{width: number, height: number, anchor?: string}} args
  * @returns {Promise<{result: {width: number, height: number, anchor: string}}>}

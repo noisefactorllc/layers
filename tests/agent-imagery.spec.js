@@ -44,6 +44,20 @@ test.describe('getCanvasImageBytes', () => {
         expect(env.ok).toBe(false)
         expect(env.error.code).toBe('INVALID_ARGS_ENUM')
     })
+
+    test('encodes WebP with valid RIFF/WEBP magic bytes', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.getCanvasImageBytes({ format: 'webp', quality: 0.9 }))
+        expect(env.ok).toBe(true)
+        expect(env.result.format).toBe('webp')
+        expect(env.result.mimeType).toBe('image/webp')
+        expect(env.result.bytes.length).toBeGreaterThan(100)
+        // Verify magic number: WebP starts with "RIFF" then 4 size bytes then "WEBP"
+        const decoded = atob(env.result.bytes)
+        expect(decoded.slice(0, 4)).toBe('RIFF')
+        expect(decoded.slice(8, 12)).toBe('WEBP')
+    })
 })
 
 test.describe('getThumbnail', () => {

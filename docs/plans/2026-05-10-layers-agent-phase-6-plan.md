@@ -1313,3 +1313,20 @@ Note any deferred minor issues (e.g., the `triggerDownload: false` plumbing if y
 If Phase 6 needed any final tweaks (docstrings, cleanup-task updates), commit them as `chore: phase 6 cleanup notes`. Otherwise, no commit.
 
 ---
+
+## Conventions (post-Phase-6)
+
+Notes for any future plan touching the agent surface — recorded here because
+the Phase 6 plan above referenced methods that turned out not to exist
+(`app._setResolution`, `app._handleResize`) and a later cleanup had to
+correct it. Don't repeat the mistake.
+
+- Canvas resize: `app._resizeCanvas(w, h)`. NOT `_setResolution` (doesn't
+  exist) or `_handleResize` (doesn't exist).
+- Image resize (resampling layers): `app._resizeImage(w, h)`.
+- Canvas size change preserving layer pixels: `app._changeCanvasSize(w, h, anchor)`.
+- Agent commands always return envelopes shaped
+  `{ ok, command, result, state, warnings? }` or
+  `{ ok: false, error, state }`.
+- Long-running operations return `{ jobId }` and run via `agent/jobs.js`
+  (queueMicrotask, off the dispatcher queue).
