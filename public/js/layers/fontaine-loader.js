@@ -200,35 +200,47 @@ class FontaineLoader {
     /**
      * Download and install the fontaine bundle
      * @param {Object} options
-     * @param {Function} options.onProgress - Progress callback (percent, message)
+     * @param {Function} [options.onProgress] - Progress callback (percent, message)
+     * @param {AbortSignal} [options.signal] - Optional abort signal. When aborted,
+     *   the in-flight fetch is interrupted and the chunk loop / extraction step
+     *   throws between iterations — no need to wait for the next onProgress tick.
      * @returns {Promise<boolean>} True if successful
      */
     async install(options = {}) {
-        const { onProgress = () => {} } = options
+        const { onProgress = () => {}, signal } = options
 
+        // Helper: throw if aborted. Surfaces signal.reason when available so
+        // the caller's error has the AbortController's original cause.
+        const checkAbort = () => {
+            if (signal?.aborted) throw signal.reason || new Error('aborted')
+        }
+
+        checkAbort()
         onProgress(0, 'Loading manifest...')
 
         // Fetch manifest
-        const manifestRes = await fetch(`${FONTAINE_BUNDLE_URL}/manifest.json`)
+        const manifestRes = await fetch(`${FONTAINE_BUNDLE_URL}/manifest.json`, { signal })
         if (!manifestRes.ok) {
             throw new Error(`Failed to load manifest: ${manifestRes.status}`)
         }
         const manifest = await manifestRes.json()
         const bundleVersion = manifest.version
 
+        checkAbort()
         onProgress(5, 'Loading catalog...')
 
         // Fetch catalog
-        const catalogRes = await fetch(`${FONTAINE_BUNDLE_URL}/fonts.json`)
+        const catalogRes = await fetch(`${FONTAINE_BUNDLE_URL}/fonts.json`, { signal })
         if (!catalogRes.ok) {
             throw new Error(`Failed to load catalog: ${catalogRes.status}`)
         }
         this.catalog = await catalogRes.json()
 
+        checkAbort()
         onProgress(10, 'Downloading fonts...')
 
         // Fetch bundle ZIP
-        const bundleRes = await fetch(`${FONTAINE_BUNDLE_URL}/fonts.zip`)
+        const bundleRes = await fetch(`${FONTAINE_BUNDLE_URL}/fonts.zip`, { signal })
         if (!bundleRes.ok) {
             throw new Error(`Failed to load bundle: ${bundleRes.status}`)
         }
@@ -239,6 +251,12 @@ class FontaineLoader {
         let downloadedSize = 0
 
         while (true) {
+            // Check between reads — a chunk in flight finishes, but the next
+            // read won't start once the signal is aborted. With AbortSignal
+            // passed to fetch above, reader.read() itself will reject when
+            // aborted, but this check covers the gap if the signal flips
+            // between reads.
+            checkAbort()
             const { done, value } = await reader.read()
             if (done) break
 
@@ -251,14 +269,16 @@ class FontaineLoader {
             onProgress(percent, `Downloading: ${mb} / ${totalMb} MB`)
         }
 
+        checkAbort()
         onProgress(70, 'Extracting fonts...')
 
         // Combine chunks into blob
         const zipBlob = new Blob(chunks)
 
         // Extract using JSZip (loaded dynamically if needed)
-        await this._extractBundle(zipBlob, onProgress)
+        await this._extractBundle(zipBlob, onProgress, signal)
 
+        checkAbort()
         onProgress(95, 'Updating database...')
 
         // Save catalog and version
@@ -272,7 +292,7 @@ class FontaineLoader {
         return true
     }
 
-    async _extractBundle(zipBlob, onProgress) {
+    async _extractBundle(zipBlob, onProgress, signal) {
         // Dynamically load JSZip if not present
         if (typeof JSZip === 'undefined') {
             await this._loadJSZip()
@@ -285,6 +305,10 @@ class FontaineLoader {
 
         let extracted = 0
         for (const filename of fontFiles) {
+            // Per-file abort check. JSZip's async('blob') for a single font
+            // is uninterruptible, but between files we honor the signal so a
+            // mid-extract cancel unwinds within ~one font's worth of work.
+            if (signal?.aborted) throw signal.reason || new Error('aborted')
             const blob = await zip.files[filename].async('blob')
             await this.saveFile(filename, blob)
 

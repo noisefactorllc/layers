@@ -77,4 +77,23 @@ test.describe('exportImage', () => {
         expect(env.ok).toBe(false)
         expect(env.error.code).toBe('INVALID_ARGS_ENUM')
     })
+
+    test('captureOnly suppresses download but still returns bytes', async ({ page }) => {
+        await bootApp(page)
+        // If a download did fire, this listener would catch it and our
+        // assertion below would see downloadFired === true. We need a
+        // longer-running test path to be confident no event fires; here we
+        // give 500ms after the command completes for any pending download
+        // to surface.
+        let downloadFired = false
+        page.on('download', () => { downloadFired = true })
+        const env = await page.evaluate(() =>
+            window.LayersAgent.exportImage({ format: 'png', captureOnly: true }))
+        expect(env.ok).toBe(true)
+        expect(env.result.bytes.startsWith('iVBOR')).toBe(true)
+        expect(env.result.sizeBytes).toBeGreaterThan(0)
+        // Give any rogue download event time to land before asserting.
+        await page.waitForTimeout(500)
+        expect(downloadFired).toBe(false)
+    })
 })

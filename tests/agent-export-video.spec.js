@@ -70,6 +70,28 @@ test.describe('agent: exportVideo', () => {
         expect(r.error.code).toBe('INVALID_ARGS_ENUM')
     })
 
+    test('captureOnly surfaces blobUrl without firing a download (zip)', async ({ page }) => {
+        let downloadFired = false
+        page.on('download', () => { downloadFired = true })
+        const r = await page.evaluate(() => window.LayersAgent.exportVideo({
+            width: 64, height: 64, framerate: 30, duration: 0.1,
+            loopCount: 1, format: 'zip', quality: 'low', captureOnly: true
+        }))
+        expect(r.ok).toBe(true)
+
+        const final = await page.evaluate((id) =>
+            window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 30000 }),
+            r.result.jobId)
+        expect(final.result.status).toBe('succeeded')
+        expect(final.result.result.format).toBe('zip')
+        // captureOnly populated a blob URL the agent can fetch().
+        expect(typeof final.result.result.blobUrl).toBe('string')
+        expect(final.result.result.blobUrl.startsWith('blob:')).toBe(true)
+        // Give a stray download event time to surface before asserting.
+        await page.waitForTimeout(500)
+        expect(downloadFired).toBe(false)
+    })
+
     test('two video exports back-to-back do not share encoder state', async ({ page }) => {
         // Run two short ZIP exports in sequence; verify both succeed and produce
         // distinct recentExports entries. This caught a regression where _files

@@ -1139,7 +1139,14 @@ function triggerBrowserDownload(blob, filename) {
  * Records a recentExports entry the snapshot exposes so agents can list past
  * exports.
  *
- * @param {object} args - {format?, quality?, width?, height?, triggerDownload?, filename?}
+ * `captureOnly: true` is a stronger form of `triggerDownload: false`: it
+ * disables the browser download (same effect) and exists so MCP-side callers
+ * can read the bytes without intercepting Playwright download events. The
+ * returned result already includes `bytes` (base64), so captureOnly is mostly
+ * symmetry with exportVideo — same flag name on both commands.
+ *
+ * @param {object} args - {format?, quality?, width?, height?, triggerDownload?,
+ *                         captureOnly?, filename?}
  * @returns {Promise<{result: object}>}
  */
 export async function exportImage(args, app) {
@@ -1147,7 +1154,9 @@ export async function exportImage(args, app) {
     const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
     const width = args?.width
     const height = args?.height
-    const triggerDownload = args?.triggerDownload !== false   // defaults true
+    const captureOnly = !!args?.captureOnly
+    // captureOnly forces no-download; otherwise triggerDownload defaults true.
+    const triggerDownload = !captureOnly && (args?.triggerDownload !== false)
     const filename = timestampedFilename(args?.filename, format)
 
     const out = await canvasToBytes(app._canvas, format, quality, width, height)
@@ -2213,10 +2222,11 @@ export async function listInstalledFonts(_args, _app) {
  * The loader emits coarse-grained progress (percent + message) — we translate
  * percent ranges into named phases (manifest/downloading/extracting/finalizing).
  *
- * Cancellation note: loader.install does not accept an AbortSignal; cancel
- * only takes effect at the next onProgress callback (so big uninterruptible
- * sections — fetch body read, ZIP extraction of a single font — must finish
- * before checkAbort fires).
+ * Cancellation: the job's AbortSignal is passed to loader.install, which
+ * threads it into every fetch call and re-checks between download chunks
+ * and between per-font ZIP extractions. A cancel mid-flight unwinds within
+ * one chunk (or one font during extraction), no longer needing the next
+ * onProgress callback to take effect.
  *
  * @throws CONFLICT_JOB_IN_PROGRESS — when an install is already running.
  *         `details.jobId` is the existing run; the caller should poll it via
@@ -2245,6 +2255,7 @@ export async function installFontBundle(_args, _app) {
             api.reportProgress('starting', 0, 100)
             let lastPercent = 0
             await loader.install({
+                signal: api.abortSignal,
                 onProgress: (percent, message) => {
                     lastPercent = Math.round(percent)
                     let phase = 'downloading'
@@ -2281,13 +2292,21 @@ export async function installFontBundle(_args, _app) {
  * we translate frame progress into job progress and record a recentExports
  * entry on success (mirrors exportImage).
  *
- * Phase 6 caveat: the runner always triggers a browser download via files.js.
- * A future `captureOnly` path (return blob without download) is out of scope
- * for now — it requires worker-protocol changes and MediaBunny output redirection.
+ * `captureOnly: true` suppresses the browser download and surfaces the bytes
+ * via the job result instead — `result.result.blobUrl` is an object URL that
+ * stays valid until the page unloads (so the agent / MCP sidecar must fetch
+ * it promptly). For MP4 we also expose `result.result.blob` for direct
+ * in-page consumption. For ZIP only blobUrl is available because the worker
+ * generates the Blob inside its own scope.
  */
 export async function exportVideo(args, app) {
     const w = args?.width ?? app._canvas.width
     const h = args?.height ?? app._canvas.height
+    const captureOnly = !!args?.captureOnly
+    // Pre-compute the export filename so we can pass it into files.js when
+    // captureOnly is set — keeps the MCP sidecar's filename in sync with the
+    // recentExports entry below.
+    const filename = timestampedFilename(args?.filename, args?.format || 'mp4')
     const settings = {
         width: Math.max(2, Math.floor(w / 2) * 2),
         height: Math.max(2, Math.floor(h / 2) * 2),
@@ -2296,7 +2315,9 @@ export async function exportVideo(args, app) {
         loopCount: args?.loopCount ?? 1,
         format: args?.format || 'mp4',
         quality: args?.quality || 'very high',
-        playFrom: args?.playFrom || 'beginning'
+        playFrom: args?.playFrom || 'beginning',
+        captureOnly,
+        captureFilename: captureOnly ? filename : null
     }
 
     const totalFrames = Math.ceil(settings.framerate * settings.duration * settings.loopCount)
@@ -2325,7 +2346,6 @@ export async function exportVideo(args, app) {
                 onProgress: (current, total, phase) => api.reportProgress(phase, current, total)
             })
 
-            const filename = timestampedFilename(args?.filename, settings.format)
             // Recorded only on success — cancelled jobs leave partial bytes
             // in the user's browser-download dir but no recentExports entry.
             // (runVideoExport throws on abort, so we never reach this point.)
@@ -2340,7 +2360,13 @@ export async function exportVideo(args, app) {
                 format: settings.format
             })
 
-            return { ...result, filename }
+            // Drop the live Blob handle before serializing — it's not
+            // structured-clonable through the dispatcher envelope. blobUrl
+            // is a string and travels cleanly. (Blob is kept off the
+            // returned object explicitly even though structured-clone can
+            // handle it in some contexts — keeping the envelope JSON-clean.)
+            const { blob: _blob, ...serializable } = result
+            return { ...serializable, filename }
         })
         jobId = id
     } catch (err) {

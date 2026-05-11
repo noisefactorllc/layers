@@ -35,6 +35,25 @@ if (typeof window !== 'undefined') {
 }
 
 /**
+ * Test-environment detector — gates the diagnostic underscore commands
+ * (_ping/_echoNumber/_echoEnum/_echoNested/_sleep) so they don't surface
+ * to agents on production deployments.
+ *
+ * True when hostname is localhost / 127.0.0.1 / empty, or the page was
+ * loaded via file:// (used by Playwright + local dev). False for the
+ * deployed layers.noisefactor.io build, where these commands would just
+ * be dead surface area an agent could discover.
+ */
+function inTestEnv() {
+    if (typeof window === 'undefined') return false
+    const h = window.location?.hostname
+    return h === 'localhost'
+        || h === '127.0.0.1'
+        || h === ''
+        || window.location?.protocol === 'file:'
+}
+
+/**
  * Wire commands and resolve the ready promise.
  * Call once from app.js after LayersApp.init() finishes.
  *
@@ -42,14 +61,19 @@ if (typeof window !== 'undefined') {
  */
 export function bootstrapAgent(app) {
     LayersAgent._app = app
-    registerCommand(LayersAgent, '_ping', async () => ({ result: { pong: true } }))
-    registerCommand(LayersAgent, '_echoNumber', async ({ value }) => ({ result: { value } }))
-    registerCommand(LayersAgent, '_echoEnum', async ({ choice }) => ({ result: { choice } }))
-    registerCommand(LayersAgent, '_echoNested', async ({ outer }) => ({ result: { outer } }))
-    registerCommand(LayersAgent, '_sleep', async ({ delayMs }) => {
-        await new Promise(resolve => setTimeout(resolve, delayMs))
-        return { result: { delayMs } }
-    })
+    // Diagnostic commands used only by the agent test suite; not for production
+    // agents. Registered only when running on localhost / 127.0.0.1 / file://
+    // so the deployed build doesn't advertise them.
+    if (inTestEnv()) {
+        registerCommand(LayersAgent, '_ping', async () => ({ result: { pong: true } }))
+        registerCommand(LayersAgent, '_echoNumber', async ({ value }) => ({ result: { value } }))
+        registerCommand(LayersAgent, '_echoEnum', async ({ choice }) => ({ result: { choice } }))
+        registerCommand(LayersAgent, '_echoNested', async ({ outer }) => ({ result: { outer } }))
+        registerCommand(LayersAgent, '_sleep', async ({ delayMs }) => {
+            await new Promise(resolve => setTimeout(resolve, delayMs))
+            return { result: { delayMs } }
+        })
+    }
     registerCommand(LayersAgent, 'getState', commands.getState)
     registerCommand(LayersAgent, 'getLayer', commands.getLayer)
     registerCommand(LayersAgent, 'getCanvasSize', commands.getCanvasSize)

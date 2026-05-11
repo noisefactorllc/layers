@@ -28,18 +28,40 @@ export class Files {
         this._zipDonePromise = null
         this._zipDoneResolve = null
         this._zipDoneReject = null
+        // captureOnly mode: when set by saveZip(), the worker's `done` event
+        // resolves the promise with { blobUrl, filename } instead of firing
+        // a browser download. Lets agent callers (and the MCP sidecar) read
+        // the bytes without intercepting Playwright download events.
+        this._zipCaptureOnly = false
+        this._zipCaptureFilename = null
         this.zipWorker.onmessage = (msg) => {
             if (msg.data.ready) {
                 this.ready = true
             } else if (msg.data.doneRecording) {
                 this.createZip()
             } else if (msg.data.done) {
-                this.downloadFile(msg.data.url, 'zip')
-                if (this._zipDoneResolve) {
-                    this._zipDoneResolve()
-                    this._zipDoneResolve = null
-                    this._zipDoneReject = null
-                    this._zipDonePromise = null
+                if (this._zipCaptureOnly) {
+                    // Hand the object URL + filename to the awaiter without
+                    // triggering a download. The URL stays valid until the
+                    // page unloads or the caller explicitly revokeObjectURLs.
+                    const payload = {
+                        blobUrl: msg.data.url,
+                        filename: this._zipCaptureFilename || `layers-${Date.now()}.zip`
+                    }
+                    if (this._zipDoneResolve) {
+                        this._zipDoneResolve(payload)
+                        this._zipDoneResolve = null
+                        this._zipDoneReject = null
+                        this._zipDonePromise = null
+                    }
+                } else {
+                    this.downloadFile(msg.data.url, 'zip')
+                    if (this._zipDoneResolve) {
+                        this._zipDoneResolve()
+                        this._zipDoneResolve = null
+                        this._zipDoneReject = null
+                        this._zipDonePromise = null
+                    }
                 }
             }
         }
@@ -56,6 +78,10 @@ export class Files {
         this.lastKeyFrame = null
         this.framesGenerated = 0
         this.ready = false
+        // captureOnly mode: when set by startRecordingMP4(), endRecordingMP4()
+        // returns { blob, blobUrl, filename } instead of triggering download.
+        this._mp4CaptureOnly = false
+        this._mp4CaptureFilename = null
     }
 
     saveImage(canvas, type, quality = 1) {
@@ -81,6 +107,12 @@ export class Files {
         if (typeof VideoEncoder === 'undefined') {
             throw new Error('Browser does not support VideoEncoder / WebCodecs API')
         }
+
+        // Stash captureOnly intent now so endRecordingMP4() can branch later.
+        // Filename is the caller's preferred name; if absent we generate one
+        // at finalize time.
+        this._mp4CaptureOnly = !!settings?.captureOnly
+        this._mp4CaptureFilename = settings?.captureFilename || null
 
         this.mp4Target = new BufferTarget()
         this.output = new Output({
@@ -161,15 +193,33 @@ export class Files {
             await this.output.finalize()
         }
 
+        // Snapshot captureOnly state before _resetMP4State() clears it.
+        const captureOnly = this._mp4CaptureOnly
+        const captureFilename = this._mp4CaptureFilename
+
         const buffer = this.mp4Target?.buffer
+        let captureResult = null
         if (buffer) {
-            const url = window.URL.createObjectURL(new Blob([buffer]))
-            this.downloadFile(url, 'mp4')
+            const blob = new Blob([buffer], { type: 'video/mp4' })
+            const url = window.URL.createObjectURL(blob)
+            if (captureOnly) {
+                // Hand bytes back to the caller; no <a download> click.
+                // The object URL stays valid until the page unloads or the
+                // caller revokeObjectURLs it.
+                captureResult = {
+                    blob,
+                    blobUrl: url,
+                    filename: captureFilename || `layers-${Date.now()}.mp4`
+                }
+            } else {
+                this.downloadFile(url, 'mp4')
+            }
         } else {
             console.error('Unable to retrieve MP4 buffer from Mediabunny target')
         }
 
         this._resetMP4State()
+        return captureResult
     }
 
     async cancelMP4() {
@@ -184,10 +234,17 @@ export class Files {
     }
 
     saveZip(settings) {
+        // Stash captureOnly intent so the zipWorker's `done` handler can
+        // branch: capture mode resolves with { blobUrl, filename }, normal
+        // mode triggers the browser download. Reset to defaults at start
+        // so a non-captureOnly run after a captureOnly one isn't stuck.
+        this._zipCaptureOnly = !!settings?.captureOnly
+        this._zipCaptureFilename = settings?.captureFilename || null
         // Install a fresh awaitable for the in-flight recording. The export
         // pipeline calls endRecordingZip() after the last frame and awaits
         // this promise so the job doesn't settle 'succeeded' until the
-        // worker has assembled the zip blob and triggered the download.
+        // worker has assembled the zip blob (and either downloaded it or
+        // surfaced the bytes, depending on captureOnly).
         this._zipDonePromise = new Promise((resolve, reject) => {
             this._zipDoneResolve = resolve
             this._zipDoneReject = reject
@@ -208,14 +265,17 @@ export class Files {
 
     /**
      * Await the zipWorker's `done` event for the in-flight recording.
-     * Resolves once the worker has assembled the zip and the download has
-     * been triggered; rejects with a JOB_CANCELLED-shaped error if
-     * cancelZIP() runs while the recording is still in flight.
-     * @returns {Promise<void>}
+     * Resolves once the worker has assembled the zip and either the download
+     * has been triggered (default) or the bytes have been surfaced
+     * (captureOnly). Rejects with a JOB_CANCELLED-shaped error if cancelZIP()
+     * runs while the recording is still in flight.
+     * @returns {Promise<{blobUrl: string, filename: string}|undefined>}
+     *   When the in-flight saveZip() set captureOnly, resolves with the blob
+     *   URL + filename; otherwise resolves with undefined.
      */
     async endRecordingZip() {
-        if (!this._zipDonePromise) return
-        await this._zipDonePromise
+        if (!this._zipDonePromise) return undefined
+        return await this._zipDonePromise
     }
 
     cancelZIP() {

@@ -450,7 +450,8 @@ export const SCHEMAS = {
             width: { type: 'integer', min: 1, max: 8192 },
             height: { type: 'integer', min: 1, max: 8192 },
             filename: { type: 'string' },
-            triggerDownload: { type: 'boolean' }
+            triggerDownload: { type: 'boolean' },
+            captureOnly: { type: 'boolean' }
         }
     },
     pasteImageFromBytes: {
@@ -735,7 +736,8 @@ export const SCHEMAS = {
             format: { type: 'string', enum: ['mp4', 'zip'] },
             quality: { type: 'string', enum: ['low', 'medium', 'high', 'very high', 'ultra'] },
             playFrom: { type: 'string', enum: ['beginning', 'current'] },
-            filename: { type: 'string' }
+            filename: { type: 'string' },
+            captureOnly: { type: 'boolean' }
         }
     },
 }

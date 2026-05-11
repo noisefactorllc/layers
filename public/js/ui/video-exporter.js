@@ -45,7 +45,11 @@ export async function runVideoExport(opts) {
             height: settings.height,
             framerate: settings.framerate,
             videoQuality: settings.quality,
-            totalFrames
+            totalFrames,
+            // captureOnly suppresses the browser download in files.js — the
+            // returned bytes / blob URL ride out via runVideoExport's result.
+            captureOnly: !!settings.captureOnly,
+            captureFilename: settings.captureFilename || null
         }
 
         if (settings.format === 'mp4') {
@@ -118,18 +122,23 @@ export async function runVideoExport(opts) {
         }
 
         onProgress(totalFrames, totalFrames, 'finalizing')
+        // captureOnly: endRecording* returns the blob URL + filename instead
+        // of triggering a download. Forwarded out via the result object so
+        // the agent (or MCP sidecar) can fetch the bytes from the URL.
+        let capture = null
         if (settings.format === 'mp4') {
-            await files.endRecordingMP4()
+            capture = await files.endRecordingMP4()
         } else {
             // Wait for the zipWorker's `done` event so the job doesn't settle
-            // 'succeeded' before the file is assembled and the download
-            // triggered. Without this, an agent reading recentExports right
-            // after the job settled would race the worker.
-            await files.endRecordingZip()
+            // 'succeeded' before the file is assembled and either the
+            // download is triggered or the bytes are surfaced. Without this,
+            // an agent reading recentExports right after the job settled
+            // would race the worker.
+            capture = await files.endRecordingZip()
         }
         started = false
 
-        return {
+        const result = {
             format: settings.format,
             width: settings.width,
             height: settings.height,
@@ -137,6 +146,16 @@ export async function runVideoExport(opts) {
             durationSec: settings.duration * settings.loopCount,
             totalFrames
         }
+        if (settings.captureOnly && capture) {
+            // blobUrl is an object URL the caller can fetch(); blob is the
+            // raw Blob (mp4 only — ZIP path has no blob handle on this side,
+            // only the URL, because the worker generated and revoked its
+            // own Blob inside the worker scope).
+            result.blobUrl = capture.blobUrl
+            result.captureFilename = capture.filename
+            if (capture.blob) result.blob = capture.blob
+        }
+        return result
     } catch (err) {
         // Best-effort cleanup if encoder was started but loop didn't reach end
         if (started) {
