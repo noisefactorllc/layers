@@ -84,4 +84,42 @@ test.describe('LayersAgent effect catalog', () => {
         expect(env.ok).toBe(false)
         expect(env.error.code).toBe('NOT_FOUND_EFFECT')
     })
+
+    test('searchEffects surfaces synth-namespace effects (manifest-backed, not getAllEffects)', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() => window.LayersAgent.searchEffects({ namespace: 'synth' }))
+        expect(env.ok).toBe(true)
+        // synth/bitwise is in the manifest under the synth namespace.
+        // getAllEffects hides the synth namespace; this confirms the
+        // manifest-driven path picks it up.
+        const ids = env.result.effects.map(e => e.effectId)
+        expect(ids).toContain('synth/bitwise')
+        const sample = env.result.effects.find(e => e.effectId === 'synth/bitwise')
+        // Most synth effects also carry `starter:true`, so the kind ends up
+        // 'starter' (the starter flag takes priority over the namespace).
+        // Either way, the namespace is preserved and kind is set.
+        expect(sample.namespace).toBe('synth')
+        expect(['synth', 'starter']).toContain(sample.kind)
+    })
+
+    test('searchEffects surfaces starter effects with kind:starter', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() => window.LayersAgent.searchEffects({}))
+        expect(env.ok).toBe(true)
+        const starters = env.result.effects.filter(e => e.kind === 'starter')
+        expect(starters.length).toBeGreaterThan(0)
+        // Every entry should carry a kind marker.
+        for (const e of env.result.effects) {
+            expect(['effect', 'synth', 'starter']).toContain(e.kind)
+        }
+    })
+
+    test('listEffectCategories includes synth namespace', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() => window.LayersAgent.listEffectCategories())
+        expect(env.ok).toBe(true)
+        // The manifest carries synth entries even though the human Image menu
+        // hides them — listCategories should reflect that.
+        expect(env.result.namespaces).toContain('synth')
+    })
 })

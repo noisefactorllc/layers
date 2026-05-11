@@ -9,6 +9,7 @@
 
 import { buildSnapshot } from './snapshot.js'
 import { commandError } from './dispatcher.js'
+import { RECENT_EXPORTS_CAP, safeClone } from './constants.js'
 import {
     listProjects as listProjectsStorage,
     saveProject as saveProjectStorage,
@@ -18,18 +19,10 @@ import {
 } from '../utils/project-storage.js'
 import * as effectsModule from './effects.js'
 import { createDrawingLayer } from '../layers/layer-model.js'
-// TODO: When a 3rd or 4th name collision shows up (likely Phase 5+), refactor to
-// `import * as selectionMods from '../selection/selection-modify.js'` and call
-// `selectionMods.featherMask(...)` at the call sites — eliminates the alias dance
-// and makes provenance explicit.
-import {
-    invertMask, colorRange,
-    expandMask as expandMask_fn,
-    contractMask as contractMask_fn,
-    featherMask as featherMask_fn,
-    smoothMask as smoothMask_fn,
-    borderMask
-} from '../selection/selection-modify.js'
+// Namespace import: tracks provenance explicitly at each call site
+// (`selectionMods.featherMask(...)`) and avoids the alias dance for the
+// expand/contract/feather/smooth quad that overlaps the agent command names.
+import * as selectionMods from '../selection/selection-modify.js'
 import { floodFill } from '../selection/flood-fill.js'
 import { createPathStroke, createShapeStroke } from '../drawing/stroke-model.js'
 import {
@@ -44,10 +37,24 @@ import { getFontaineLoader } from '../layers/fontaine-loader.js'
 import { runVideoExport } from '../ui/video-exporter.js'
 import { toast } from '../ui/toast.js'
 
+/**
+ * Return the full state snapshot. Equivalent to the `state` field the
+ * dispatcher attaches to every other envelope — useful when an agent wants
+ * the snapshot in isolation without performing any side effect.
+ *
+ * @returns {Promise<{result: object}>}
+ */
 export async function getState(_args, app) {
     return { result: buildSnapshot(app) }
 }
 
+/**
+ * Return the snapshot view of a single layer.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: object}>}
+ * @throws NOT_FOUND_LAYER — when no layer has that id.
+ */
 export async function getLayer({ layerId }, app) {
     const snap = buildSnapshot(app)
     const layer = snap.layers.find(l => l.id === layerId)
@@ -57,6 +64,12 @@ export async function getLayer({ layerId }, app) {
     return { result: layer }
 }
 
+/**
+ * Return the current canvas pixel dimensions. Cheap shortcut over getState
+ * for callers that only need the size.
+ *
+ * @returns {Promise<{result: {width: number, height: number}}>}
+ */
 export async function getCanvasSize(_args, app) {
     return {
         result: {
@@ -66,16 +79,34 @@ export async function getCanvasSize(_args, app) {
     }
 }
 
+/**
+ * Return the current selection descriptor (kind + bounds + optional points),
+ * or null when no selection is active.
+ *
+ * @returns {Promise<{result: object|null}>}
+ */
 export async function getSelection(_args, app) {
     const snap = buildSnapshot(app)
     return { result: snap.selection }
 }
 
+/**
+ * Return project metadata: id, name, dirty/undo/redo flags.
+ *
+ * @returns {Promise<{result: object}>}
+ */
 export async function getProjectInfo(_args, app) {
     const snap = buildSnapshot(app)
     return { result: snap.project }
 }
 
+/**
+ * List the saved projects in browser storage. Storage failures are reported
+ * via the envelope's `warnings` array (success-with-empty-list) rather than
+ * a failure envelope.
+ *
+ * @returns {Promise<{result: {projects: Array}, warnings?: string[]}>}
+ */
 export async function listProjects(_args, _app) {
     let projects = []
     try {
@@ -95,27 +126,67 @@ export async function listProjects(_args, _app) {
     return { result: { projects } }
 }
 
+/**
+ * Return the flat settings view — theme + export presets read from
+ * localStorage. Missing/unparseable keys are silently omitted.
+ *
+ * @returns {Promise<{result: object}>}
+ */
 export async function getSettings(_args, app) {
     const snap = buildSnapshot(app)
     return { result: snap.settings }
 }
 
+/**
+ * Return the current foreground color as a `#rrggbb` string.
+ *
+ * @returns {Promise<{result: {color: string}}>}
+ */
 export async function getForegroundColor(_args, app) {
     return { result: { color: app?._foregroundColor || '#000000' } }
 }
 
+/**
+ * Search the renderer's effect manifest. Supports query (substring), namespace,
+ * tags (AND), and limit. Surfaces synth/starter effects (hidden from the human
+ * Image menu) — they're valid for addLayer.
+ *
+ * @param {{query?: string, namespace?: string, tags?: string[], limit?: number}} args
+ * @returns {Promise<{result: {effects: Array}}>}
+ */
 export async function searchEffects(args, app) {
     return { result: effectsModule.searchEffects(app, args || {}) }
 }
 
+/**
+ * Return the union of namespaces and tags across all manifest effects.
+ *
+ * @returns {Promise<{result: {namespaces: string[], tags: string[]}}>}
+ */
 export async function listEffectCategories(_args, app) {
     return { result: effectsModule.listCategories(app) }
 }
 
+/**
+ * Return the same effect groups the human Image menu shows: tone, color,
+ * blur-sharpen, stylize. Useful for agents that want to mirror the curated
+ * UX rather than crawl every namespace.
+ *
+ * @returns {Promise<{result: {groups: Array}}>}
+ */
 export async function listCuratedEffects(_args, _app) {
     return { result: effectsModule.listCurated() }
 }
 
+/**
+ * Return a normalized effect descriptor with parameter schema (name, type,
+ * default, range, enum values).
+ *
+ * @param {{effectId: string}} args
+ * @returns {Promise<{result: object}>}
+ * @throws NOT_FOUND_EFFECT — with `details.didYouMean` listing the 3 closest
+ *         known ids by Levenshtein distance.
+ */
 export async function getEffectDefinition({ effectId }, app) {
     const def = await effectsModule.getEffectDefinition(app, { effectId })
     if (!def) {
@@ -151,6 +222,14 @@ function levenshtein(a, b) {
     return dp[m][n]
 }
 
+/**
+ * Look up a single job by id. Returns the latest serialized state (status,
+ * progress, result/error).
+ *
+ * @param {{jobId: string}} args
+ * @returns {Promise<{result: object}>}
+ * @throws NOT_FOUND_JOB — when the job id is unknown.
+ */
 export async function getJob({ jobId }) {
     const j = jobsRegistry.getJob(jobId)
     if (!j) throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
@@ -177,6 +256,15 @@ export async function waitForJob({ jobId, timeoutMs }) {
     return { result: settled }
 }
 
+/**
+ * Request cancellation of a running job. Cooperative — the job's runFn
+ * only notices the abort at its next checkAbort() call, which for some
+ * jobs (font install, video export) is only between progress events.
+ *
+ * @param {{jobId: string}} args
+ * @returns {Promise<{result: object}>}
+ * @throws NOT_FOUND_JOB — when the job id is unknown.
+ */
 export async function cancelJob({ jobId }) {
     const existing = jobsRegistry.getJob(jobId)
     if (!existing) throw commandError('NOT_FOUND_JOB', `Job not found: ${jobId}`, { jobId })
@@ -194,6 +282,25 @@ function requireLayer(layerId, app) {
         throw commandError('NOT_FOUND_LAYER', `Layer not found: ${layerId}`, { layerId })
     }
     return layer
+}
+
+/**
+ * Resolve a layer from args.layerId, falling back to the currently-selected
+ * layer when the caller omits one. Throws NOT_FOUND_LAYER if neither is set
+ * or the resolved id doesn't map to a real layer.
+ *
+ * Use for handlers where layerId is optional and "act on the active layer"
+ * is the obvious default. Do NOT use for handlers where an explicit layerId
+ * is required (deleteLayer, reorderLayer, etc.) — there the caller must be
+ * forced to name the target.
+ */
+function withSelectedLayer(args, app) {
+    const layerId = args?.layerId || app?._layerStack?.selectedLayerId
+    if (!layerId) {
+        throw commandError('NOT_FOUND_LAYER',
+            'No layerId given and no layer is currently selected', {})
+    }
+    return requireLayer(layerId, app)
 }
 
 /**
@@ -220,6 +327,21 @@ function base64ToFile(data, mimeType, name) {
     return new File([bytes], name || 'media', { type: mimeType || 'application/octet-stream' })
 }
 
+/**
+ * Add a new layer. `kind` selects the path:
+ *   - 'effect'  — args: {effectId, params?, name?}
+ *   - 'drawing' — args: {name?}
+ *   - 'media'   — args: {source: {kind:'base64'|'url', ...}, mediaType, name?}
+ *   - 'text'    — args: {text, params?, name?} (sugar over filter/text effect)
+ *
+ * @param {object} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_EFFECT — when effectId isn't in the renderer manifest.
+ * @throws INVALID_ARGS_REQUIRED — when required args for the chosen kind are missing.
+ * @throws INVALID_ARGS_TYPE — when source.data/source.value has the wrong shape.
+ * @throws INVALID_ARGS_ENUM — when source.kind isn't 'base64' or 'url'.
+ * @throws RESOURCE_DECODE_FAILED — when fetching a source URL fails or returns non-2xx.
+ */
 export async function addLayer(args, app) {
     const { kind } = args
     if (kind === 'effect') return addEffectLayer(args, app)
@@ -246,10 +368,15 @@ async function addEffectLayer({ effectId, params, name }, app) {
     const layer = app._layers[app._layers.length - 1]
     if (name) layer.name = name
     if (params) {
+        // Defensive deep copy: the agent may hold a reference to `params` and
+        // mutate it after the call returns. Without cloning, those mutations
+        // would leak into the layer's effectParams (including any nested
+        // objects like color tables or vec arrays).
+        const cloned = safeClone(params)
         await app._handleLayerChange({
             layerId: layer.id,
             property: 'effectParams',
-            value: { ...layer.effectParams, ...params }
+            value: { ...layer.effectParams, ...cloned }
         })
     }
     return { result: { layerId: layer.id } }
@@ -333,12 +460,29 @@ async function addTextLayer({ text, params, name }, app) {
     }, app)
 }
 
+/**
+ * Delete a layer by id.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ */
 export async function deleteLayer({ layerId }, app) {
     requireLayer(layerId, app)
     await app._handleDeleteLayer(layerId)
     return { result: { layerId } }
 }
 
+/**
+ * Duplicate a layer; the new layer becomes the active selection. Returns the
+ * id of the duplicate.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the source layer doesn't exist.
+ * @throws CONFLICT_DUPLICATE_FAILED — when the app rejects the duplicate
+ *         (e.g. unsupported layer type).
+ */
 export async function duplicateLayer({ layerId }, app) {
     requireLayer(layerId, app)
     const prevSelected = app._layerStack?.selectedLayerId
@@ -354,6 +498,14 @@ export async function duplicateLayer({ layerId }, app) {
     return { result: { layerId: newId } }
 }
 
+/**
+ * Move a layer to a new index in the stack. Stack order is bottom-to-top.
+ *
+ * @param {{layerId: string, toIndex: number}} args
+ * @returns {Promise<{result: {layerId: string, toIndex: number}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws INVALID_ARGS_RANGE — when toIndex is outside [0, layers.length).
+ */
 export async function reorderLayer({ layerId, toIndex }, app) {
     requireLayer(layerId, app)
     const layers = app._layers
@@ -373,6 +525,13 @@ export async function reorderLayer({ layerId, toIndex }, app) {
     return { result: { layerId, toIndex } }
 }
 
+/**
+ * Make a single layer the active selection.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ */
 export async function selectLayer({ layerId }, app) {
     requireLayer(layerId, app)
     if (app._layerStack) {
@@ -381,6 +540,14 @@ export async function selectLayer({ layerId }, app) {
     return { result: { layerId } }
 }
 
+/**
+ * Select multiple layers. The first id in the array becomes the active
+ * selection (matches the human Shift-click behavior).
+ *
+ * @param {{layerIds: string[]}} args
+ * @returns {Promise<{result: {layerIds: string[]}}>}
+ * @throws NOT_FOUND_LAYER — when any layerId doesn't exist.
+ */
 export async function selectLayers({ layerIds }, app) {
     for (const id of layerIds) requireLayer(id, app)
     if (app._layerStack) {
@@ -392,11 +559,25 @@ export async function selectLayers({ layerIds }, app) {
     return { result: { layerIds } }
 }
 
+/**
+ * Flatten every layer into a single rasterized media layer.
+ *
+ * @returns {Promise<{result: {ok: true}}>}
+ */
 export async function flattenImage(_args, app) {
     await app._flattenImage()
     return { result: { ok: true } }
 }
 
+/**
+ * Flatten the named layers (must be 2 or more) into a single rasterized
+ * layer. Layers not in the set are left alone.
+ *
+ * @param {{layerIds: string[]}} args
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws NOT_FOUND_LAYER — when any layerId doesn't exist.
+ * @throws INVALID_ARGS_RANGE — when fewer than 2 layerIds supplied.
+ */
 export async function flattenLayers({ layerIds }, app) {
     for (const id of layerIds) requireLayer(id, app)
     if (layerIds.length < 2) {
@@ -408,12 +589,30 @@ export async function flattenLayers({ layerIds }, app) {
     return { result: { ok: true } }
 }
 
+/**
+ * Rasterize an effect/drawing layer in place, converting it to a media layer
+ * with the current rendered pixels baked in. Effect parameters and drawing
+ * strokes are discarded after this call.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ */
 export async function rasterizeLayer({ layerId }, app) {
     requireLayer(layerId, app)
     await app._rasterizeLayer(layerId)
     return { result: { layerId } }
 }
 
+/**
+ * Flip a media layer horizontally ('h') or vertically ('v'). Limited to
+ * media layers — effect/drawing layers throw CONFLICT_TOOL_BLOCKED_FOR_TYPE.
+ *
+ * @param {{layerId: string, axis: 'h'|'v'}} args
+ * @returns {Promise<{result: {layerId: string, axis: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_TOOL_BLOCKED_FOR_TYPE — for non-media layers.
+ */
 export async function flipLayer({ layerId, axis }, app) {
     const layer = requireLayer(layerId, app)
     if (layer.sourceType !== 'media') {
@@ -428,6 +627,15 @@ export async function flipLayer({ layerId, axis }, app) {
 
 const SET_LAYER_PROPS_FIELDS = ['name', 'visible', 'opacity', 'blendMode', 'locked']
 
+/**
+ * Update one or more layer-level properties. Only keys in
+ * `SET_LAYER_PROPS_FIELDS` (name, visible, opacity, blendMode, locked) are
+ * honored; unknown keys are silently ignored.
+ *
+ * @param {{layerId: string, props: object}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ */
 export async function setLayerProps({ layerId, props }, app) {
     const layer = requireLayer(layerId, app)
     for (const field of SET_LAYER_PROPS_FIELDS) {
@@ -458,6 +666,15 @@ export async function setLayerProps({ layerId, props }, app) {
 
 const TRANSFORM_FIELDS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'flipH', 'flipV']
 
+/**
+ * Update a layer's affine transform. Only keys in `TRANSFORM_FIELDS`
+ * (offsetX, offsetY, scaleX, scaleY, rotation, flipH, flipV) are honored.
+ * Calling with an empty `transform` is a no-op.
+ *
+ * @param {{layerId: string, transform: object}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ */
 export async function setLayerTransform({ layerId, transform }, app) {
     const layer = requireLayer(layerId, app)
     let touched = false
@@ -478,6 +695,16 @@ export async function setLayerTransform({ layerId, transform }, app) {
     return { result: { layerId } }
 }
 
+/**
+ * Update the effect parameters on an effect layer. By default merges into
+ * the existing params; `replace: true` clears them first. Deep-clones the
+ * input so post-call agent mutation can't leak into stored state.
+ *
+ * @param {{layerId: string, params: object, replace?: boolean}} args
+ * @returns {Promise<{result: {layerId: string, params: object}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NOT_EFFECT_LAYER — when the layer isn't an effect layer.
+ */
 export async function setLayerEffectParams({ layerId, params, replace }, app) {
     const layer = requireLayer(layerId, app)
     if (layer.sourceType !== 'effect') {
@@ -485,7 +712,11 @@ export async function setLayerEffectParams({ layerId, params, replace }, app) {
             `Layer ${layerId} is not an effect layer (sourceType=${layer.sourceType})`,
             { layerId, sourceType: layer.sourceType })
     }
-    const next = replace ? { ...params } : { ...layer.effectParams, ...params }
+    // Deep clone agent-provided params so post-call mutation by the agent
+    // can't corrupt the layer's stored effectParams (including any nested
+    // arrays/objects).
+    const cloned = safeClone(params) || {}
+    const next = replace ? { ...cloned } : { ...layer.effectParams, ...cloned }
     await app._handleLayerChange({
         layerId,
         property: 'effectParams',
@@ -494,6 +725,15 @@ export async function setLayerEffectParams({ layerId, params, replace }, app) {
     return { result: { layerId, params: next } }
 }
 
+/**
+ * Add a child effect onto a layer. Child effects stack on top of the parent's
+ * own effect/media output. Params are deep-cloned.
+ *
+ * @param {{layerId: string, effectId: string, params?: object}} args
+ * @returns {Promise<{result: {childId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the parent doesn't exist.
+ * @throws NOT_FOUND_EFFECT — when effectId isn't in the manifest.
+ */
 export async function addChildEffect({ layerId, effectId, params }, app) {
     const layer = requireLayer(layerId, app)
     const manifest = app?._renderer?.manifest || {}
@@ -503,22 +743,40 @@ export async function addChildEffect({ layerId, effectId, params }, app) {
     await app._handleAddChildEffect(layerId, effectId)
     const newChild = layer.children[layer.children.length - 1]
     if (params) {
+        // Deep clone before merging into the child's effectParams so the agent
+        // can hold and mutate `params` after the call without corrupting state.
+        const cloned = safeClone(params)
         await app._handleLayerChange({
             layerId: newChild.id,
             parentLayerId: layerId,
             property: 'effectParams',
-            value: { ...newChild.effectParams, ...params }
+            value: { ...newChild.effectParams, ...cloned }
         })
     }
     return { result: { childId: newChild.id } }
 }
 
+/**
+ * Remove a child effect from a layer.
+ *
+ * @param {{layerId: string, childId: string}} args
+ * @returns {Promise<{result: {childId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the parent or child doesn't exist.
+ */
 export async function removeChildEffect({ layerId, childId }, app) {
     requireChildEffect(layerId, childId, app)
     await app._handleDeleteLayer(childId, layerId)
     return { result: { childId } }
 }
 
+/**
+ * Move a child effect to a new index within its parent's children array.
+ *
+ * @param {{layerId: string, childId: string, toIndex: number}} args
+ * @returns {Promise<{result: {layerId: string, childId: string, toIndex: number}}>}
+ * @throws NOT_FOUND_LAYER — when the parent or child doesn't exist.
+ * @throws INVALID_ARGS_RANGE — when toIndex is outside [0, children.length).
+ */
 export async function reorderChildEffect({ layerId, childId, toIndex }, app) {
     const { layer } = requireChildEffect(layerId, childId, app)
     const children = layer.children
@@ -538,6 +796,14 @@ export async function reorderChildEffect({ layerId, childId, toIndex }, app) {
     return { result: { layerId, childId, toIndex } }
 }
 
+/**
+ * Update child-effect properties — currently `visible` and `name`. Other
+ * keys in `props` are silently ignored.
+ *
+ * @param {{layerId: string, childId: string, props: object}} args
+ * @returns {Promise<{result: {layerId: string, childId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the parent or child doesn't exist.
+ */
 export async function setChildEffectProps({ layerId, childId, props }, app) {
     const { child } = requireChildEffect(layerId, childId, app)
     if (props.visible !== undefined) {
@@ -563,9 +829,20 @@ export async function setChildEffectProps({ layerId, childId, props }, app) {
     return { result: { layerId, childId } }
 }
 
+/**
+ * Update child-effect parameters. By default merges into existing params;
+ * `replace: true` clears them first. Deep-clones the input.
+ *
+ * @param {{layerId: string, childId: string, params: object, replace?: boolean}} args
+ * @returns {Promise<{result: {layerId: string, childId: string, params: object}}>}
+ * @throws NOT_FOUND_LAYER — when the parent or child doesn't exist.
+ */
 export async function setChildEffectParams({ layerId, childId, params, replace }, app) {
     const { child } = requireChildEffect(layerId, childId, app)
-    const next = replace ? { ...params } : { ...child.effectParams, ...params }
+    // Deep clone first so any nested objects/arrays in `params` aren't aliased
+    // with the agent's input — protects child.effectParams from post-call mutation.
+    const cloned = safeClone(params) || {}
+    const next = replace ? { ...cloned } : { ...child.effectParams, ...cloned }
     await app._handleLayerChange({
         layerId: childId,
         parentLayerId: layerId,
@@ -670,10 +947,11 @@ async function canvasToBytes(canvas, format, quality, targetW, targetH) {
 
     let blob
     if (tw === sw && th === sh) {
-        blob = await new Promise((resolve, reject) => {
-            canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob produced null')),
-                mimeType, quality)
-        })
+        // drawSurfaceToBlob handles both HTMLCanvasElement (.toBlob) and
+        // OffscreenCanvas (.convertToBlob), so getLayerThumbnail can pass us
+        // an OffscreenCanvas at native resolution without the call site
+        // needing to know which surface kind it allocated.
+        blob = await drawSurfaceToBlob(canvas, mimeType, quality)
     } else {
         const { surface, ctx } = makeDrawSurface(tw, th)
         ctx.imageSmoothingEnabled = true
@@ -694,6 +972,14 @@ async function canvasToBytes(canvas, format, quality, targetW, targetH) {
     }
 }
 
+/**
+ * Encode the current canvas to base64-encoded image bytes at full resolution.
+ * Format defaults to 'png'; quality defaults to 0.92 and is ignored for png.
+ * Does not trigger a download — use exportImage for that.
+ *
+ * @param {{format?: 'png'|'jpg'|'webp', quality?: number}} args
+ * @returns {Promise<{result: object}>}
+ */
 export async function getCanvasImageBytes(args, app) {
     const format = args?.format || 'png'
     const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
@@ -722,6 +1008,13 @@ function thumbnailDimensions(srcWidth, srcHeight, maxDimension) {
     }
 }
 
+/**
+ * Encode a downscaled snapshot of the canvas. The longest side is clamped
+ * to `maxDimension` (default 256). Format defaults to 'jpg'.
+ *
+ * @param {{maxDimension?: number, format?: 'png'|'jpg'|'webp', quality?: number}} args
+ * @returns {Promise<{result: object}>}
+ */
 export async function getThumbnail(args, app) {
     const maxDim = args?.maxDimension ?? 256
     const format = args?.format || 'jpg'
@@ -741,6 +1034,15 @@ export async function getThumbnail(args, app) {
     }
 }
 
+/**
+ * Encode a thumbnail of a single layer (and its children/mask), as if only
+ * that layer were rendered. Useful for layer-panel previews.
+ *
+ * @param {{layerId: string, maxDimension?: number, format?: 'png'|'jpg'|'webp', quality?: number}} args
+ * @returns {Promise<{result: object}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws RENDER_LAYER_COMPOSITE_FAILED — when the renderer can't isolate the layer.
+ */
 export async function getLayerThumbnail({ layerId, maxDimension, format, quality }, app) {
     requireLayer(layerId, app)
     const maxDim = maxDimension ?? 256
@@ -748,8 +1050,7 @@ export async function getLayerThumbnail({ layerId, maxDimension, format, quality
     const q = quality ?? DEFAULT_IMAGE_QUALITY
 
     // _renderLayerComposite returns an HTMLImageElement of the canvas after
-    // rendering only the named layer (and its children/mask). Draw it into
-    // an offscreen canvas at the target thumbnail size.
+    // rendering only the named layer (and its children/mask).
     const sourceImg = await app._renderLayerComposite([layerId])
     if (!sourceImg) {
         throw commandError('RENDER_LAYER_COMPOSITE_FAILED',
@@ -761,28 +1062,29 @@ export async function getLayerThumbnail({ layerId, maxDimension, format, quality
     const sh = sourceImg.naturalHeight || sourceImg.height
     const { width: tw, height: th } = thumbnailDimensions(sw, sh, maxDim)
 
-    const { surface, ctx } = makeDrawSurface(tw, th)
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = 'high'
-    ctx.drawImage(sourceImg, 0, 0, sw, sh, 0, 0, tw, th)
-
-    const mimeType = FORMAT_TO_MIME[fmt]
-    const blob = await drawSurfaceToBlob(surface, mimeType, q)
-    const base64 = await blobToBase64(blob)
+    // canvasToBytes operates on a drawable surface, so paint the source
+    // image into a native-size canvas first, then let canvasToBytes handle
+    // the resampling + encode. Same path used by getCanvasImageBytes /
+    // getThumbnail / exportImage.
+    const { surface: imgCanvas, ctx: imgCtx } = makeDrawSurface(sw, sh)
+    imgCtx.drawImage(sourceImg, 0, 0)
+    const out = await canvasToBytes(imgCanvas, fmt, q, tw, th)
     return {
         result: {
-            bytes: base64,
-            mimeType,
-            format: fmt,
-            width: tw,
-            height: th,
-            sizeBytes: blob.size,
+            bytes: out.base64,
+            mimeType: out.mimeType,
+            format: out.format,
+            width: out.width,
+            height: out.height,
+            sizeBytes: out.sizeBytes,
             layerId
         }
     }
 }
 
-const RECENT_EXPORTS_CAP = 50
+// RECENT_EXPORTS_CAP moved to constants.js so it can be tuned without
+// touching the command file. `_recentExports` stays here — its lifecycle
+// is tied to image/video export handlers, not to protocol-level constants.
 const _recentExports = []
 
 /**
@@ -832,6 +1134,14 @@ function triggerBrowserDownload(blob, filename) {
     }
 }
 
+/**
+ * Encode the canvas AND trigger a browser download (default) or skip it.
+ * Records a recentExports entry the snapshot exposes so agents can list past
+ * exports.
+ *
+ * @param {object} args - {format?, quality?, width?, height?, triggerDownload?, filename?}
+ * @returns {Promise<{result: object}>}
+ */
 export async function exportImage(args, app) {
     const format = args?.format || 'png'
     const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
@@ -874,6 +1184,16 @@ export async function exportImage(args, app) {
     }
 }
 
+/**
+ * Add a media layer from inline bytes — sugar over addLayer(kind:'media',
+ * mediaType:'image'). Source is `{kind:'base64', data, mimeType?}` or
+ * `{kind:'url', value}`.
+ *
+ * @param {{source: object, name?: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws INVALID_ARGS_REQUIRED|INVALID_ARGS_TYPE|INVALID_ARGS_ENUM|RESOURCE_DECODE_FAILED
+ *         (forwarded from addMediaLayer)
+ */
 export async function pasteImageFromBytes({ source, name }, app) {
     return addMediaLayer({ source, mediaType: 'image', name: name || 'pasted' }, app)
 }
@@ -891,6 +1211,12 @@ function requireSelection(app) {
     return sm
 }
 
+/**
+ * Set a rectangle selection covering the entire canvas.
+ *
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws INTERNAL_ERROR — when the selection manager isn't initialized.
+ */
 export async function selectAll(_args, app) {
     const sm = app?._selectionManager
     if (!sm) {
@@ -906,6 +1232,12 @@ export async function selectAll(_args, app) {
     return { result: { ok: true } }
 }
 
+/**
+ * Clear any active selection.
+ *
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws INTERNAL_ERROR — when the selection manager isn't initialized.
+ */
 export async function selectNone(_args, app) {
     const sm = app?._selectionManager
     if (!sm) {
@@ -916,6 +1248,14 @@ export async function selectNone(_args, app) {
     return { result: { ok: true } }
 }
 
+/**
+ * Invert the current selection so the previously-selected pixels become
+ * unselected and vice versa. Requires an existing selection.
+ *
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws CONFLICT_NO_SELECTION — when there's no active selection.
+ * @throws INTERNAL_ERROR — when the current selection can't be rasterized.
+ */
 export async function selectInverse(_args, app) {
     const sm = requireSelection(app)
     const mask = sm.rasterizeSelection()
@@ -924,10 +1264,17 @@ export async function selectInverse(_args, app) {
             'Could not rasterize current selection',
             {})
     }
-    sm.setSelection({ type: 'mask', data: invertMask(mask) })
+    sm.setSelection({ type: 'mask', data: selectionMods.invertMask(mask) })
     return { result: { ok: true } }
 }
 
+/**
+ * Set a rectangular selection from top-left corner + size.
+ *
+ * @param {{x: number, y: number, width: number, height: number}} args
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws INTERNAL_ERROR — when the selection manager isn't initialized.
+ */
 export async function setRectangleSelection({ x, y, width, height }, app) {
     const sm = app?._selectionManager
     if (!sm) {
@@ -938,6 +1285,14 @@ export async function setRectangleSelection({ x, y, width, height }, app) {
     return { result: { ok: true } }
 }
 
+/**
+ * Set an oval selection inscribed in the bounding rect [x, y, width, height].
+ * Internally stored as center+radii.
+ *
+ * @param {{x: number, y: number, width: number, height: number}} args
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws INTERNAL_ERROR — when the selection manager isn't initialized.
+ */
 export async function setOvalSelection({ x, y, width, height }, app) {
     const sm = app?._selectionManager
     if (!sm) {
@@ -955,6 +1310,17 @@ export async function setOvalSelection({ x, y, width, height }, app) {
     return { result: { ok: true } }
 }
 
+/**
+ * Set a polygon or lasso selection from a points list. `kind` is 'polygon'
+ * (closed straight-edge) or 'lasso' (closed free-form, same data shape).
+ * Points may be `[x, y]` tuples (normalized to `{x, y}` internally).
+ *
+ * @param {{kind: 'polygon'|'lasso', points: Array<[number, number]|{x:number,y:number}>}} args
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws INTERNAL_ERROR — when the selection manager isn't initialized.
+ * @throws INVALID_ARGS_RANGE — when fewer than 3 points supplied.
+ * @throws INVALID_ARGS_TYPE — when any point isn't [number, number].
+ */
 export async function setPolygonSelection({ kind, points }, app) {
     const sm = app?._selectionManager
     if (!sm) {
@@ -981,6 +1347,15 @@ export async function setPolygonSelection({ kind, points }, app) {
     return { result: { ok: true } }
 }
 
+/**
+ * Set a magic-wand selection: contiguous flood-fill from the click point at
+ * the given color tolerance (default 32, range 0-255).
+ *
+ * @param {{x: number, y: number, tolerance?: number}} args
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws INTERNAL_ERROR — when the selection manager isn't initialized.
+ * @throws INVALID_ARGS_RANGE — when (x, y) is outside the canvas.
+ */
 export async function setMagicWandSelection({ x, y, tolerance }, app) {
     const sm = app?._selectionManager
     if (!sm) {
@@ -1005,6 +1380,15 @@ export async function setMagicWandSelection({ x, y, tolerance }, app) {
     return { result: { ok: true } }
 }
 
+/**
+ * Set a non-contiguous color-range selection — every pixel whose color
+ * matches the sample at (x, y) within `tolerance`.
+ *
+ * @param {{x: number, y: number, tolerance?: number}} args
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws INTERNAL_ERROR — when the selection manager isn't initialized.
+ * @throws INVALID_ARGS_RANGE — when (x, y) is outside the canvas.
+ */
 export async function selectColorRange({ x, y, tolerance }, app) {
     const sm = app?._selectionManager
     if (!sm) {
@@ -1023,7 +1407,7 @@ export async function selectColorRange({ x, y, tolerance }, app) {
     tmp.getContext('2d').drawImage(canvas, 0, 0)
     const imageData = tmp.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
     const tol = tolerance ?? 32
-    const mask = colorRange(imageData, x, y, tol)
+    const mask = selectionMods.colorRange(imageData, x, y, tol)
     sm.setSelection({ type: 'mask', data: mask })
     return { result: { ok: true } }
 }
@@ -1039,31 +1423,75 @@ function applySelectionMaskTransform(app, fn) {
     sm.setSelection({ type: 'mask', data: fn(mask) })
 }
 
+/**
+ * Grow the current selection by `pixels` (Euclidean distance from the boundary).
+ *
+ * @param {{pixels: number}} args
+ * @returns {Promise<{result: {ok: true, pixels: number}}>}
+ * @throws CONFLICT_NO_SELECTION — when there's no active selection.
+ */
 export async function expandSelection({ pixels }, app) {
-    applySelectionMaskTransform(app, (mask) => expandMask_fn(mask, pixels))
+    applySelectionMaskTransform(app, (mask) => selectionMods.expandMask(mask, pixels))
     return { result: { ok: true, pixels } }
 }
 
+/**
+ * Shrink the current selection by `pixels` (Euclidean distance from the boundary, inward).
+ *
+ * @param {{pixels: number}} args
+ * @returns {Promise<{result: {ok: true, pixels: number}}>}
+ * @throws CONFLICT_NO_SELECTION — when there's no active selection.
+ */
 export async function contractSelection({ pixels }, app) {
-    applySelectionMaskTransform(app, (mask) => contractMask_fn(mask, pixels))
+    applySelectionMaskTransform(app, (mask) => selectionMods.contractMask(mask, pixels))
     return { result: { ok: true, pixels } }
 }
 
+/**
+ * Feather the current selection — ramp alpha from 255 inside to 0 outside
+ * over `pixels` of the boundary.
+ *
+ * @param {{pixels: number}} args
+ * @returns {Promise<{result: {ok: true, pixels: number}}>}
+ * @throws CONFLICT_NO_SELECTION — when there's no active selection.
+ */
 export async function featherSelection({ pixels }, app) {
-    applySelectionMaskTransform(app, (mask) => featherMask_fn(mask, pixels))
+    applySelectionMaskTransform(app, (mask) => selectionMods.featherMask(mask, pixels))
     return { result: { ok: true, pixels } }
 }
 
+/**
+ * Smooth selection edges via 3-pass box blur followed by re-threshold.
+ *
+ * @param {{pixels: number}} args
+ * @returns {Promise<{result: {ok: true, pixels: number}}>}
+ * @throws CONFLICT_NO_SELECTION — when there's no active selection.
+ */
 export async function smoothSelection({ pixels }, app) {
-    applySelectionMaskTransform(app, (mask) => smoothMask_fn(mask, pixels))
+    applySelectionMaskTransform(app, (mask) => selectionMods.smoothMask(mask, pixels))
     return { result: { ok: true, pixels } }
 }
 
+/**
+ * Replace the current selection with a `pixels`-wide border just inside its
+ * boundary.
+ *
+ * @param {{pixels: number}} args
+ * @returns {Promise<{result: {ok: true, pixels: number}}>}
+ * @throws CONFLICT_NO_SELECTION — when there's no active selection.
+ */
 export async function borderSelection({ pixels }, app) {
-    applySelectionMaskTransform(app, (mask) => borderMask(mask, pixels))
+    applySelectionMaskTransform(app, (mask) => selectionMods.borderMask(mask, pixels))
     return { result: { ok: true, pixels } }
 }
 
+/**
+ * Crop the entire image to the current selection's bounding box. All layers
+ * are clipped and the canvas is resized.
+ *
+ * @returns {Promise<{result: {ok: true}}>}
+ * @throws CONFLICT_NO_SELECTION — when there's no active selection.
+ */
 export async function cropToSelection(_args, app) {
     requireSelection(app)
     await app._cropToSelection()
@@ -1097,6 +1525,14 @@ function requireUnmaskedLayer(layerId, app) {
     return layer
 }
 
+/**
+ * Attach an all-white (fully revealing) mask to a layer.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_LAYER_HAS_MASK — when the layer already has a mask.
+ */
 export async function addLayerMask({ layerId }, app) {
     const layer = requireUnmaskedLayer(layerId, app)
     // Replicate the core of app._addLayerMask but skip _enterMaskEditMode.
@@ -1120,6 +1556,14 @@ export async function addLayerMask({ layerId }, app) {
     return { result: { layerId } }
 }
 
+/**
+ * Remove a layer's mask. Layer pixels themselves are unchanged.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NO_MASK — when the layer has no mask.
+ */
 export async function deleteLayerMask({ layerId }, app) {
     requireMaskedLayer(layerId, app)
     // `_deleteLayerMask` is the same code-path the human menu uses, so it
@@ -1129,6 +1573,15 @@ export async function deleteLayerMask({ layerId }, app) {
     return { result: { layerId } }
 }
 
+/**
+ * Attach a mask to a layer using the current selection as its initial values.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_LAYER_HAS_MASK — when the layer already has a mask.
+ * @throws CONFLICT_NO_SELECTION — when there's no active selection.
+ */
 export async function addMaskFromSelection({ layerId }, app) {
     requireUnmaskedLayer(layerId, app)
     requireSelection(app)   // throws CONFLICT_NO_SELECTION if missing
@@ -1138,6 +1591,14 @@ export async function addMaskFromSelection({ layerId }, app) {
     return { result: { layerId } }
 }
 
+/**
+ * Invert a layer's mask values.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NO_MASK — when the layer has no mask.
+ */
 export async function invertLayerMask({ layerId }, app) {
     requireMaskedLayer(layerId, app)
     // Suppress the "Mask inverted" toast that the human-UI path fires.
@@ -1145,6 +1606,15 @@ export async function invertLayerMask({ layerId }, app) {
     return { result: { layerId } }
 }
 
+/**
+ * Toggle whether a layer's mask is active. Disabled masks remain attached
+ * but stop affecting the composite.
+ *
+ * @param {{layerId: string, enabled: boolean}} args
+ * @returns {Promise<{result: {layerId: string, enabled: boolean}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NO_MASK — when the layer has no mask.
+ */
 export async function setMaskEnabled({ layerId, enabled }, app) {
     const layer = requireMaskedLayer(layerId, app)
     if (layer.maskEnabled === enabled) {
@@ -1179,23 +1649,55 @@ async function applyMaskTransform(app, layerId, fn) {
     app._pushUndoState?.()
 }
 
+/**
+ * Feather a layer mask's edges by `radius` pixels.
+ *
+ * @param {{layerId: string, radius: number}} args
+ * @returns {Promise<{result: {layerId: string, radius: number}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NO_MASK — when the layer has no mask.
+ */
 export async function featherMask({ layerId, radius }, app) {
-    await applyMaskTransform(app, layerId, (mask) => featherMask_fn(mask, radius))
+    await applyMaskTransform(app, layerId, (mask) => selectionMods.featherMask(mask, radius))
     return { result: { layerId, radius } }
 }
 
+/**
+ * Grow a layer mask by `radius` pixels.
+ *
+ * @param {{layerId: string, radius: number}} args
+ * @returns {Promise<{result: {layerId: string, radius: number}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NO_MASK — when the layer has no mask.
+ */
 export async function expandMask({ layerId, radius }, app) {
-    await applyMaskTransform(app, layerId, (mask) => expandMask_fn(mask, radius))
+    await applyMaskTransform(app, layerId, (mask) => selectionMods.expandMask(mask, radius))
     return { result: { layerId, radius } }
 }
 
+/**
+ * Shrink a layer mask by `radius` pixels.
+ *
+ * @param {{layerId: string, radius: number}} args
+ * @returns {Promise<{result: {layerId: string, radius: number}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NO_MASK — when the layer has no mask.
+ */
 export async function contractMask({ layerId, radius }, app) {
-    await applyMaskTransform(app, layerId, (mask) => contractMask_fn(mask, radius))
+    await applyMaskTransform(app, layerId, (mask) => selectionMods.contractMask(mask, radius))
     return { result: { layerId, radius } }
 }
 
+/**
+ * Smooth a layer mask's edges by `radius` pixels (3-pass box blur).
+ *
+ * @param {{layerId: string, radius: number}} args
+ * @returns {Promise<{result: {layerId: string, radius: number}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NO_MASK — when the layer has no mask.
+ */
 export async function smoothMask({ layerId, radius }, app) {
-    await applyMaskTransform(app, layerId, (mask) => smoothMask_fn(mask, radius))
+    await applyMaskTransform(app, layerId, (mask) => selectionMods.smoothMask(mask, radius))
     return { result: { layerId, radius } }
 }
 
@@ -1240,6 +1742,17 @@ function normalizePoints(points, fieldName, minCount = 2) {
     return out
 }
 
+/**
+ * Paint a brush stroke through a list of points onto a drawing layer. If
+ * `layerId` is omitted, the active drawing layer is used or a new one is
+ * created via `_ensureDrawingLayer`.
+ *
+ * @param {{layerId?: string, points: Array, size: number, opacity?: number, color: string}} args
+ * @returns {Promise<{result: {layerId: string, strokeId: string}}>}
+ * @throws NOT_FOUND_LAYER — when layerId is given but doesn't exist.
+ * @throws CONFLICT_NOT_DRAWING_LAYER — when layerId names a non-drawing layer.
+ * @throws INVALID_ARGS_RANGE|INVALID_ARGS_TYPE — when points is malformed.
+ */
 export async function paintStroke({ layerId, points, size, opacity, color }, app) {
     const sanitized = normalizePoints(points, 'points', 2)
     let layer
@@ -1263,6 +1776,15 @@ export async function paintStroke({ layerId, points, size, opacity, color }, app
     return { result: { layerId: layer.id, strokeId: stroke.id } }
 }
 
+/**
+ * Draw a shape (rect/ellipse, filled or stroked) onto a drawing layer.
+ * Same layer fallback as paintStroke.
+ *
+ * @param {object} args - {layerId?, shape, x, y, width, height, color, size, opacity?, filled?}
+ * @returns {Promise<{result: {layerId: string, strokeId: string}}>}
+ * @throws NOT_FOUND_LAYER — when layerId is given but doesn't exist.
+ * @throws CONFLICT_NOT_DRAWING_LAYER — when layerId names a non-drawing layer.
+ */
 export async function drawShape({ layerId, shape, x, y, width, height, color, size, opacity, filled }, app) {
     let layer
     if (layerId) {
@@ -1287,6 +1809,15 @@ export async function drawShape({ layerId, shape, x, y, width, height, color, si
     return { result: { layerId: layer.id, strokeId: stroke.id } }
 }
 
+/**
+ * Add a new media layer filled with `color`, masked to the contiguous region
+ * matching the pixel at (x, y) within `tolerance`. Mirrors the human Fill tool.
+ *
+ * @param {{x: number, y: number, color: string, tolerance?: number}} args
+ * @returns {Promise<{result: {layerId: string}}>}
+ * @throws INVALID_ARGS_RANGE — when (x, y) is outside the canvas.
+ * @throws INTERNAL_ERROR — when the WebGL context can't be acquired.
+ */
 export async function fillRegion({ x, y, color, tolerance }, app) {
     const canvas = app._canvas
     if (x >= canvas.width || y >= canvas.height) {
@@ -1342,6 +1873,13 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
     return { result: { layerId: newLayer.id } }
 }
 
+/**
+ * Reset state and start a new project at the given canvas size. Discards
+ * unsaved changes silently (agents must save first if they care).
+ *
+ * @param {{width: number, height: number, name?: string}} args
+ * @returns {Promise<{result: {width: number, height: number}}>}
+ */
 export async function newProject({ width, height, name }, app) {
     app._finalizePendingUndo?.()
     app._selectionManager?.clearSelection?.()
@@ -1359,6 +1897,13 @@ export async function newProject({ width, height, name }, app) {
     return { result: { width, height } }
 }
 
+/**
+ * Load a previously-saved project by id.
+ *
+ * @param {{projectId: string}} args
+ * @returns {Promise<{result: {projectId: string}}>}
+ * @throws NOT_FOUND_PROJECT — when no project has that id.
+ */
 export async function openProject({ projectId }, app) {
     const stored = await getProjectStorage(projectId).catch(() => null)
     if (!stored) {
@@ -1370,6 +1915,15 @@ export async function openProject({ projectId }, app) {
     return { result: { projectId } }
 }
 
+/**
+ * Save the current project. If a project is already open, updates it in
+ * place; otherwise creates a new one named `name`. `name` is only required
+ * when there is no current project.
+ *
+ * @param {{name?: string}} args
+ * @returns {Promise<{result: {projectId: string}}>}
+ * @throws INVALID_ARGS_REQUIRED — when `name` is omitted and there's no current project.
+ */
 export async function saveProject({ name }, app) {
     if (name !== undefined) {
         if (typeof name !== 'string' || name.length === 0) {
@@ -1389,6 +1943,14 @@ export async function saveProject({ name }, app) {
     return { result: { projectId: app._currentProjectId } }
 }
 
+/**
+ * Save the current state as a new project, regardless of whether one is open.
+ * `name` is required.
+ *
+ * @param {{name: string}} args
+ * @returns {Promise<{result: {projectId: string}}>}
+ * @throws INVALID_ARGS_REQUIRED — when `name` is empty or missing.
+ */
 export async function saveProjectAs({ name }, app) {
     if (typeof name !== 'string' || name.length === 0) {
         throw commandError('INVALID_ARGS_REQUIRED',
@@ -1399,6 +1961,14 @@ export async function saveProjectAs({ name }, app) {
     return { result: { projectId: app._currentProjectId } }
 }
 
+/**
+ * Delete a stored project. If the deleted project is the one currently
+ * open, the open-project handle is cleared but the in-memory state stays.
+ *
+ * @param {{projectId: string}} args
+ * @returns {Promise<{result: {projectId: string}}>}
+ * @throws NOT_FOUND_PROJECT — when no project has that id.
+ */
 export async function deleteProject({ projectId }, app) {
     const existing = await getProjectStorage(projectId).catch(() => null)
     if (!existing) {
@@ -1413,11 +1983,21 @@ export async function deleteProject({ projectId }, app) {
     return { result: { projectId } }
 }
 
+/**
+ * Undo the most recent state change in the undo stack. No-op when canUndo is false.
+ *
+ * @returns {Promise<{result: {ok: true}}>}
+ */
 export async function undo(_args, app) {
     await app._undo()
     return { result: { ok: true } }
 }
 
+/**
+ * Redo the most recently undone change. No-op when canRedo is false.
+ *
+ * @returns {Promise<{result: {ok: true}}>}
+ */
 export async function redo(_args, app) {
     await app._redo()
     return { result: { ok: true } }
@@ -1425,6 +2005,13 @@ export async function redo(_args, app) {
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
 
+/**
+ * Set the foreground color. Color must be `#rrggbb` (6-digit hex).
+ *
+ * @param {{color: string}} args
+ * @returns {Promise<{result: {color: string}}>}
+ * @throws INVALID_ARGS_TYPE — when color isn't a valid #rrggbb string.
+ */
 export async function setForegroundColor({ color }, app) {
     if (!HEX_COLOR_RE.test(color)) {
         throw commandError('INVALID_ARGS_TYPE',
@@ -1435,16 +2022,32 @@ export async function setForegroundColor({ color }, app) {
     return { result: { color } }
 }
 
+/**
+ * Set the zoom mode — 'fit' to fit canvas to viewport, '100' for 1:1, etc.
+ *
+ * @param {{mode: string}} args
+ * @returns {Promise<{result: {mode: string}}>}
+ */
 export async function setZoom({ mode }, app) {
     app._setZoom(mode)
     return { result: { mode } }
 }
 
+/**
+ * Start the renderer's animation loop (for time-varying effects).
+ *
+ * @returns {Promise<{result: {isPlaying: true}}>}
+ */
 export async function play(_args, app) {
     app._renderer?.start?.()
     return { result: { isPlaying: true } }
 }
 
+/**
+ * Stop the renderer's animation loop. The current frame stays visible.
+ *
+ * @returns {Promise<{result: {isPlaying: false}}>}
+ */
 export async function pause(_args, app) {
     app._renderer?.stop?.()
     return { result: { isPlaying: false } }
@@ -1463,6 +2066,15 @@ function applyThemeInline(themeValue) {
     document.documentElement.dataset.theme = resolved
 }
 
+/**
+ * Update app settings. Only `theme` is currently honored; unknown keys are
+ * reported via the envelope's `warnings` array. Persistence failures are
+ * also surfaced as warnings (not failures), preserving the "best effort"
+ * semantics of the human Settings dialog.
+ *
+ * @param {{theme?: string}} args
+ * @returns {Promise<{result: {applied: string[]}, warnings?: string[]}>}
+ */
 export async function setSettings(args = {}, _app) {
     const warnings = []
     if (typeof args.theme === 'string') {
@@ -1481,11 +2093,26 @@ export async function setSettings(args = {}, _app) {
     return { result: { applied: KNOWN_SETTINGS.filter(k => k in args) }, warnings }
 }
 
+/**
+ * Resample the entire image to a new width and height. Layers are
+ * stretched/squashed proportionally; selection is cleared.
+ *
+ * @param {{width: number, height: number}} args
+ * @returns {Promise<{result: {width: number, height: number}}>}
+ */
 export async function resizeImage({ width, height }, app) {
     await app._resizeImage(width, height)
     return { result: { width, height } }
 }
 
+/**
+ * Change the canvas size without resampling layers — they keep their
+ * pixel dimensions and shift relative to the new canvas. `anchor` (default
+ * 'center') controls how layers are positioned within the new canvas.
+ *
+ * @param {{width: number, height: number, anchor?: string}} args
+ * @returns {Promise<{result: {width: number, height: number, anchor: string}}>}
+ */
 export async function resizeCanvas({ width, height, anchor }, app) {
     await app._changeCanvasSize(width, height, anchor || 'center')
     return { result: { width, height, anchor: anchor || 'center' } }
@@ -1506,16 +2133,34 @@ function autoCorrectionResult(addedLayer) {
     }
 }
 
+/**
+ * Auto-levels: add an adjustment layer that stretches per-channel histograms
+ * to full range. Returns `applied: false` when no adjustment was needed.
+ *
+ * @returns {Promise<{result: {applied: boolean, layerId: string|null}}>}
+ */
 export async function autoLevels(_args, app) {
     const layer = await app._handleAutoCorrection(autoLevelsFn)
     return autoCorrectionResult(layer)
 }
 
+/**
+ * Auto-contrast: stretch luminance to full range. Returns `applied: false`
+ * when no adjustment was needed.
+ *
+ * @returns {Promise<{result: {applied: boolean, layerId: string|null}}>}
+ */
 export async function autoContrast(_args, app) {
     const layer = await app._handleAutoCorrection(autoContrastFn)
     return autoCorrectionResult(layer)
 }
 
+/**
+ * Auto-white-balance: shift colors so the brightest region is neutral white.
+ * Returns `applied: false` when no adjustment was needed.
+ *
+ * @returns {Promise<{result: {applied: boolean, layerId: string|null}}>}
+ */
 export async function autoWhiteBalance(_args, app) {
     const layer = await app._handleAutoCorrection(autoWhiteBalanceFn)
     return autoCorrectionResult(layer)

@@ -11,7 +11,12 @@
  * @module agent
  */
 
-export const API_VERSION = '1.0'
+// API_VERSION lives in constants.js so other agent modules can import it
+// without pulling in the dispatcher / registration machinery. Re-exported
+// here for backwards compatibility — older external code that does
+// `import { API_VERSION } from './index.js'` keeps working.
+import { API_VERSION } from './constants.js'
+export { API_VERSION }
 
 import { registerCommand } from './dispatcher.js'
 import { buildSnapshot } from './snapshot.js'

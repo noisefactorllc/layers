@@ -7,11 +7,9 @@
  * @module agent/snapshot
  */
 
-import { API_VERSION } from './index.js'
+import { API_VERSION, SCHEMA_VERSION, safeClone } from './constants.js'
 import { getRecentExports } from './commands.js'
 import { listJobs } from './jobs.js'
-
-const SCHEMA_VERSION = '1.0'
 
 export function buildSnapshot(app) {
     return {
@@ -145,10 +143,14 @@ function buildMedia(layer, app) {
 
 function buildEffect(layer) {
     if (layer.sourceType !== 'effect') return null
+    // Deep clone so the snapshot reader can't mutate nested param values
+    // (vec arrays, color tables, etc.) and ripple changes back into the
+    // live layer. Falls back to a shallow copy if structuredClone refuses
+    // the input — see safeClone.
     return {
         id: layer.effectId,
         name: layer.name,
-        params: layer.effectParams ? { ...layer.effectParams } : {}
+        params: layer.effectParams ? safeClone(layer.effectParams) : {}
     }
 }
 
@@ -158,12 +160,14 @@ function buildDrawing(layer) {
 }
 
 function buildChildEffect(child) {
+    // Deep clone params for the same reason as buildEffect — defend live
+    // child effectParams from snapshot-consumer mutation.
     return {
         id: child.id,
         name: child.name,
         effectId: child.effectId,
         visible: child.visible !== false,
-        params: child.effectParams ? { ...child.effectParams } : {}
+        params: child.effectParams ? safeClone(child.effectParams) : {}
     }
 }
 

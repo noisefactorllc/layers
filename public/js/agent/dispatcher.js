@@ -8,7 +8,7 @@
  * @module agent/dispatcher
  */
 
-import { API_VERSION } from './index.js'
+import { API_VERSION } from './constants.js'
 import { SCHEMAS, validate } from './schemas.js'
 import { buildSnapshot } from './snapshot.js'
 
