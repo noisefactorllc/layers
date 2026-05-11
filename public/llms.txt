@@ -28,9 +28,8 @@ MCP tool. Output files (image/video exports) are written to a configurable
 directory and the file path is returned in the envelope.
 
 - Repo: `https://github.com/noisefactorllc/layers-mcp`
-- Local: `~/platform/layers-mcp/`
 - Configure with `LAYERS_URL`, `LAYERS_MCP_OUTPUT_DIR`, `LAYERS_MCP_PROFILE_DIR`
-- Example client config: `layers-mcp/examples/claude-code.json`
+- Example client config: `examples/claude-code.json` in the repo
 
 Agents using an MCP client speak normal `tools/list` and `tools/call`. The
 underlying envelope shape is the same as the in-page API; the MCP server
@@ -263,10 +262,7 @@ console.log(env.result.filePath)   // /Users/you/layers-mcp-exports/layers-2026-
   (job registry + `JOB_KINDS`), `/js/agent/snapshot.js` (state builder)
 - Test/diagnostic back door: `window.__LAYERS_TEST_HOOKS.jobs` (Playwright
   specs only -- NOT a public API)
-- MCP sidecar: `~/platform/layers-mcp/` (separate repo). See its `README.md`
-  for config and `examples/claude-code.json` for client wiring
+- MCP sidecar: `https://github.com/noisefactorllc/layers-mcp`. See its
+  `README.md` for config and `examples/claude-code.json` for client wiring.
 - Commands return an MCP-content block when called via the sidecar; the
-  inner JSON is the envelope described above
-
-This file is reachable at `https://layers.noisefactor.io/llms.txt` once the
-agent build is deployed.
+  inner JSON is the envelope described above.
