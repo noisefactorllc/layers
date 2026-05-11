@@ -12,6 +12,20 @@ import { commandError } from './dispatcher.js'
 import { listProjects as listProjectsStorage } from '../utils/project-storage.js'
 import * as effectsModule from './effects.js'
 import { createDrawingLayer } from '../layers/layer-model.js'
+// TODO: When a 3rd or 4th name collision shows up (likely Phase 5+), refactor to
+// `import * as selectionMods from '../selection/selection-modify.js'` and call
+// `selectionMods.featherMask(...)` at the call sites — eliminates the alias dance
+// and makes provenance explicit.
+import {
+    invertMask, colorRange,
+    expandMask as expandMask_fn,
+    contractMask as contractMask_fn,
+    featherMask as featherMask_fn,
+    smoothMask as smoothMask_fn,
+    borderMask
+} from '../selection/selection-modify.js'
+import { floodFill } from '../selection/flood-fill.js'
+import { createPathStroke, createShapeStroke } from '../drawing/stroke-model.js'
 
 export async function getState(_args, app) {
     return { result: buildSnapshot(app) }
@@ -763,4 +777,458 @@ export async function exportImage(args, app) {
 
 export async function pasteImageFromBytes({ source, name }, app) {
     return addMediaLayer({ source, mediaType: 'image', name: name || 'pasted' }, app)
+}
+
+/**
+ * Throw CONFLICT_NO_SELECTION if there's no active selection.
+ */
+function requireSelection(app) {
+    const sm = app?._selectionManager
+    if (!sm || !sm.hasSelection?.()) {
+        throw commandError('CONFLICT_NO_SELECTION',
+            'No active selection. Set one first with selectAll or setRectangleSelection.',
+            {})
+    }
+    return sm
+}
+
+export async function selectAll(_args, app) {
+    const sm = app?._selectionManager
+    if (!sm) {
+        throw commandError('INTERNAL_ERROR',
+            'Selection manager not available', {})
+    }
+    sm.setSelection({
+        type: 'rect',
+        x: 0, y: 0,
+        width: app._canvas.width,
+        height: app._canvas.height
+    })
+    return { result: { ok: true } }
+}
+
+export async function selectNone(_args, app) {
+    const sm = app?._selectionManager
+    if (!sm) {
+        throw commandError('INTERNAL_ERROR',
+            'Selection manager not available', {})
+    }
+    sm.clearSelection()
+    return { result: { ok: true } }
+}
+
+export async function selectInverse(_args, app) {
+    const sm = requireSelection(app)
+    const mask = sm.rasterizeSelection()
+    if (!mask) {
+        throw commandError('INTERNAL_ERROR',
+            'Could not rasterize current selection',
+            {})
+    }
+    sm.setSelection({ type: 'mask', data: invertMask(mask) })
+    return { result: { ok: true } }
+}
+
+export async function setRectangleSelection({ x, y, width, height }, app) {
+    const sm = app?._selectionManager
+    if (!sm) {
+        throw commandError('INTERNAL_ERROR',
+            'Selection manager not available', {})
+    }
+    sm.setSelection({ type: 'rect', x, y, width, height })
+    return { result: { ok: true } }
+}
+
+export async function setOvalSelection({ x, y, width, height }, app) {
+    const sm = app?._selectionManager
+    if (!sm) {
+        throw commandError('INTERNAL_ERROR',
+            'Selection manager not available', {})
+    }
+    // SelectionManager's oval path uses center-radii form.
+    sm.setSelection({
+        type: 'oval',
+        cx: x + width / 2,
+        cy: y + height / 2,
+        rx: width / 2,
+        ry: height / 2
+    })
+    return { result: { ok: true } }
+}
+
+export async function setPolygonSelection({ kind, points }, app) {
+    const sm = app?._selectionManager
+    if (!sm) {
+        throw commandError('INTERNAL_ERROR',
+            'Selection manager not available', {})
+    }
+    if (!Array.isArray(points) || points.length < 3) {
+        throw commandError('INVALID_ARGS_RANGE',
+            `polygon/lasso selection requires at least 3 points, got ${points?.length ?? 0}`,
+            { field: 'points', min: 3, value: points?.length ?? 0 })
+    }
+    const sanitized = []
+    for (let i = 0; i < points.length; i++) {
+        const p = points[i]
+        if (!Array.isArray(p) || p.length < 2 ||
+            typeof p[0] !== 'number' || typeof p[1] !== 'number') {
+            throw commandError('INVALID_ARGS_TYPE',
+                `points[${i}] must be a [number, number] tuple`,
+                { field: `points[${i}]`, expected: '[number, number]' })
+        }
+        sanitized.push({ x: p[0], y: p[1] })
+    }
+    sm.setSelection({ type: kind || 'polygon', points: sanitized })
+    return { result: { ok: true } }
+}
+
+export async function setMagicWandSelection({ x, y, tolerance }, app) {
+    const sm = app?._selectionManager
+    if (!sm) {
+        throw commandError('INTERNAL_ERROR',
+            'Selection manager not available', {})
+    }
+    const canvas = app._canvas
+    if (x >= canvas.width || y >= canvas.height) {
+        throw commandError('INVALID_ARGS_RANGE',
+            `Point (${x}, ${y}) is outside canvas (${canvas.width}x${canvas.height})`,
+            { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
+    }
+    // Read current canvas pixels into an offscreen 2D context for flood fill.
+    const tmp = document.createElement('canvas')
+    tmp.width = canvas.width
+    tmp.height = canvas.height
+    tmp.getContext('2d').drawImage(canvas, 0, 0)
+    const imageData = tmp.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
+    const tol = tolerance ?? sm.wandTolerance ?? 32
+    const mask = floodFill(imageData, x, y, tol)
+    sm.setSelection({ type: 'wand', mask })
+    return { result: { ok: true } }
+}
+
+export async function selectColorRange({ x, y, tolerance }, app) {
+    const sm = app?._selectionManager
+    if (!sm) {
+        throw commandError('INTERNAL_ERROR',
+            'Selection manager not available', {})
+    }
+    const canvas = app._canvas
+    if (x >= canvas.width || y >= canvas.height) {
+        throw commandError('INVALID_ARGS_RANGE',
+            `Point (${x}, ${y}) is outside canvas (${canvas.width}x${canvas.height})`,
+            { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
+    }
+    const tmp = document.createElement('canvas')
+    tmp.width = canvas.width
+    tmp.height = canvas.height
+    tmp.getContext('2d').drawImage(canvas, 0, 0)
+    const imageData = tmp.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
+    const tol = tolerance ?? 32
+    const mask = colorRange(imageData, x, y, tol)
+    sm.setSelection({ type: 'mask', data: mask })
+    return { result: { ok: true } }
+}
+
+function applySelectionMaskTransform(app, fn) {
+    const sm = requireSelection(app)
+    const mask = sm.rasterizeSelection()
+    if (!mask) {
+        throw commandError('INTERNAL_ERROR',
+            'Could not rasterize current selection',
+            {})
+    }
+    sm.setSelection({ type: 'mask', data: fn(mask) })
+}
+
+export async function expandSelection({ pixels }, app) {
+    applySelectionMaskTransform(app, (mask) => expandMask_fn(mask, pixels))
+    return { result: { ok: true, pixels } }
+}
+
+export async function contractSelection({ pixels }, app) {
+    applySelectionMaskTransform(app, (mask) => contractMask_fn(mask, pixels))
+    return { result: { ok: true, pixels } }
+}
+
+export async function featherSelection({ pixels }, app) {
+    applySelectionMaskTransform(app, (mask) => featherMask_fn(mask, pixels))
+    return { result: { ok: true, pixels } }
+}
+
+export async function smoothSelection({ pixels }, app) {
+    applySelectionMaskTransform(app, (mask) => smoothMask_fn(mask, pixels))
+    return { result: { ok: true, pixels } }
+}
+
+export async function borderSelection({ pixels }, app) {
+    applySelectionMaskTransform(app, (mask) => borderMask(mask, pixels))
+    return { result: { ok: true, pixels } }
+}
+
+export async function cropToSelection(_args, app) {
+    requireSelection(app)
+    await app._cropToSelection()
+    return { result: { ok: true } }
+}
+
+/**
+ * Look up a layer that already has a mask; throw CONFLICT_NO_MASK if missing.
+ */
+function requireMaskedLayer(layerId, app) {
+    const layer = requireLayer(layerId, app)
+    if (!layer.mask) {
+        throw commandError('CONFLICT_NO_MASK',
+            `Layer ${layerId} has no mask. Call addLayerMask or addMaskFromSelection first.`,
+            { layerId })
+    }
+    return layer
+}
+
+export async function addLayerMask({ layerId }, app) {
+    const layer = requireLayer(layerId, app)
+    if (layer.mask) {
+        throw commandError('CONFLICT_LAYER_HAS_MASK',
+            `Layer ${layerId} already has a mask. Call deleteLayerMask first.`,
+            { layerId })
+    }
+    // Replicate the core of app._addLayerMask but skip _enterMaskEditMode.
+    app._finalizePendingUndo?.()
+    const w = app._canvas.width
+    const h = app._canvas.height
+    const mask = new ImageData(w, h)
+    for (let i = 0; i < mask.data.length; i += 4) {
+        mask.data[i] = 255
+        mask.data[i + 1] = 255
+        mask.data[i + 2] = 255
+        mask.data[i + 3] = 255
+    }
+    layer.mask = mask
+    layer.maskEnabled = true
+    app._renderer?.uploadMaskTexture?.(layerId, mask)
+    app._updateLayerStack?.()
+    await app._rebuild?.()
+    app._markDirty?.()
+    app._pushUndoState?.()
+    return { result: { layerId } }
+}
+
+export async function deleteLayerMask({ layerId }, app) {
+    requireMaskedLayer(layerId, app)
+    await app._deleteLayerMask(layerId)
+    return { result: { layerId } }
+}
+
+export async function addMaskFromSelection({ layerId }, app) {
+    const layer = requireLayer(layerId, app)
+    if (layer.mask) {
+        throw commandError('CONFLICT_LAYER_HAS_MASK',
+            `Layer ${layerId} already has a mask. Call deleteLayerMask first.`,
+            { layerId })
+    }
+    requireSelection(app)   // throws CONFLICT_NO_SELECTION if missing
+    await app._maskFromSelection(layerId)
+    return { result: { layerId } }
+}
+
+export async function invertLayerMask({ layerId }, app) {
+    requireMaskedLayer(layerId, app)
+    await app._invertLayerMask(layerId)
+    return { result: { layerId } }
+}
+
+export async function setMaskEnabled({ layerId, enabled }, app) {
+    const layer = requireMaskedLayer(layerId, app)
+    if (layer.maskEnabled === enabled) {
+        // No-op: already in requested state.
+        return { result: { layerId, enabled } }
+    }
+    app._finalizePendingUndo?.()
+    layer.maskEnabled = enabled
+    app._updateLayerStack?.()
+    await app._rebuild?.()
+    app._markDirty?.()
+    app._pushUndoState?.()
+    return { result: { layerId, enabled } }
+}
+
+/**
+ * Apply a selection-modify transform to a layer's mask.
+ *
+ * Mask storage uses RGB=val/A=255; selection-modify ops expect A=val.
+ * The transform helper converts in/out via app._maskToSelectionFormat
+ * and app._selectionFormatToMask.
+ */
+async function applyMaskTransform(app, layerId, fn) {
+    const layer = requireMaskedLayer(layerId, app)
+    app._finalizePendingUndo?.()
+    const converted = app._maskToSelectionFormat(layer.mask)
+    layer.mask = app._selectionFormatToMask(fn(converted))
+    app._renderer?.uploadMaskTexture?.(layerId, layer.mask)
+    if (app._maskEditMode) app._renderMaskOverlay?.(layer)
+    await app._rebuild?.()
+    app._markDirty?.()
+    app._pushUndoState?.()
+}
+
+export async function featherMask({ layerId, radius }, app) {
+    await applyMaskTransform(app, layerId, (mask) => featherMask_fn(mask, radius))
+    return { result: { layerId, radius } }
+}
+
+export async function expandMask({ layerId, radius }, app) {
+    await applyMaskTransform(app, layerId, (mask) => expandMask_fn(mask, radius))
+    return { result: { layerId, radius } }
+}
+
+export async function contractMask({ layerId, radius }, app) {
+    await applyMaskTransform(app, layerId, (mask) => contractMask_fn(mask, radius))
+    return { result: { layerId, radius } }
+}
+
+export async function smoothMask({ layerId, radius }, app) {
+    await applyMaskTransform(app, layerId, (mask) => smoothMask_fn(mask, radius))
+    return { result: { layerId, radius } }
+}
+
+/**
+ * Look up a layer that is a drawing layer. Throws CONFLICT_NOT_DRAWING_LAYER
+ * if the layer exists but isn't of sourceType 'drawing'.
+ */
+function requireDrawingLayer(layerId, app) {
+    const layer = requireLayer(layerId, app)
+    if (layer.sourceType !== 'drawing') {
+        throw commandError('CONFLICT_NOT_DRAWING_LAYER',
+            `Layer ${layerId} is not a drawing layer (sourceType=${layer.sourceType})`,
+            { layerId, sourceType: layer.sourceType })
+    }
+    return layer
+}
+
+/**
+ * Normalize an array of points; accept either [x,y] tuples or {x,y} objects.
+ * Throws INVALID_ARGS_RANGE if fewer than minCount points; INVALID_ARGS_TYPE on malformed.
+ */
+function normalizePoints(points, fieldName, minCount = 2) {
+    if (!Array.isArray(points) || points.length < minCount) {
+        throw commandError('INVALID_ARGS_RANGE',
+            `${fieldName} requires at least ${minCount} points, got ${points?.length ?? 0}`,
+            { field: fieldName, min: minCount, value: points?.length ?? 0 })
+    }
+    const out = []
+    for (let i = 0; i < points.length; i++) {
+        const p = points[i]
+        if (Array.isArray(p) && p.length >= 2 &&
+            typeof p[0] === 'number' && typeof p[1] === 'number') {
+            out.push({ x: p[0], y: p[1] })
+        } else if (p && typeof p.x === 'number' && typeof p.y === 'number') {
+            out.push({ x: p.x, y: p.y })
+        } else {
+            throw commandError('INVALID_ARGS_TYPE',
+                `${fieldName}[${i}] must be [number, number] or {x, y}`,
+                { field: `${fieldName}[${i}]`, expected: '[number, number] | {x, y}' })
+        }
+    }
+    return out
+}
+
+export async function paintStroke({ layerId, points, size, opacity, color }, app) {
+    const sanitized = normalizePoints(points, 'points', 2)
+    let layer
+    if (layerId) {
+        layer = requireDrawingLayer(layerId, app)
+    } else {
+        layer = app._ensureDrawingLayer()
+    }
+    app._finalizePendingUndo?.()
+    const stroke = createPathStroke({
+        color,
+        size,
+        opacity: opacity ?? 1,
+        points: sanitized
+    })
+    layer.strokes.push(stroke)
+    await app._rasterizeDrawingLayer(layer)
+    await app._rebuild?.({ force: true })
+    app._markDirty?.()
+    app._pushUndoState?.()
+    return { result: { layerId: layer.id, strokeId: stroke.id } }
+}
+
+export async function drawShape({ layerId, shape, x, y, width, height, color, size, opacity, filled }, app) {
+    let layer
+    if (layerId) {
+        layer = requireDrawingLayer(layerId, app)
+    } else {
+        layer = app._ensureDrawingLayer()
+    }
+    app._finalizePendingUndo?.()
+    const stroke = createShapeStroke({
+        type: shape,
+        color,
+        size,
+        opacity: opacity ?? 1,
+        x, y, width, height,
+        filled: !!filled
+    })
+    layer.strokes.push(stroke)
+    await app._rasterizeDrawingLayer(layer)
+    await app._rebuild?.({ force: true })
+    app._markDirty?.()
+    app._pushUndoState?.()
+    return { result: { layerId: layer.id, strokeId: stroke.id } }
+}
+
+export async function fillRegion({ x, y, color, tolerance }, app) {
+    const canvas = app._canvas
+    if (x >= canvas.width || y >= canvas.height) {
+        throw commandError('INVALID_ARGS_RANGE',
+            `Point (${x}, ${y}) is outside canvas (${canvas.width}x${canvas.height})`,
+            { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
+    }
+    const tol = tolerance ?? 32
+
+    // Read composited pixels from the WebGL canvas (mirrors FillTool._onClick).
+    const gl = canvas.getContext('webgl') || canvas.getContext('webgl2')
+    if (!gl) {
+        throw commandError('INTERNAL_ERROR',
+            'Could not get WebGL context for fill', {})
+    }
+    const w = canvas.width, h = canvas.height
+    const pixels = new Uint8Array(w * h * 4)
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+
+    // WebGL readPixels is bottom-up; flip vertically for image-space coords.
+    const flipped = new Uint8ClampedArray(w * h * 4)
+    for (let row = 0; row < h; row++) {
+        const srcRow = (h - 1 - row) * w * 4
+        const dstRow = row * w * 4
+        flipped.set(pixels.subarray(srcRow, srcRow + w * 4), dstRow)
+    }
+    const imageData = new ImageData(flipped, w, h)
+
+    // Flood fill at the click point. `floodFill` is already imported at the top
+    // of commands.js (added in Phase 4-selections T4 for setMagicWandSelection).
+    const mask = floodFill(imageData, x, y, tol)
+
+    // Build a fill canvas masked by the flood-fill mask.
+    const fillCanvas = document.createElement('canvas')
+    fillCanvas.width = w
+    fillCanvas.height = h
+    const ctx = fillCanvas.getContext('2d')
+    ctx.fillStyle = color
+    ctx.fillRect(0, 0, w, h)
+    const fillData = ctx.getImageData(0, 0, w, h)
+    for (let i = 0; i < mask.data.length; i += 4) {
+        if (mask.data[i + 3] === 0) {
+            fillData.data[i + 3] = 0
+        }
+    }
+    ctx.putImageData(fillData, 0, 0)
+
+    app._finalizePendingUndo?.()
+    await app._addMediaLayerFromCanvas(fillCanvas, 'Fill')
+    app._markDirty?.()
+    app._pushUndoState?.()
+    const newLayer = app._layers[app._layers.length - 1]
+    return { result: { layerId: newLayer.id } }
 }

@@ -424,4 +424,182 @@ export const SCHEMAS = {
             name: { type: 'string' }
         }
     },
+    selectAll: null,
+    selectNone: null,
+    selectInverse: null,
+    setRectangleSelection: {
+        type: 'object',
+        required: ['x', 'y', 'width', 'height'],
+        properties: {
+            x: { type: 'integer' },
+            y: { type: 'integer' },
+            width: { type: 'integer', min: 1 },
+            height: { type: 'integer', min: 1 }
+        }
+    },
+    setOvalSelection: {
+        type: 'object',
+        required: ['x', 'y', 'width', 'height'],
+        properties: {
+            x: { type: 'integer' },
+            y: { type: 'integer' },
+            width: { type: 'integer', min: 1 },
+            height: { type: 'integer', min: 1 }
+        }
+    },
+    setPolygonSelection: {
+        type: 'object',
+        required: ['points'],
+        properties: {
+            kind: { type: 'string', enum: ['polygon', 'lasso'] },
+            points: {
+                type: 'array',
+                items: {
+                    type: 'array',
+                    items: { type: 'number' }
+                }
+            }
+        }
+    },
+    setMagicWandSelection: {
+        type: 'object',
+        required: ['x', 'y'],
+        properties: {
+            x: { type: 'integer', min: 0 },
+            y: { type: 'integer', min: 0 },
+            tolerance: { type: 'integer', min: 0, max: 255 }
+        }
+    },
+    selectColorRange: {
+        type: 'object',
+        required: ['x', 'y'],
+        properties: {
+            x: { type: 'integer', min: 0 },
+            y: { type: 'integer', min: 0 },
+            tolerance: { type: 'integer', min: 0, max: 255 }
+        }
+    },
+    expandSelection: {
+        type: 'object',
+        required: ['pixels'],
+        properties: { pixels: { type: 'integer', min: 1, max: 1000 } }
+    },
+    contractSelection: {
+        type: 'object',
+        required: ['pixels'],
+        properties: { pixels: { type: 'integer', min: 1, max: 1000 } }
+    },
+    featherSelection: {
+        type: 'object',
+        required: ['pixels'],
+        properties: { pixels: { type: 'integer', min: 1, max: 1000 } }
+    },
+    smoothSelection: {
+        type: 'object',
+        required: ['pixels'],
+        properties: { pixels: { type: 'integer', min: 1, max: 1000 } }
+    },
+    borderSelection: {
+        type: 'object',
+        required: ['pixels'],
+        properties: { pixels: { type: 'integer', min: 1, max: 1000 } }
+    },
+    cropToSelection: null,
+    addLayerMask: {
+        type: 'object',
+        required: ['layerId'],
+        properties: { layerId: { type: 'string' } }
+    },
+    deleteLayerMask: {
+        type: 'object',
+        required: ['layerId'],
+        properties: { layerId: { type: 'string' } }
+    },
+    addMaskFromSelection: {
+        type: 'object',
+        required: ['layerId'],
+        properties: { layerId: { type: 'string' } }
+    },
+    invertLayerMask: {
+        type: 'object',
+        required: ['layerId'],
+        properties: { layerId: { type: 'string' } }
+    },
+    setMaskEnabled: {
+        type: 'object',
+        required: ['layerId', 'enabled'],
+        properties: {
+            layerId: { type: 'string' },
+            enabled: { type: 'boolean' }
+        }
+    },
+    featherMask: {
+        type: 'object',
+        required: ['layerId', 'radius'],
+        properties: {
+            layerId: { type: 'string' },
+            radius: { type: 'integer', min: 1, max: 100 }
+        }
+    },
+    expandMask: {
+        type: 'object',
+        required: ['layerId', 'radius'],
+        properties: {
+            layerId: { type: 'string' },
+            radius: { type: 'integer', min: 1, max: 100 }
+        }
+    },
+    contractMask: {
+        type: 'object',
+        required: ['layerId', 'radius'],
+        properties: {
+            layerId: { type: 'string' },
+            radius: { type: 'integer', min: 1, max: 100 }
+        }
+    },
+    smoothMask: {
+        type: 'object',
+        required: ['layerId', 'radius'],
+        properties: {
+            layerId: { type: 'string' },
+            radius: { type: 'integer', min: 1, max: 100 }
+        }
+    },
+    paintStroke: {
+        type: 'object',
+        required: ['points', 'size', 'color'],
+        properties: {
+            layerId: { type: 'string' },
+            points: { type: 'array' },
+            size: { type: 'integer', min: 1, max: 200 },
+            opacity: { type: 'number', min: 0, max: 1 },
+            color: { type: 'string' }
+        }
+    },
+    drawShape: {
+        type: 'object',
+        required: ['shape', 'x', 'y', 'width', 'height', 'color', 'size'],
+        properties: {
+            layerId: { type: 'string' },
+            shape: { type: 'string', enum: ['rect', 'ellipse'] },
+            x: { type: 'integer' },
+            y: { type: 'integer' },
+            width: { type: 'integer', min: 1 },
+            height: { type: 'integer', min: 1 },
+            color: { type: 'string' },
+            size: { type: 'integer', min: 1, max: 200 },
+            opacity: { type: 'number', min: 0, max: 1 },
+            filled: { type: 'boolean' }
+        }
+    },
+    fillRegion: {
+        type: 'object',
+        required: ['x', 'y', 'color'],
+        properties: {
+            x: { type: 'integer', min: 0 },
+            y: { type: 'integer', min: 0 },
+            color: { type: 'string' },
+            tolerance: { type: 'integer', min: 0, max: 255 }
+        }
+    },
 }
