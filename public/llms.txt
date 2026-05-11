@@ -27,7 +27,7 @@ headless Chromium pointed at Layers. Every LayersAgent command becomes an
 MCP tool. Output files (image/video exports) are written to a configurable
 directory and the file path is returned in the envelope.
 
-- Repo: `https://github.com/noisefactorllc/layers-mcp` (when published)
+- Repo: `https://github.com/noisefactorllc/layers-mcp`
 - Local: `~/platform/layers-mcp/`
 - Configure with `LAYERS_URL`, `LAYERS_MCP_OUTPUT_DIR`, `LAYERS_MCP_PROFILE_DIR`
 - Example client config: `layers-mcp/examples/claude-code.json`
