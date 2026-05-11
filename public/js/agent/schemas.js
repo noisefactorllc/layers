@@ -219,5 +219,165 @@ export const SCHEMAS = {
         type: 'object',
         required: ['jobId'],
         properties: { jobId: { type: 'string' } }
-    }
+    },
+    addLayer: {
+        type: 'object',
+        required: ['kind'],
+        properties: {
+            kind: { type: 'string', enum: ['effect', 'drawing', 'media', 'text'] },
+            effectId: { type: 'string' },
+            params: { type: 'object' },
+            name: { type: 'string' },
+            text: { type: 'string' },
+            mediaType: { type: 'string', enum: ['image', 'video'] },
+            source: { type: 'object' }
+        }
+    },
+    deleteLayer: {
+        type: 'object',
+        required: ['layerId'],
+        properties: { layerId: { type: 'string' } }
+    },
+    duplicateLayer: {
+        type: 'object',
+        required: ['layerId'],
+        properties: { layerId: { type: 'string' } }
+    },
+    reorderLayer: {
+        type: 'object',
+        required: ['layerId', 'toIndex'],
+        properties: {
+            layerId: { type: 'string' },
+            toIndex: { type: 'integer', min: 0 }
+        }
+    },
+    selectLayer: {
+        type: 'object',
+        required: ['layerId'],
+        properties: { layerId: { type: 'string' } }
+    },
+    selectLayers: {
+        type: 'object',
+        required: ['layerIds'],
+        properties: {
+            layerIds: { type: 'array', items: { type: 'string' } }
+        }
+    },
+    flattenImage: null,
+    flattenLayers: {
+        type: 'object',
+        required: ['layerIds'],
+        properties: {
+            layerIds: { type: 'array', items: { type: 'string' } }
+        }
+    },
+    rasterizeLayer: {
+        type: 'object',
+        required: ['layerId'],
+        properties: { layerId: { type: 'string' } }
+    },
+    flipLayer: {
+        type: 'object',
+        required: ['layerId', 'axis'],
+        properties: {
+            layerId: { type: 'string' },
+            axis: { type: 'string', enum: ['h', 'v'] }
+        }
+    },
+    setLayerProps: {
+        type: 'object',
+        required: ['layerId', 'props'],
+        properties: {
+            layerId: { type: 'string' },
+            props: {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                    visible: { type: 'boolean' },
+                    opacity: { type: 'number', min: 0, max: 100 },
+                    blendMode: { type: 'string' },
+                    locked: { type: 'boolean' }
+                }
+            }
+        }
+    },
+    setLayerTransform: {
+        type: 'object',
+        required: ['layerId', 'transform'],
+        properties: {
+            layerId: { type: 'string' },
+            transform: {
+                type: 'object',
+                properties: {
+                    offsetX: { type: 'number' },
+                    offsetY: { type: 'number' },
+                    scaleX: { type: 'number', min: 0.01, max: 100 },
+                    scaleY: { type: 'number', min: 0.01, max: 100 },
+                    rotation: { type: 'number' },
+                    flipH: { type: 'boolean' },
+                    flipV: { type: 'boolean' }
+                }
+            }
+        }
+    },
+    setLayerEffectParams: {
+        type: 'object',
+        required: ['layerId', 'params'],
+        properties: {
+            layerId: { type: 'string' },
+            params: { type: 'object' },
+            replace: { type: 'boolean' }
+        }
+    },
+    addChildEffect: {
+        type: 'object',
+        required: ['layerId', 'effectId'],
+        properties: {
+            layerId: { type: 'string' },
+            effectId: { type: 'string' },
+            params: { type: 'object' }
+        }
+    },
+    removeChildEffect: {
+        type: 'object',
+        required: ['layerId', 'childId'],
+        properties: {
+            layerId: { type: 'string' },
+            childId: { type: 'string' }
+        }
+    },
+    reorderChildEffect: {
+        type: 'object',
+        required: ['layerId', 'childId', 'toIndex'],
+        properties: {
+            layerId: { type: 'string' },
+            childId: { type: 'string' },
+            toIndex: { type: 'integer', min: 0 }
+        }
+    },
+    setChildEffectProps: {
+        type: 'object',
+        required: ['layerId', 'childId', 'props'],
+        properties: {
+            layerId: { type: 'string' },
+            childId: { type: 'string' },
+            props: {
+                type: 'object',
+                properties: {
+                    visible: { type: 'boolean' },
+                    name: { type: 'string' }
+                }
+            }
+        }
+    },
+    setChildEffectParams: {
+        type: 'object',
+        required: ['layerId', 'childId', 'params'],
+        properties: {
+            layerId: { type: 'string' },
+            childId: { type: 'string' },
+            params: { type: 'object' },
+            replace: { type: 'boolean' }
+        }
+    },
 }

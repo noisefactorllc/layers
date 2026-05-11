@@ -1,0 +1,180 @@
+import { test, expect } from 'playwright/test'
+
+async function bootApp(page) {
+    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+    await page.evaluate(async () => { await window.LayersAgent.ready })
+    const visible = await page.evaluate(() => !!document.querySelector('.open-dialog-backdrop.visible'))
+    if (visible) {
+        await page.click('.media-option[data-type="solid"]')
+        await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+        await page.click('.canvas-size-dialog .action-btn.primary')
+        await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
+    }
+}
+
+test.describe('LayersAgent.addLayer — effect kind', () => {
+    test('adds an effect layer and returns its id', async ({ page }) => {
+        await bootApp(page)
+        const before = await page.evaluate(() => window.layersApp._layers.length)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({ kind: 'effect', effectId: 'synth/gradient' })
+        )
+        expect(env.ok).toBe(true)
+        expect(env.result.layerId).toMatch(/^layer-/)
+        const after = await page.evaluate(() => window.layersApp._layers.length)
+        expect(after).toBe(before + 1)
+        const stateLast = env.state.layers[env.state.layers.length - 1]
+        expect(stateLast.id).toBe(env.result.layerId)
+        expect(stateLast.sourceType).toBe('effect')
+        expect(stateLast.effect.id).toBe('synth/gradient')
+    })
+
+    test('addLayer returns NOT_FOUND_EFFECT for unknown effectId', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({ kind: 'effect', effectId: 'filter/totallyMadeUp' })
+        )
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('NOT_FOUND_EFFECT')
+    })
+
+    test('addLayer effect with params applies them after creation', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({
+                kind: 'effect',
+                effectId: 'synth/solid',
+                params: { color: [1, 0, 0] }
+            })
+        )
+        expect(env.ok).toBe(true)
+        const layer = env.state.layers.find(l => l.id === env.result.layerId)
+        expect(layer.effect.params.color).toEqual([1, 0, 0])
+    })
+
+    test('addLayer rejects missing required kind', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() => window.LayersAgent.addLayer({}))
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_REQUIRED')
+        expect(env.error.details.field).toBe('kind')
+    })
+
+    test('addLayer rejects unknown kind enum', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() => window.LayersAgent.addLayer({ kind: 'silly' }))
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_ENUM')
+    })
+})
+
+test.describe('LayersAgent.addLayer — drawing kind', () => {
+    test('adds an empty drawing layer', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({ kind: 'drawing' })
+        )
+        expect(env.ok).toBe(true)
+        expect(env.result.layerId).toMatch(/^layer-/)
+        const layer = env.state.layers.find(l => l.id === env.result.layerId)
+        expect(layer.sourceType).toBe('drawing')
+        expect(layer.drawing).toMatchObject({ strokeCount: 0 })
+    })
+
+    test('addLayer drawing accepts an optional name', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({ kind: 'drawing', name: 'Sketch 1' })
+        )
+        expect(env.ok).toBe(true)
+        const layer = env.state.layers.find(l => l.id === env.result.layerId)
+        expect(layer.name).toBe('Sketch 1')
+    })
+})
+
+test.describe('LayersAgent.addLayer — media kind', () => {
+    // 1x1 transparent PNG, base64 encoded
+    const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+
+    test('adds a media layer from base64 source', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate((data) =>
+            window.LayersAgent.addLayer({
+                kind: 'media',
+                mediaType: 'image',
+                name: 'tiny.png',
+                source: { kind: 'base64', data, mimeType: 'image/png' }
+            }),
+            TINY_PNG_B64
+        )
+        expect(env.ok).toBe(true)
+        expect(env.result.layerId).toMatch(/^layer-/)
+        const layer = env.state.layers.find(l => l.id === env.result.layerId)
+        expect(layer.sourceType).toBe('media')
+        expect(layer.media.type).toBe('image')
+        expect(layer.media.filename).toBe('tiny.png')
+    })
+
+    test('addLayer media rejects missing source', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({ kind: 'media', mediaType: 'image' })
+        )
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_REQUIRED')
+        expect(env.error.details.field).toBe('source')
+    })
+
+    test('addLayer media rejects missing mediaType', async ({ page }, testInfo) => {
+        await bootApp(page)
+        const env = await page.evaluate((data) =>
+            window.LayersAgent.addLayer({
+                kind: 'media',
+                source: { kind: 'base64', data, mimeType: 'image/png' }
+            }),
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+        )
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_REQUIRED')
+        expect(env.error.details.field).toBe('mediaType')
+    })
+
+    test('addLayer media rejects unsupported source.kind', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({
+                kind: 'media',
+                mediaType: 'image',
+                source: { kind: 'unsupported', value: 'whatever' }
+            })
+        )
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_ENUM')
+        expect(env.error.details.field).toBe('source.kind')
+    })
+})
+
+test.describe('LayersAgent.addLayer — text kind', () => {
+    test('adds a text layer with text param set', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({ kind: 'text', text: 'Hello' })
+        )
+        expect(env.ok).toBe(true)
+        const layer = env.state.layers.find(l => l.id === env.result.layerId)
+        expect(layer.sourceType).toBe('effect')
+        expect(layer.effect.id).toBe('filter/text')
+        expect(layer.effect.params.text).toBe('Hello')
+    })
+
+    test('addLayer text rejects missing text field', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({ kind: 'text' })
+        )
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_REQUIRED')
+        expect(env.error.details.field).toBe('text')
+    })
+})
