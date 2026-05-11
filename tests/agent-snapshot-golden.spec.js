@@ -28,6 +28,7 @@ function normalize(snap) {
         clone.selectedLayerIds = clone.selectedLayerIds.map(() => '<id>')
     }
     if (clone.activeLayerId) clone.activeLayerId = '<id>'
+    if (Array.isArray(clone.recentExports)) clone.recentExports = []
     return clone
 }
 

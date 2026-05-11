@@ -78,6 +78,11 @@ export function bootstrapAgent(app) {
     registerCommand(LayersAgent, 'reorderChildEffect', commands.reorderChildEffect)
     registerCommand(LayersAgent, 'setChildEffectProps', commands.setChildEffectProps)
     registerCommand(LayersAgent, 'setChildEffectParams', commands.setChildEffectParams)
+    registerCommand(LayersAgent, 'getCanvasImageBytes', commands.getCanvasImageBytes)
+    registerCommand(LayersAgent, 'getThumbnail', commands.getThumbnail)
+    registerCommand(LayersAgent, 'getLayerThumbnail', commands.getLayerThumbnail)
+    registerCommand(LayersAgent, 'exportImage', commands.exportImage)
+    registerCommand(LayersAgent, 'pasteImageFromBytes', commands.pasteImageFromBytes)
     if (typeof window !== 'undefined') {
         window.__buildSnapshot = buildSnapshot
     }

@@ -518,3 +518,249 @@ export async function setChildEffectParams({ layerId, childId, params, replace }
     })
     return { result: { layerId, childId, params: next } }
 }
+
+const FORMAT_TO_MIME = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    webp: 'image/webp'
+}
+
+/**
+ * Read a blob as base64 (data-url-strip pattern).
+ */
+async function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onloadend = () => {
+            const result = reader.result
+            if (typeof result !== 'string') {
+                reject(new Error('FileReader produced non-string result'))
+                return
+            }
+            const comma = result.indexOf(',')
+            resolve(comma >= 0 ? result.slice(comma + 1) : result)
+        }
+        reader.onerror = () => reject(reader.error || new Error('FileReader failed'))
+        reader.readAsDataURL(blob)
+    })
+}
+
+/**
+ * Render `canvas` to bytes at the requested format/quality and (optionally) target size.
+ * If target size matches canvas size, the canvas is encoded directly.
+ * If target size differs, the canvas is drawn into an OffscreenCanvas at the target size
+ * before encoding (high-quality 2D resampling — not a re-render of the shader graph).
+ */
+async function canvasToBytes(canvas, format, quality, targetW, targetH) {
+    const mimeType = FORMAT_TO_MIME[format]
+    if (!mimeType) {
+        throw commandError('INVALID_ARGS_ENUM',
+            `Unsupported format: ${format}`,
+            { field: 'format', allowed: Object.keys(FORMAT_TO_MIME), got: format })
+    }
+    const sw = canvas.width
+    const sh = canvas.height
+    const tw = targetW && targetW > 0 ? targetW : sw
+    const th = targetH && targetH > 0 ? targetH : sh
+
+    let blob
+    if (tw === sw && th === sh) {
+        blob = await new Promise((resolve, reject) => {
+            canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob produced null')),
+                mimeType, quality)
+        })
+    } else {
+        const off = new OffscreenCanvas(tw, th)
+        const ctx = off.getContext('2d')
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
+        ctx.drawImage(canvas, 0, 0, sw, sh, 0, 0, tw, th)
+        blob = await off.convertToBlob({ type: mimeType, quality })
+    }
+
+    const base64 = await blobToBase64(blob)
+    return {
+        blob,
+        base64,
+        mimeType,
+        width: tw,
+        height: th,
+        sizeBytes: blob.size,
+        format
+    }
+}
+
+export async function getCanvasImageBytes(args, app) {
+    const format = args?.format || 'png'
+    const quality = args?.quality
+    const out = await canvasToBytes(app._canvas, format, quality)
+    return {
+        result: {
+            bytes: out.base64,
+            mimeType: out.mimeType,
+            format: out.format,
+            width: out.width,
+            height: out.height,
+            sizeBytes: out.sizeBytes
+        }
+    }
+}
+
+function thumbnailDimensions(srcWidth, srcHeight, maxDimension) {
+    const longest = Math.max(srcWidth, srcHeight)
+    if (longest <= maxDimension) {
+        return { width: srcWidth, height: srcHeight }
+    }
+    const ratio = maxDimension / longest
+    return {
+        width: Math.max(1, Math.round(srcWidth * ratio)),
+        height: Math.max(1, Math.round(srcHeight * ratio))
+    }
+}
+
+export async function getThumbnail(args, app) {
+    const maxDim = args?.maxDimension ?? 256
+    const format = args?.format || 'jpg'
+    const quality = args?.quality ?? 0.85
+    const { width: tw, height: th } = thumbnailDimensions(
+        app._canvas.width, app._canvas.height, maxDim)
+    const out = await canvasToBytes(app._canvas, format, quality, tw, th)
+    return {
+        result: {
+            bytes: out.base64,
+            mimeType: out.mimeType,
+            format: out.format,
+            width: out.width,
+            height: out.height,
+            sizeBytes: out.sizeBytes
+        }
+    }
+}
+
+export async function getLayerThumbnail({ layerId, maxDimension, format, quality }, app) {
+    requireLayer(layerId, app)
+    const maxDim = maxDimension ?? 256
+    const fmt = format || 'jpg'
+    const q = quality ?? 0.85
+
+    // _renderLayerComposite returns an HTMLImageElement of the canvas after
+    // rendering only the named layer (and its children/mask). Draw it into
+    // an offscreen canvas at the target thumbnail size.
+    const sourceImg = await app._renderLayerComposite([layerId])
+    if (!sourceImg) {
+        throw commandError('RENDER_LAYER_COMPOSITE_FAILED',
+            `Could not render layer ${layerId}`,
+            { layerId })
+    }
+
+    const sw = sourceImg.naturalWidth || sourceImg.width
+    const sh = sourceImg.naturalHeight || sourceImg.height
+    const { width: tw, height: th } = thumbnailDimensions(sw, sh, maxDim)
+
+    const off = new OffscreenCanvas(tw, th)
+    const ctx = off.getContext('2d')
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(sourceImg, 0, 0, sw, sh, 0, 0, tw, th)
+
+    const mimeType = FORMAT_TO_MIME[fmt]
+    const blob = await off.convertToBlob({ type: mimeType, quality: q })
+    const base64 = await blobToBase64(blob)
+    return {
+        result: {
+            bytes: base64,
+            mimeType,
+            format: fmt,
+            width: tw,
+            height: th,
+            sizeBytes: blob.size,
+            layerId
+        }
+    }
+}
+
+const RECENT_EXPORTS_CAP = 50
+const _recentExports = []
+
+/**
+ * Snapshot exposes recentExports through this getter — module-scoped buffer
+ * keeps history without polluting the LayersApp state.
+ */
+export function getRecentExports() {
+    return _recentExports.slice()
+}
+
+function recordExport(entry) {
+    _recentExports.push(entry)
+    while (_recentExports.length > RECENT_EXPORTS_CAP) _recentExports.shift()
+}
+
+function makeExportId() {
+    return `export-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+function timestampedFilename(baseName, ext) {
+    if (baseName) return `${baseName}.${ext}`
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    return `layers-${ts}.${ext}`
+}
+
+function triggerBrowserDownload(blob, filename) {
+    const url = URL.createObjectURL(blob)
+    try {
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        // Defer revoke so the click has time to consume the URL.
+        setTimeout(() => URL.revokeObjectURL(url), 4000)
+    } catch (err) {
+        URL.revokeObjectURL(url)
+        throw err
+    }
+}
+
+export async function exportImage(args, app) {
+    const format = args?.format || 'png'
+    const quality = args?.quality
+    const width = args?.width
+    const height = args?.height
+    const triggerDownload = args?.triggerDownload !== false   // defaults true
+    const filename = timestampedFilename(args?.filename, format)
+
+    const out = await canvasToBytes(app._canvas, format, quality, width, height)
+
+    if (triggerDownload) {
+        triggerBrowserDownload(out.blob, filename)
+    }
+
+    const entry = {
+        id: makeExportId(),
+        path: null,                 // populated by the MCP sidecar in Phase 7
+        filename,
+        mimeType: out.mimeType,
+        sizeBytes: out.sizeBytes,
+        createdAt: new Date().toISOString(),
+        kind: 'image'
+    }
+    recordExport(entry)
+
+    return {
+        result: {
+            bytes: out.base64,
+            mimeType: out.mimeType,
+            format: out.format,
+            width: out.width,
+            height: out.height,
+            sizeBytes: out.sizeBytes,
+            filename,
+            exportId: entry.id
+        }
+    }
+}
+
+export async function pasteImageFromBytes({ source, name }, app) {
+    return addMediaLayer({ source, mediaType: 'image', name: name || 'pasted' }, app)
+}

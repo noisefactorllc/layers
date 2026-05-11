@@ -380,4 +380,48 @@ export const SCHEMAS = {
             replace: { type: 'boolean' }
         }
     },
+    getCanvasImageBytes: {
+        type: 'object',
+        properties: {
+            format: { type: 'string', enum: ['png', 'jpg', 'webp'] },
+            quality: { type: 'number', min: 0, max: 1 }
+        }
+    },
+    getThumbnail: {
+        type: 'object',
+        properties: {
+            maxDimension: { type: 'integer', min: 1, max: 4096 },
+            format: { type: 'string', enum: ['png', 'jpg', 'webp'] },
+            quality: { type: 'number', min: 0, max: 1 }
+        }
+    },
+    getLayerThumbnail: {
+        type: 'object',
+        required: ['layerId'],
+        properties: {
+            layerId: { type: 'string' },
+            maxDimension: { type: 'integer', min: 1, max: 4096 },
+            format: { type: 'string', enum: ['png', 'jpg', 'webp'] },
+            quality: { type: 'number', min: 0, max: 1 }
+        }
+    },
+    exportImage: {
+        type: 'object',
+        properties: {
+            format: { type: 'string', enum: ['png', 'jpg', 'webp'] },
+            quality: { type: 'number', min: 0, max: 1 },
+            width: { type: 'integer', min: 1, max: 8192 },
+            height: { type: 'integer', min: 1, max: 8192 },
+            filename: { type: 'string' },
+            triggerDownload: { type: 'boolean' }
+        }
+    },
+    pasteImageFromBytes: {
+        type: 'object',
+        required: ['source'],
+        properties: {
+            source: { type: 'object' },
+            name: { type: 'string' }
+        }
+    },
 }

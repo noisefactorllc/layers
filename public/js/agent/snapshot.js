@@ -8,6 +8,7 @@
  */
 
 import { API_VERSION } from './index.js'
+import { getRecentExports } from './commands.js'
 
 const SCHEMA_VERSION = '1.0'
 
@@ -24,7 +25,7 @@ export function buildSnapshot(app) {
         selectedLayerIds: app?._layerStack?.selectedLayerIds?.slice() || [],
         activeLayerId: app?._layerStack?.selectedLayerId || null,
         jobs: [],                  // populated when Phase 6 jobs ship
-        recentExports: [],         // populated when Phase 3 exports ship
+        recentExports: getRecentExports(),
         settings: buildSettings(app)
     }
 }
