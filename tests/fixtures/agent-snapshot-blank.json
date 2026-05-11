@@ -1,0 +1,68 @@
+{
+  "apiVersion": "1.0",
+  "schemaVersion": "1.0",
+  "project": {
+    "id": null,
+    "name": null,
+    "isDirty": true,
+    "canUndo": false,
+    "canRedo": false,
+    "canSaveAs": true
+  },
+  "canvas": {
+    "width": 1024,
+    "height": 1024
+  },
+  "view": {
+    "zoomMode": "fit",
+    "isPlaying": true,
+    "loopDuration": 10
+  },
+  "foreground": {
+    "color": "#000000"
+  },
+  "selection": null,
+  "layers": [
+    {
+      "id": "<id>",
+      "name": "Solid",
+      "sourceType": "effect",
+      "visible": true,
+      "opacity": 100,
+      "blendMode": "mix",
+      "locked": false,
+      "transform": {
+        "offsetX": 0,
+        "offsetY": 0,
+        "scaleX": 1,
+        "scaleY": 1,
+        "rotation": 0,
+        "flipH": false,
+        "flipV": false
+      },
+      "media": null,
+      "effect": {
+        "id": "synth/solid",
+        "name": "Solid",
+        "params": {
+          "color": [
+            0.2,
+            0.2,
+            0.2
+          ],
+          "alpha": 1
+        }
+      },
+      "drawing": null,
+      "children": [],
+      "mask": null
+    }
+  ],
+  "selectedLayerIds": [
+    "<id>"
+  ],
+  "activeLayerId": "<id>",
+  "jobs": [],
+  "recentExports": [],
+  "settings": {}
+}

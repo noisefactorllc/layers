@@ -42,6 +42,7 @@ import { getFontaineLoader, BASE_FONTS } from './layers/fontaine-loader.js'
 import * as strokeModel from './drawing/stroke-model.js'
 import { StrokeRenderer } from './drawing/stroke-renderer.js'
 import { autoLevels, autoContrast, autoWhiteBalance } from './utils/auto-adjust.js'
+import { bootstrapAgent } from './agent/index.js'
 
 /**
  * Main application class
@@ -533,6 +534,13 @@ class LayersApp {
 
         this._initialized = true
         console.debug('[Layers] Ready')
+
+        // Public agent API — purely additive, must never break the app for humans.
+        try {
+            bootstrapAgent(this)
+        } catch (err) {
+            console.error('[Layers] Failed to bootstrap agent API:', err)
+        }
     }
 
     /**
