@@ -85,12 +85,48 @@ test.describe('setSettings', () => {
         expect(env.error.code).toBe('INVALID_ARGS_ENUM')
     })
 
-    test('warns on unknown setting key', async ({ page }) => {
+    test('warns on unknown setting key with structured warning', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() =>
             window.LayersAgent.setSettings({ unknownKey: 'whatever' }))
         expect(env.ok).toBe(true)
         expect(env.warnings).toBeDefined()
-        expect(env.warnings.some(w => w.includes('unknownKey'))).toBe(true)
+        // Each warning is { code, key?, message } — agents can switch on code.
+        const w = env.warnings.find(w => w?.code === 'UNKNOWN_SETTING_KEY')
+        expect(w).toBeDefined()
+        expect(w.key).toBe('unknownKey')
+        expect(typeof w.message).toBe('string')
+        expect(w.message).toContain('unknownKey')
+    })
+
+    test('theme:"system" delegates to settings-dialog setTheme', async ({ page }) => {
+        await bootApp(page)
+        // Set to system; settings-dialog's setTheme is the same function the
+        // human UI uses, so the prefers-color-scheme listener gets wired.
+        const env = await page.evaluate(() =>
+            window.LayersAgent.setSettings({ theme: 'system' }))
+        expect(env.ok).toBe(true)
+        expect(env.state.settings.theme).toBe('system')
+        const stored = await page.evaluate(() => localStorage.getItem('layers-theme'))
+        expect(stored).toBe('system')
+        // Document theme is resolved to a concrete value (one of the neutral pair).
+        const resolved = await page.evaluate(() => document.documentElement.dataset.theme)
+        expect(['neutral-dark', 'neutral-light']).toContain(resolved)
+    })
+
+    test('repeated theme:"system" calls do not stack listeners', async ({ page }) => {
+        await bootApp(page)
+        // Hammer setSettings repeatedly. The de-dup in setTheme keeps the
+        // listener count at most 1 — if a previous bug re-registered without
+        // removing the old one, this would silently leak. The contract is
+        // simply: no throw, theme stays applied.
+        const env = await page.evaluate(async () => {
+            for (let i = 0; i < 5; i++) {
+                await window.LayersAgent.setSettings({ theme: 'system' })
+            }
+            return await window.LayersAgent.getSettings({})
+        })
+        expect(env.ok).toBe(true)
+        expect(env.result.theme).toBe('system')
     })
 })

@@ -38,9 +38,45 @@ function resolveSystemTheme() {
  * Apply a theme to the document.
  * @param {string} themeValue - Theme key from THEMES or 'system'
  */
-function applyTheme(themeValue) {
+export function applyTheme(themeValue) {
     const resolved = themeValue === 'system' ? resolveSystemTheme() : themeValue
     document.documentElement.dataset.theme = resolved
+}
+
+// Single shared MediaQueryList + listener so the prefers-color-scheme handler
+// is wired exactly once, regardless of how many call sites flip the theme to
+// 'system'. The dialog instance below uses the same module-level state via
+// updateSystemListener so the human UI and the agent path stay in lockstep.
+const _systemMediaQuery = typeof window !== 'undefined'
+    ? window.matchMedia('(prefers-color-scheme: dark)')
+    : null
+let _systemListener = null
+
+function updateSystemListener(themeValue) {
+    if (!_systemMediaQuery) return
+    if (_systemListener) {
+        _systemMediaQuery.removeEventListener('change', _systemListener)
+        _systemListener = null
+    }
+    if (themeValue === 'system') {
+        _systemListener = () => applyTheme('system')
+        _systemMediaQuery.addEventListener('change', _systemListener)
+    }
+}
+
+/**
+ * Persist + apply a theme. Mirrors the dropdown change handler in the
+ * Settings dialog so external call sites (e.g. the agent's setSettings
+ * command) go through the same code path and get the prefers-color-scheme
+ * listener wiring for free. The listener is module-scoped and de-duped, so
+ * calling setTheme('system') repeatedly is safe.
+ *
+ * @param {string} themeValue
+ */
+export function setTheme(themeValue) {
+    localStorage.setItem(STORAGE_KEY, themeValue)
+    applyTheme(themeValue)
+    updateSystemListener(themeValue)
 }
 
 /**
@@ -50,8 +86,6 @@ class SettingsDialog {
     constructor() {
         this._dialog = null
         this._themeSelect = null
-        this._mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
-        this._systemListener = null
     }
 
     /**
@@ -62,7 +96,7 @@ class SettingsDialog {
     initTheme() {
         const saved = localStorage.getItem(STORAGE_KEY) || 'system'
         applyTheme(saved)
-        this._updateSystemListener(saved)
+        updateSystemListener(saved)
     }
 
     /**
@@ -120,12 +154,11 @@ class SettingsDialog {
         const saved = localStorage.getItem(STORAGE_KEY) || 'system'
         this._themeSelect.value = saved
 
-        // Theme change handler
+        // Theme change handler — delegate to the module-level setTheme so the
+        // human UI and the agent path share the same persistence + listener
+        // wiring (and the prefers-color-scheme listener stays de-duped).
         this._themeSelect.addEventListener('change', () => {
-            const value = this._themeSelect.value
-            localStorage.setItem(STORAGE_KEY, value)
-            applyTheme(value)
-            this._updateSystemListener(value)
+            setTheme(this._themeSelect.value)
         })
 
         // Close button
@@ -139,23 +172,6 @@ class SettingsDialog {
                 this.hide()
             }
         })
-    }
-
-    /**
-     * Add or remove the system preference change listener.
-     * @param {string} themeValue - Current theme setting
-     * @private
-     */
-    _updateSystemListener(themeValue) {
-        if (this._systemListener) {
-            this._mediaQuery.removeEventListener('change', this._systemListener)
-            this._systemListener = null
-        }
-
-        if (themeValue === 'system') {
-            this._systemListener = () => applyTheme('system')
-            this._mediaQuery.addEventListener('change', this._systemListener)
-        }
     }
 }
 

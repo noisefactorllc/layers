@@ -71,6 +71,30 @@ a separate `getState` round-trip after each mutation -- read `env.state`.
 
 ---
 
+## Warnings
+
+`env.warnings`, when present on a success envelope, is an array of structured
+objects (not plain strings):
+
+```js
+{
+    code:    "UNKNOWN_SETTING_KEY",     // stable identifier; agents can switch on this
+    key:     "foo",                      // optional; the offending field if applicable
+    message: "unknown setting key: foo (ignored)"  // human-readable
+}
+```
+
+The `warnings` array is only attached when non-empty. Treat unknown codes
+gracefully -- new codes may be added without an apiVersion bump.
+
+Examples:
+- `UNKNOWN_SETTING_KEY` from `setSettings` -- the key was ignored
+- `THEME_PERSIST_FAILED` from `setSettings` -- localStorage write threw
+- `PROJECT_STORAGE_ERROR` from `listProjects` -- storage layer threw; result
+  was best-effort (usually an empty list)
+
+---
+
 ## State snapshot shape
 
 ```

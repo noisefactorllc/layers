@@ -36,6 +36,7 @@ import { MAX_EXPORT_FRAMES } from './limits.js'
 import { getFontaineLoader } from '../layers/fontaine-loader.js'
 import { runVideoExport } from '../ui/video-exporter.js'
 import { toast } from '../ui/toast.js'
+import { setTheme } from '../ui/settings-dialog.js'
 
 /**
  * Return the full state snapshot. Equivalent to the `state` field the
@@ -103,9 +104,10 @@ export async function getProjectInfo(_args, app) {
 /**
  * List the saved projects in browser storage. Storage failures are reported
  * via the envelope's `warnings` array (success-with-empty-list) rather than
- * a failure envelope.
+ * a failure envelope. Warnings use the structured shape documented in
+ * `public/llms.txt`: `{ code, key?, message }`.
  *
- * @returns {Promise<{result: {projects: Array}, warnings?: string[]}>}
+ * @returns {Promise<{result: {projects: Array}, warnings?: Array<{code: string, message: string}>}>}
  */
 export async function listProjects(_args, _app) {
     let projects = []
@@ -120,7 +122,10 @@ export async function listProjects(_args, _app) {
     } catch (err) {
         return {
             result: { projects: [] },
-            warnings: [`listProjects storage error: ${err.message || err}`]
+            warnings: [{
+                code: 'PROJECT_STORAGE_ERROR',
+                message: `listProjects storage error: ${err.message || err}`
+            }]
         }
     }
     return { result: { projects } }
@@ -2117,38 +2122,44 @@ export async function pause(_args, app) {
 const KNOWN_SETTINGS = ['theme']
 
 /**
- * Apply a theme name to the document. Mirrors settings-dialog's private
- * applyTheme — kept inline because that function isn't exported.
- */
-function applyThemeInline(themeValue) {
-    const resolved = themeValue === 'system'
-        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'neutral-dark' : 'neutral-light')
-        : themeValue
-    document.documentElement.dataset.theme = resolved
-}
-
-/**
  * Update app settings. Only `theme` is currently honored; unknown keys are
  * reported via the envelope's `warnings` array. Persistence failures are
  * also surfaced as warnings (not failures), preserving the "best effort"
  * semantics of the human Settings dialog.
  *
+ * Theme application delegates to settings-dialog's `setTheme`, which both
+ * persists to localStorage and wires the `prefers-color-scheme` listener
+ * when `theme === 'system'`. This is the same code path the human dialog
+ * uses, so an agent setting `theme: 'system'` gets the same live OS-preference
+ * tracking the dialog does.
+ *
+ * Warnings are emitted as structured objects:
+ *   { code: 'UNKNOWN_SETTING_KEY' | 'THEME_PERSIST_FAILED', key?, message }
+ * (See `public/llms.txt` for the contract.)
+ *
  * @param {{theme?: string}} args
- * @returns {Promise<{result: {applied: string[]}, warnings?: string[]}>}
+ * @returns {Promise<{result: {applied: string[]}, warnings?: Array<{code: string, key?: string, message: string}>}>}
  */
 export async function setSettings(args = {}, _app) {
     const warnings = []
     if (typeof args.theme === 'string') {
         try {
-            localStorage.setItem('layers-theme', args.theme)
-            applyThemeInline(args.theme)
+            setTheme(args.theme)
         } catch (err) {
-            warnings.push(`failed to persist theme: ${err.message || err}`)
+            warnings.push({
+                code: 'THEME_PERSIST_FAILED',
+                key: 'theme',
+                message: `failed to persist theme: ${err.message || err}`
+            })
         }
     }
     for (const key of Object.keys(args)) {
         if (!KNOWN_SETTINGS.includes(key)) {
-            warnings.push(`unknown setting key: ${key} (ignored)`)
+            warnings.push({
+                code: 'UNKNOWN_SETTING_KEY',
+                key,
+                message: `unknown setting key: ${key} (ignored)`
+            })
         }
     }
     return { result: { applied: KNOWN_SETTINGS.filter(k => k in args) }, warnings }
