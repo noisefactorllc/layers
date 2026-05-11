@@ -96,4 +96,20 @@ test.describe('exportImage', () => {
         await page.waitForTimeout(500)
         expect(downloadFired).toBe(false)
     })
+
+    test('releaseExport on an image exportId throws NOT_FOUND_EXPORT', async ({ page }) => {
+        // exportImage's captureOnly path returns bytes inline (no blob URL),
+        // so there's nothing to release. Calling releaseExport on the returned
+        // id must be loud rather than silently succeeding.
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.exportImage({ format: 'png', captureOnly: true }))
+        expect(env.ok).toBe(true)
+        const id = env.result.exportId
+        expect(typeof id).toBe('string')
+        const rel = await page.evaluate((id) =>
+            window.LayersAgent.releaseExport({ exportId: id }), id)
+        expect(rel.ok).toBe(false)
+        expect(rel.error.code).toBe('NOT_FOUND_EXPORT')
+    })
 })

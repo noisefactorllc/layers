@@ -160,6 +160,7 @@ export function bootstrapAgent(app) {
     registerCommand(LayersAgent, 'listInstalledFonts', commands.listInstalledFonts)
     registerCommand(LayersAgent, 'installFontBundle', commands.installFontBundle)
     registerCommand(LayersAgent, 'exportVideo', commands.exportVideo)
+    registerCommand(LayersAgent, 'releaseExport', commands.releaseExport)
     if (typeof window !== 'undefined') {
         window.__buildSnapshot = buildSnapshot
     }

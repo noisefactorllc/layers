@@ -70,6 +70,19 @@ test.describe('agent: exportVideo', () => {
         expect(r.error.code).toBe('INVALID_ARGS_ENUM')
     })
 
+    test('rejects unknown property', async ({ page }) => {
+        // Schema has additionalProperties:false now. An agent that passes
+        // exportVideo({garbage: true}) used to silently succeed (with garbage
+        // ignored); now it must surface INVALID_ARGS_UNKNOWN so typos are loud.
+        const r = await page.evaluate(() => window.LayersAgent.exportVideo({
+            format: 'zip', quality: 'low', duration: 0.1,
+            garbage: true
+        }))
+        expect(r.ok).toBe(false)
+        expect(r.error.code).toBe('INVALID_ARGS_UNKNOWN')
+        expect(r.error.details.field).toBe('garbage')
+    })
+
     test('captureOnly surfaces blobUrl without firing a download (zip)', async ({ page }) => {
         let downloadFired = false
         page.on('download', () => { downloadFired = true })
@@ -90,6 +103,42 @@ test.describe('agent: exportVideo', () => {
         // Give a stray download event time to surface before asserting.
         await page.waitForTimeout(500)
         expect(downloadFired).toBe(false)
+    })
+
+    test('releaseExport revokes the captureOnly blobUrl', async ({ page }) => {
+        // Run a captureOnly export, then call releaseExport with the returned
+        // exportId — frees the underlying Blob immediately rather than leaking
+        // it until the page unloads.
+        const r = await page.evaluate(() => window.LayersAgent.exportVideo({
+            width: 64, height: 64, framerate: 30, duration: 0.1,
+            loopCount: 1, format: 'zip', quality: 'low', captureOnly: true
+        }))
+        expect(r.ok).toBe(true)
+        const final = await page.evaluate((id) =>
+            window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 30000 }),
+            r.result.jobId)
+        expect(final.result.status).toBe('succeeded')
+        const exportId = final.result.result.exportId
+        expect(typeof exportId).toBe('string')
+
+        const rel = await page.evaluate((id) =>
+            window.LayersAgent.releaseExport({ exportId: id }), exportId)
+        expect(rel.ok).toBe(true)
+        expect(rel.result.released).toBe(true)
+        expect(rel.result.exportId).toBe(exportId)
+
+        // Second release on the same id must be loud — the map entry is gone.
+        const rel2 = await page.evaluate((id) =>
+            window.LayersAgent.releaseExport({ exportId: id }), exportId)
+        expect(rel2.ok).toBe(false)
+        expect(rel2.error.code).toBe('NOT_FOUND_EXPORT')
+    })
+
+    test('releaseExport rejects unknown exportId', async ({ page }) => {
+        const r = await page.evaluate(() =>
+            window.LayersAgent.releaseExport({ exportId: 'export-does-not-exist' }))
+        expect(r.ok).toBe(false)
+        expect(r.error.code).toBe('NOT_FOUND_EXPORT')
     })
 
     test('two video exports back-to-back do not share encoder state', async ({ page }) => {

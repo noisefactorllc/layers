@@ -1073,9 +1073,15 @@ export class LayersRenderer {
                     // Triple-quoted strings preserve internal " and newlines
                     // verbatim, which `"${value}"` did not — Impact, "Arial
                     // Black", ... and multi-line text() params blew up the
-                    // parser. Lexer collision on a literal `"""` in user input
-                    // is theoretically possible but vanishingly unlikely for
-                    // text/font/justify; we warn rather than escape.
+                    // parser.
+                    //
+                    // A literal `"""` in user input would close the triple-
+                    // quoted literal mid-string and corrupt emission, but the
+                    // agent layer (commands.js: rejectTripleQuoteInParams) now
+                    // refuses inputs containing `"""` before they reach the
+                    // renderer. The warn below is informational, NOT
+                    // protective — it would only fire if someone bypasses the
+                    // agent layer and feeds the renderer directly.
                     if (value.includes('"""')) {
                         console.warn(`[LayersRenderer] Param ${key} contains '"""'; DSL emission may be ambiguous`)
                     }

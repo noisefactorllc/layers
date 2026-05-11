@@ -9,7 +9,14 @@
 
 import { buildSnapshot } from './snapshot.js'
 import { commandError } from './dispatcher.js'
-import { RECENT_EXPORTS_CAP, safeClone } from './constants.js'
+import { safeClone } from './constants.js'
+import {
+    recordExport,
+    makeExportId,
+    timestampedFilename,
+    rememberCaptureBlobUrl,
+    consumeCaptureBlobUrl
+} from './exports-state.js'
 import {
     listProjects as listProjectsStorage,
     saveProject as saveProjectStorage,
@@ -19,9 +26,13 @@ import {
 } from '../utils/project-storage.js'
 import * as effectsModule from './effects.js'
 import { createDrawingLayer } from '../layers/layer-model.js'
-// Namespace import: tracks provenance explicitly at each call site
-// (`selectionMods.featherMask(...)`) and avoids the alias dance for the
-// expand/contract/feather/smooth quad that overlaps the agent command names.
+// We use namespace import here because the agent's handler functions
+// (featherMask, expandMask, contractMask, smoothMask) shadow the selection-
+// modify export names — `selectionMods.featherMask(...)` tracks provenance
+// at each call site and avoids the alias dance. `public/js/app.js` uses
+// named imports for the same module because it has no such collision (the
+// app methods are bound to `this`, not free functions). Both styles are
+// fine; the divergence is collision avoidance, not a coding-standard split.
 import * as selectionMods from '../selection/selection-modify.js'
 import { floodFill } from '../selection/flood-fill.js'
 import { createPathStroke, createShapeStroke } from '../drawing/stroke-model.js'
@@ -37,6 +48,36 @@ import { getFontaineLoader } from '../layers/fontaine-loader.js'
 import { runVideoExport } from '../ui/video-exporter.js'
 import { toast } from '../ui/toast.js'
 import { setTheme } from '../ui/settings-dialog.js'
+
+/**
+ * Reject any param value whose string content contains a literal `"""`.
+ *
+ * Background: the renderer emits param strings inside `"""..."""` triple-quoted
+ * DSL literals so internal `"` characters survive the lexer (font stacks,
+ * multi-line text). The DSL lexer has no escape sequences inside triple-quoted
+ * strings, so a value that itself contains `"""` would close the literal
+ * mid-stream and corrupt emission. The renderer logs a warning when this
+ * happens, but warning is informational — the agent layer is the right place
+ * to reject the input cleanly before it reaches the renderer.
+ *
+ * Walks the params object's own enumerable values one level deep. Vec / color
+ * arrays of numbers are skipped (they don't go through the triple-quote path).
+ *
+ * @param {object} params
+ * @param {string} fieldPrefix - prepended to the field path in the error details.
+ * @throws INVALID_ARGS_TYPE when any string value contains `"""`.
+ */
+function rejectTripleQuoteInParams(params, fieldPrefix = 'params') {
+    if (!params || typeof params !== 'object') return
+    for (const [key, value] of Object.entries(params)) {
+        if (typeof value === 'string' && value.includes('"""')) {
+            const preview = value.length > 60 ? value.slice(0, 57) + '...' : value
+            throw commandError('INVALID_ARGS_TYPE',
+                `Param value contains '"""' which would corrupt DSL emission`,
+                { field: `${fieldPrefix}.${key}`, got: preview })
+        }
+    }
+}
 
 /**
  * Return the full state snapshot. Equivalent to the `state` field the
@@ -369,6 +410,8 @@ async function addEffectLayer({ effectId, params, name }, app) {
     if (!manifest[effectId]) {
         throw commandError('NOT_FOUND_EFFECT', `Effect not found: ${effectId}`, { effectId })
     }
+    // Reject DSL-corrupting `"""` substrings before we touch any state.
+    rejectTripleQuoteInParams(params)
     await app._handleAddEffectLayer(effectId)
     const layer = app._layers[app._layers.length - 1]
     if (name) layer.name = name
@@ -457,6 +500,15 @@ async function addTextLayer({ text, params, name }, app) {
     if (typeof text !== 'string') {
         throw commandError('INVALID_ARGS_REQUIRED', 'text is required for kind=text',
             { field: 'text' })
+    }
+    // Reject DSL-corrupting `"""` in either the text field itself or in any
+    // string-valued param. addEffectLayer will re-check, but reporting `text`
+    // as the field here gives a clearer error than `params.text`.
+    if (text.includes('"""')) {
+        const preview = text.length > 60 ? text.slice(0, 57) + '...' : text
+        throw commandError('INVALID_ARGS_TYPE',
+            `Param value contains '"""' which would corrupt DSL emission`,
+            { field: 'text', got: preview })
     }
     return addEffectLayer({
         effectId: 'filter/text',
@@ -717,6 +769,8 @@ export async function setLayerEffectParams({ layerId, params, replace }, app) {
             `Layer ${layerId} is not an effect layer (sourceType=${layer.sourceType})`,
             { layerId, sourceType: layer.sourceType })
     }
+    // Reject DSL-corrupting `"""` before touching state.
+    rejectTripleQuoteInParams(params)
     // Deep clone agent-provided params so post-call mutation by the agent
     // can't corrupt the layer's stored effectParams (including any nested
     // arrays/objects).
@@ -745,6 +799,8 @@ export async function addChildEffect({ layerId, effectId, params }, app) {
     if (!manifest[effectId]) {
         throw commandError('NOT_FOUND_EFFECT', `Effect not found: ${effectId}`, { effectId })
     }
+    // Reject DSL-corrupting `"""` before touching state.
+    rejectTripleQuoteInParams(params)
     await app._handleAddChildEffect(layerId, effectId)
     const newChild = layer.children[layer.children.length - 1]
     if (params) {
@@ -844,6 +900,8 @@ export async function setChildEffectProps({ layerId, childId, props }, app) {
  */
 export async function setChildEffectParams({ layerId, childId, params, replace }, app) {
     const { child } = requireChildEffect(layerId, childId, app)
+    // Reject DSL-corrupting `"""` before touching state.
+    rejectTripleQuoteInParams(params)
     // Deep clone first so any nested objects/arrays in `params` aren't aliased
     // with the agent's input — protects child.effectParams from post-call mutation.
     const cloned = safeClone(params) || {}
@@ -1087,40 +1145,10 @@ export async function getLayerThumbnail({ layerId, maxDimension, format, quality
     }
 }
 
-// RECENT_EXPORTS_CAP moved to constants.js so it can be tuned without
-// touching the command file. `_recentExports` stays here — its lifecycle
-// is tied to image/video export handlers, not to protocol-level constants.
-const _recentExports = []
-
-/**
- * Snapshot exposes recentExports through this getter — module-scoped buffer
- * keeps history without polluting the LayersApp state.
- */
-export function getRecentExports() {
-    return _recentExports.slice()
-}
-
-function recordExport(entry) {
-    _recentExports.push(entry)
-    // One push per call, so we can only ever be exactly one entry over the cap.
-    if (_recentExports.length > RECENT_EXPORTS_CAP) _recentExports.shift()
-}
-
-function makeExportId() {
-    // crypto.randomUUID is RFC 4122 v4 — collision-resistant in a way
-    // Math.random can't promise. Fall back to the old timestamp+rand format
-    // only on browsers that pre-date it (Chrome <92, Firefox <95, Safari <15.4).
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-        return `export-${crypto.randomUUID()}`
-    }
-    return `export-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-}
-
-function timestampedFilename(baseName, ext) {
-    if (baseName) return `${baseName}.${ext}`
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    return `layers-${ts}.${ext}`
-}
+// Recent-exports ring, capture-blob-URL map, makeExportId, recordExport,
+// and timestampedFilename all live in exports-state.js — split out so
+// snapshot.js no longer has to reach back into commands.js for the snapshot
+// getter (true circular import dropped).
 
 function triggerBrowserDownload(blob, filename) {
     const url = URL.createObjectURL(blob)
@@ -1991,13 +2019,10 @@ export async function openProject({ projectId }, app) {
  * @throws INVALID_ARGS_REQUIRED — when `name` is omitted and there's no current project.
  */
 export async function saveProject({ name }, app) {
-    if (name !== undefined) {
-        if (typeof name !== 'string' || name.length === 0) {
-            throw commandError('INVALID_ARGS_REQUIRED',
-                'name must be a non-empty string when supplied',
-                { field: 'name' })
-        }
-    }
+    // The schema enforces `name: { type: 'string', minLength: 1 }` (when
+    // supplied), so a missing/empty/non-string `name` is rejected by the
+    // dispatcher before we get here. The only remaining business rule is
+    // "you can't save-in-place when there's no current project".
     const haveCurrent = !!app._currentProjectId && !!app._currentProjectName
     const useName = name || app._currentProjectName
     if (!haveCurrent && !useName) {
@@ -2018,11 +2043,8 @@ export async function saveProject({ name }, app) {
  * @throws INVALID_ARGS_REQUIRED — when `name` is empty or missing.
  */
 export async function saveProjectAs({ name }, app) {
-    if (typeof name !== 'string' || name.length === 0) {
-        throw commandError('INVALID_ARGS_REQUIRED',
-            'name must be a non-empty string',
-            { field: 'name' })
-    }
+    // The schema marks `name` required with minLength:1 — the dispatcher
+    // rejects empty/missing/non-string values before reaching this handler.
     await app._saveProject(null, name)
     return { result: { projectId: app._currentProjectId } }
 }
@@ -2142,9 +2164,16 @@ const KNOWN_SETTINGS = ['theme']
  */
 export async function setSettings(args = {}, _app) {
     const warnings = []
+    // `applied` is populated as we actually process each known key — driven by
+    // the work we did, not by a static KNOWN_SETTINGS.filter against the args
+    // (which would incorrectly count keys we'd intended to handle but didn't,
+    // e.g. a future key that's listed in KNOWN_SETTINGS but whose setter
+    // branch wasn't taken because the value's type was wrong).
+    const applied = []
     if (typeof args.theme === 'string') {
         try {
             setTheme(args.theme)
+            applied.push('theme')
         } catch (err) {
             warnings.push({
                 code: 'THEME_PERSIST_FAILED',
@@ -2153,16 +2182,21 @@ export async function setSettings(args = {}, _app) {
             })
         }
     }
+    // Warn on any input key we didn't end up applying — both genuinely unknown
+    // keys and known keys whose setter rejected (e.g. theme persist failure
+    // already raised THEME_PERSIST_FAILED above; suppress the duplicate
+    // UNKNOWN_SETTING_KEY warning for those).
+    const warnedKeys = new Set(warnings.map(w => w.key).filter(Boolean))
     for (const key of Object.keys(args)) {
-        if (!KNOWN_SETTINGS.includes(key)) {
-            warnings.push({
-                code: 'UNKNOWN_SETTING_KEY',
-                key,
-                message: `unknown setting key: ${key} (ignored)`
-            })
-        }
+        if (applied.includes(key)) continue
+        if (warnedKeys.has(key)) continue
+        warnings.push({
+            code: 'UNKNOWN_SETTING_KEY',
+            key,
+            message: `unknown setting key: ${key} (ignored)`
+        })
     }
-    return { result: { applied: KNOWN_SETTINGS.filter(k => k in args) }, warnings }
+    return { result: { applied }, warnings }
 }
 
 /**
@@ -2364,12 +2398,13 @@ export async function installFontBundle(_args, _app) {
  * we translate frame progress into job progress and record a recentExports
  * entry on success (mirrors exportImage).
  *
- * `captureOnly: true` suppresses the browser download and surfaces the bytes
- * via the job result instead — `result.result.blobUrl` is an object URL that
- * stays valid until the page unloads (so the agent / MCP sidecar must fetch
- * it promptly). For MP4 we also expose `result.result.blob` for direct
- * in-page consumption. For ZIP only blobUrl is available because the worker
- * generates the Blob inside its own scope.
+ * When captureOnly:true, the job's result includes `blobUrl` (an object URL)
+ * but not `blob` (Blob handles can't cross the envelope's JSON boundary).
+ * The caller can fetch the URL synchronously and then call
+ * `releaseExport({exportId})` to free the memory; otherwise the Blob
+ * stays alive until the document unloads. Holds for both MP4 and ZIP —
+ * the dispatcher strips the live Blob handle either way so the envelope
+ * stays JSON-clean.
  */
 export async function exportVideo(args, app) {
     const w = args?.width ?? app._canvas.width
@@ -2421,8 +2456,9 @@ export async function exportVideo(args, app) {
             // Recorded only on success — cancelled jobs leave partial bytes
             // in the user's browser-download dir but no recentExports entry.
             // (runVideoExport throws on abort, so we never reach this point.)
+            const exportId = makeExportId()
             recordExport({
-                id: makeExportId(),
+                id: exportId,
                 path: null,                  // sidecar fills this in Phase 7
                 filename,
                 mimeType: settings.format === 'mp4' ? 'video/mp4' : 'application/zip',
@@ -2431,6 +2467,12 @@ export async function exportVideo(args, app) {
                 kind: 'video',
                 format: settings.format
             })
+            // captureOnly produces a browser blob URL we have to revoke later
+            // or the underlying Blob leaks until the page unloads. Register it
+            // in the exports-state map so releaseExport({exportId}) can free it.
+            if (settings.captureOnly && result.blobUrl) {
+                rememberCaptureBlobUrl(exportId, result.blobUrl)
+            }
 
             // Drop the live Blob handle before serializing — it's not
             // structured-clonable through the dispatcher envelope. blobUrl
@@ -2438,7 +2480,7 @@ export async function exportVideo(args, app) {
             // returned object explicitly even though structured-clone can
             // handle it in some contexts — keeping the envelope JSON-clean.)
             const { blob: _blob, ...serializable } = result
-            return { ...serializable, filename }
+            return { ...serializable, filename, exportId }
         })
         jobId = id
     } catch (err) {
@@ -2450,4 +2492,29 @@ export async function exportVideo(args, app) {
         throw err
     }
     return { result: { jobId } }
+}
+
+/**
+ * Free the browser blob URL allocated by a captureOnly export. Without this,
+ * the underlying Blob stays alive until the document unloads — agents that
+ * stream many captureOnly exports through fetch() will accumulate megabytes
+ * of unreleased buffers.
+ *
+ * Calling releaseExport on an export id that has no tracked URL (because the
+ * export wasn't captureOnly, or because it was already released) throws
+ * NOT_FOUND_EXPORT so accidental double-releases are loud rather than silent.
+ *
+ * @param {{exportId: string}} args
+ * @returns {Promise<{result: {released: true, exportId: string}}>}
+ * @throws NOT_FOUND_EXPORT — when no captureOnly URL is tracked under exportId.
+ */
+export async function releaseExport({ exportId }, _app) {
+    const url = consumeCaptureBlobUrl(exportId)
+    if (!url) {
+        throw commandError('NOT_FOUND_EXPORT',
+            `No captureOnly export blob tracked for exportId: ${exportId}`,
+            { exportId })
+    }
+    URL.revokeObjectURL(url)
+    return { result: { released: true, exportId } }
 }

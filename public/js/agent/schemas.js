@@ -754,6 +754,15 @@ export const SCHEMAS = {
             playFrom: { type: 'string', enum: ['beginning', 'current'] },
             filename: { type: 'string' },
             captureOnly: { type: 'boolean' }
-        }
+        },
+        additionalProperties: false
+    },
+    releaseExport: {
+        type: 'object',
+        required: ['exportId'],
+        properties: {
+            exportId: { type: 'string', minLength: 1 }
+        },
+        additionalProperties: false
     },
 }

@@ -222,4 +222,38 @@ test.describe('LayersAgent.addLayer — text kind', () => {
         const layer = env.state.layers.find(l => l.id === env.result.layerId)
         expect(layer.effect.params.text).toContain('\n')
     })
+
+    test('text param containing """ is rejected at the agent layer', async ({ page }) => {
+        await bootApp(page)
+        // The renderer emits text/font/justify inside `"""..."""` triple-quoted
+        // DSL literals (no escapes inside). A value that itself contains `"""`
+        // would close the literal mid-stream and corrupt emission, so the
+        // agent rejects it cleanly before touching state. Renderer-side warn
+        // remains as belt-and-suspenders, but the agent layer is the gate.
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({
+                kind: 'text',
+                text: 'a"""b'   // three consecutive double quotes mid-string
+            })
+        )
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_TYPE')
+        expect(env.error.details.field).toBe('text')
+    })
+
+    test('triple-quote rejection also fires for embedded params', async ({ page }) => {
+        await bootApp(page)
+        // Same rule, but via the params route (font, justify, etc.) rather
+        // than `text`. Field path should pinpoint the offending key.
+        const env = await page.evaluate(() =>
+            window.LayersAgent.addLayer({
+                kind: 'text',
+                text: 'ok',
+                params: { font: 'evil"""font' }
+            })
+        )
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_TYPE')
+        expect(env.error.details.field).toBe('params.font')
+    })
 })

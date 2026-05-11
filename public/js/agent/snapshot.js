@@ -8,7 +8,7 @@
  */
 
 import { API_VERSION, SCHEMA_VERSION, safeClone } from './constants.js'
-import { getRecentExports } from './commands.js'
+import { getRecentExports } from './exports-state.js'
 import { listJobs } from './jobs.js'
 
 export function buildSnapshot(app) {

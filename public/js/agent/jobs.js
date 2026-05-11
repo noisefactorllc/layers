@@ -27,8 +27,20 @@ function makeId() {
     _idCounter++
     // Random suffix dodges cross-tab collisions when two tabs allocate within
     // the same millisecond with the same counter value. `job_` prefix is part
-    // of the convention used by snapshot consumers — keep it.
-    const rand = Math.random().toString(36).slice(2, 8)
+    // of the convention used by snapshot consumers — keep it. We keep the
+    // Date.now()/counter prefix for human-readable chronological ordering and
+    // use crypto.randomUUID (RFC 4122 v4) for the suffix when available —
+    // collision-resistant in a way Math.random alone can't promise. Math.random
+    // remains the fallback for ultra-old browsers (Chrome <92, Firefox <95,
+    // Safari <15.4) that pre-date crypto.randomUUID.
+    let rand
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        // Take the first 8 chars of the UUID to keep IDs short; full UUID
+        // entropy isn't needed when we also have a timestamp+counter prefix.
+        rand = crypto.randomUUID().slice(0, 8)
+    } else {
+        rand = Math.random().toString(36).slice(2, 8)
+    }
     return `job_${Date.now().toString(36)}_${_idCounter}_${rand}`
 }
 

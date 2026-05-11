@@ -214,9 +214,11 @@ import { JOB_KINDS } from '/js/agent/jobs.js'
 ```
 
 Cancellation: `installFontBundle` propagates AbortSignal into the loader's
-fetch + extraction calls, so cancel takes effect at the next chunk/font
-boundary (typically <1s). `exportVideo` checks at every frame boundary
-and before encoder finalization.
+fetch + extraction calls. Cancel takes effect at chunk/font boundaries;
+individual font extractions are uninterruptible (a single 5+ MB variable
+font extracts in one JSZip call), so a worst-case mid-extract cancel may
+wait several seconds. `exportVideo` checks at every frame boundary and
+before encoder finalization.
 
 **Via the MCP sidecar**, `installFontBundle` and `exportVideo` are wrapped so
 the `tools/call` blocks until the job settles. The final envelope is the
@@ -242,6 +244,34 @@ Via the **MCP sidecar**, the Playwright runtime captures the download and
 writes it to `LAYERS_MCP_OUTPUT_DIR`. The envelope's `result.filePath` is
 the absolute path. For `exportVideo` it's nested as `result.result.filePath`
 because the envelope wraps the settled-job state.
+
+### captureOnly + releaseExport
+
+`exportVideo({captureOnly: true})` skips the browser download and surfaces a
+browser `blob:` URL via `result.result.blobUrl` plus an `exportId` the caller
+can use to free that memory later. In captureOnly mode, the `blobUrl` stays
+valid until the page unloads OR the agent calls `releaseExport({exportId})`
+to free the memory. Agents that fan out many captureOnly exports through
+fetch() should release each one after consuming the bytes — otherwise the
+underlying Blob is pinned for the rest of the page's lifetime.
+
+captureOnly mode: exportImage returns `result.bytes` (base64-encoded
+image) plus an `exportId`. exportVideo returns `result.result.blobUrl`
+(an object URL the caller can fetch); the raw Blob handle is NOT included
+in the envelope because envelopes must be JSON-serializable. Call
+`releaseExport({ exportId })` when done to revoke the URL.
+
+```js
+const env = await LayersAgent.exportVideo({ format: 'mp4', captureOnly: true, ... })
+const settled = await LayersAgent.waitForJob({ jobId: env.result.jobId })
+const { blobUrl, exportId } = settled.result.result
+const bytes = await (await fetch(blobUrl)).arrayBuffer()
+await LayersAgent.releaseExport({ exportId })   // frees the Blob
+```
+
+`exportImage`'s captureOnly path returns base64 bytes inline, not a blob URL,
+so there's nothing to release — calling `releaseExport` with an image
+exportId throws `NOT_FOUND_EXPORT`.
 
 ---
 
@@ -278,6 +308,19 @@ await LayersAgent.fillRegion({ layerId: '...', color: '#ff0000' })
 const env = await LayersAgent.exportImage({ format: 'png' })
 console.log(env.result.filePath)   // /Users/you/layers-mcp-exports/layers-2026-...-png
 ```
+
+---
+
+## Caveats
+
+**Font registration is async.** When you set a layer's `font` param to a
+font that's not yet registered in the browser, the first render uses the
+fallback (Nunito) and re-renders after the font loads. The agent's
+snapshot reflects the requested font immediately, but the actual rendered
+pixels are wrong for at least one frame. If you need the rendered output
+to reflect the requested font, call `installFontBundle` first (if the
+font is in the fontaine bundle), or wait one or two `getThumbnail` calls
+before reading bytes.
 
 ---
 
