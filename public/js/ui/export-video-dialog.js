@@ -67,9 +67,7 @@ export class ExportVideoDialog {
 
         this.wasRunning = this.renderer.isRunning
         if (this.wasRunning) {
-            const inner = this.renderer._renderer
-            const elapsedSeconds = (performance.now() - inner._loopStartTime) / 1000
-            this.pausedNormalizedTime = (elapsedSeconds % inner._loopDuration) / inner._loopDuration
+            this.pausedNormalizedTime = this.renderer.getPausedNormalizedTime()
             this.renderer.stop()
         }
 
@@ -95,10 +93,7 @@ export class ExportVideoDialog {
         this._dialog.close()
 
         if (this.wasRunning) {
-            const inner = this.renderer._renderer
-            const now = performance.now()
-            const pausedElapsedSeconds = this.pausedNormalizedTime * inner._loopDuration
-            inner._loopStartTime = now - (pausedElapsedSeconds * 1000)
+            this.renderer.restoreLoopFromNormalizedTime(this.pausedNormalizedTime)
             this.renderer.start()
         }
 
@@ -226,11 +221,14 @@ export class ExportVideoDialog {
     _handleExportError(err) {
         this._elements.progressText.textContent = `Error: ${err.message}`
         this._elements.progressBar.style.background = 'var(--red, #e74c3c)'
-
+        // Was a 3-second hold before close. Now: close after a short
+        // confirmation pulse so the user sees the error but the UI doesn't
+        // appear frozen. 800ms is enough to register the red bar but short
+        // enough to feel responsive.
         setTimeout(() => {
             this.close()
             this.onCancel()
-        }, 3000)
+        }, 800)
     }
 
     _addEventListeners() {

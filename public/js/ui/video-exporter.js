@@ -14,13 +14,11 @@ export async function runVideoExport(opts) {
     } = opts
 
     const totalFrames = Math.ceil(settings.framerate * settings.duration * settings.loopCount)
-    const inner = renderer._renderer
     const wasRunning = renderer.isRunning
     let pausedNormalizedTime = 0
 
     if (wasRunning) {
-        const elapsedSeconds = (performance.now() - inner._loopStartTime) / 1000
-        pausedNormalizedTime = (elapsedSeconds % inner._loopDuration) / inner._loopDuration
+        pausedNormalizedTime = renderer.getPausedNormalizedTime()
         renderer.stop()
     }
 
@@ -79,7 +77,7 @@ export async function runVideoExport(opts) {
             const normalizedTime = (baseNormalizedTime + timeOffset) % 1
 
             await seekAllVideos(renderer, targetTimeSec)
-            renderer._updateVideoTextures()
+            renderer.updateVideoTextures()
             renderer.render(normalizedTime)
             await waitFrame()
 
@@ -122,6 +120,12 @@ export async function runVideoExport(opts) {
         onProgress(totalFrames, totalFrames, 'finalizing')
         if (settings.format === 'mp4') {
             await files.endRecordingMP4()
+        } else {
+            // Wait for the zipWorker's `done` event so the job doesn't settle
+            // 'succeeded' before the file is assembled and the download
+            // triggered. Without this, an agent reading recentExports right
+            // after the job settled would race the worker.
+            await files.endRecordingZip()
         }
         started = false
 
@@ -147,33 +151,26 @@ export async function runVideoExport(opts) {
             setResolution(originalRes.width, originalRes.height)
         }
         if (wasRunning) {
-            const now = performance.now()
-            const pausedElapsedSeconds = pausedNormalizedTime * inner._loopDuration
-            inner._loopStartTime = now - (pausedElapsedSeconds * 1000)
+            renderer.restoreLoopFromNormalizedTime(pausedNormalizedTime)
             renderer.start()
         }
     }
 }
 
 async function seekAllVideos(renderer, timeSec) {
-    const mediaTextures = renderer._mediaTextures
-    if (!mediaTextures) return
+    if (typeof renderer.getVideoMediaIterator !== 'function') return
     const promises = []
-    for (const [, media] of mediaTextures) {
-        if (media.type !== 'video') continue
-        const video = media.element
-        if (video.duration && isFinite(video.duration)) {
-            const seekTime = timeSec % video.duration
-            if (Math.abs(video.currentTime - seekTime) > 0.01) {
-                promises.push(new Promise(resolve => {
-                    const onSeeked = () => {
-                        video.removeEventListener('seeked', onSeeked)
-                        resolve()
-                    }
-                    video.addEventListener('seeked', onSeeked)
-                    video.currentTime = seekTime
-                }))
-            }
+    for (const { videoElement, duration } of renderer.getVideoMediaIterator()) {
+        const seekTime = timeSec % duration
+        if (Math.abs(videoElement.currentTime - seekTime) > 0.01) {
+            promises.push(new Promise(resolve => {
+                const onSeeked = () => {
+                    videoElement.removeEventListener('seeked', onSeeked)
+                    resolve()
+                }
+                videoElement.addEventListener('seeked', onSeeked)
+                videoElement.currentTime = seekTime
+            }))
         }
     }
     await Promise.all(promises)

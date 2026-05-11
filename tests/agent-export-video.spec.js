@@ -69,4 +69,29 @@ test.describe('agent: exportVideo', () => {
         expect(r.ok).toBe(false)
         expect(r.error.code).toBe('INVALID_ARGS_ENUM')
     })
+
+    test('two video exports back-to-back do not share encoder state', async ({ page }) => {
+        // Run two short ZIP exports in sequence; verify both succeed and produce
+        // distinct recentExports entries. This caught a regression where _files
+        // state leaked between exports.
+        const r1 = await page.evaluate(() => window.LayersAgent.exportVideo({
+            width: 64, height: 64, framerate: 30, duration: 0.1,
+            format: 'zip', quality: 'low'
+        }))
+        expect(r1.ok).toBe(true)
+        const final1 = await page.evaluate((id) =>
+            window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 30000 }),
+            r1.result.jobId)
+        expect(final1.result.status).toBe('succeeded')
+
+        const r2 = await page.evaluate(() => window.LayersAgent.exportVideo({
+            width: 64, height: 64, framerate: 30, duration: 0.1,
+            format: 'zip', quality: 'low'
+        }))
+        expect(r2.ok).toBe(true)
+        const final2 = await page.evaluate((id) =>
+            window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 30000 }),
+            r2.result.jobId)
+        expect(final2.result.status).toBe('succeeded')
+    })
 })

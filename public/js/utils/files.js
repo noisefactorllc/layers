@@ -21,6 +21,13 @@ export class Files {
 
     _initZipWorker() {
         this.zipWorker = new Worker('./js/lib/zipWorker.js')
+        // Tracks the in-flight zip recording so endRecordingZip() can await
+        // the worker's `done` event before the export job settles. Replaces
+        // the previous fire-and-forget model where the worker would post
+        // `done` long after the caller assumed the export succeeded.
+        this._zipDonePromise = null
+        this._zipDoneResolve = null
+        this._zipDoneReject = null
         this.zipWorker.onmessage = (msg) => {
             if (msg.data.ready) {
                 this.ready = true
@@ -28,6 +35,12 @@ export class Files {
                 this.createZip()
             } else if (msg.data.done) {
                 this.downloadFile(msg.data.url, 'zip')
+                if (this._zipDoneResolve) {
+                    this._zipDoneResolve()
+                    this._zipDoneResolve = null
+                    this._zipDoneReject = null
+                    this._zipDonePromise = null
+                }
             }
         }
     }
@@ -171,6 +184,17 @@ export class Files {
     }
 
     saveZip(settings) {
+        // Install a fresh awaitable for the in-flight recording. The export
+        // pipeline calls endRecordingZip() after the last frame and awaits
+        // this promise so the job doesn't settle 'succeeded' until the
+        // worker has assembled the zip blob and triggered the download.
+        this._zipDonePromise = new Promise((resolve, reject) => {
+            this._zipDoneResolve = resolve
+            this._zipDoneReject = reject
+        })
+        // Swallow unhandled rejection if the caller never awaits the promise
+        // (e.g. an early throw before endRecordingZip is reached).
+        this._zipDonePromise.catch(() => {})
         this.zipWorker.postMessage({ settings })
     }
 
@@ -182,10 +206,30 @@ export class Files {
         this.ready = false
     }
 
+    /**
+     * Await the zipWorker's `done` event for the in-flight recording.
+     * Resolves once the worker has assembled the zip and the download has
+     * been triggered; rejects with a JOB_CANCELLED-shaped error if
+     * cancelZIP() runs while the recording is still in flight.
+     * @returns {Promise<void>}
+     */
+    async endRecordingZip() {
+        if (!this._zipDonePromise) return
+        await this._zipDonePromise
+    }
+
     cancelZIP() {
+        // Snapshot the awaiter before _initZipWorker() resets the handles,
+        // then reject so runVideoExport's await unwinds promptly.
+        const reject = this._zipDoneReject
         if (this.zipWorker) {
             this.zipWorker.terminate()
             this._initZipWorker()
+        }
+        if (reject) {
+            const err = new Error('Export cancelled')
+            err.code = 'JOB_CANCELLED'
+            reject(err)
         }
         this.currentFrame = 0
         this.ready = false

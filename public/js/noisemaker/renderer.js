@@ -145,6 +145,60 @@ export class LayersRenderer {
         this._renderer.render(normalizedTime)
     }
 
+    /**
+     * Compute the normalized loop time the inner renderer would emit right now.
+     * Used by the video export pipeline to snapshot the live render position
+     * before pausing, so playback can resume from the same point afterwards.
+     * @returns {number} normalized loop position in [0, 1)
+     */
+    getPausedNormalizedTime() {
+        const inner = this._renderer
+        const loopDuration = inner._loopDuration
+        if (!loopDuration || !isFinite(loopDuration) || loopDuration <= 0) return 0
+        const elapsedSeconds = (performance.now() - inner._loopStartTime) / 1000
+        return (elapsedSeconds % loopDuration) / loopDuration
+    }
+
+    /**
+     * Restore the inner renderer's loop clock so a subsequent start() resumes
+     * playback at the given normalized position. Caller is responsible for
+     * invoking start() afterwards.
+     * @param {number} normalized - normalized loop position in [0, 1)
+     */
+    restoreLoopFromNormalizedTime(normalized) {
+        const inner = this._renderer
+        const loopDuration = inner._loopDuration
+        if (!loopDuration || !isFinite(loopDuration) || loopDuration <= 0) return
+        const pausedElapsedSeconds = normalized * loopDuration
+        inner._loopStartTime = performance.now() - (pausedElapsedSeconds * 1000)
+    }
+
+    /**
+     * Iterate over video media textures attached to the renderer.
+     * Yields a stable, public-shape descriptor `{ videoElement, duration }`
+     * for each video so callers (e.g. the export pipeline) can seek without
+     * reaching into the internal media-textures Map.
+     * @returns {Iterable<{ videoElement: HTMLVideoElement, duration: number }>}
+     */
+    *getVideoMediaIterator() {
+        for (const [, media] of this._mediaTextures) {
+            if (media.type !== 'video') continue
+            const videoElement = media.element
+            const duration = videoElement?.duration
+            if (videoElement && isFinite(duration) && duration > 0) {
+                yield { videoElement, duration }
+            }
+        }
+    }
+
+    /**
+     * Public wrapper for the per-frame video texture update used by the
+     * export pipeline. Equivalent to the internal RAF-driven update.
+     */
+    updateVideoTextures() {
+        this._updateVideoTextures()
+    }
+
     async setLayers(layers, options = {}) {
         this._layers = layers
         return this.rebuild(options)
