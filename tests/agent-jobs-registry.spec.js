@@ -5,12 +5,12 @@ test.describe('agent: jobs registry', () => {
         await page.goto('/')
         await page.evaluate(() => window.LayersAgent.ready)
         // jobs.js is now imported transitively via commands.js/snapshot.js,
-        // so its side-effect attaches window.__layersJobs during agent bootstrap.
+        // so its side-effect attaches window.__LAYERS_TEST_HOOKS.jobs during agent bootstrap.
     })
 
     test('createJob reaches succeeded with result', async ({ page }) => {
         const final = await page.evaluate(async () => {
-            const j = window.__layersJobs
+            const j = window.__LAYERS_TEST_HOOKS.jobs
             const { id } = j.createJob('test-kind', async () => ({ ok: 1 }))
             return await j.waitForJob(id, 2000)
         })
@@ -20,7 +20,7 @@ test.describe('agent: jobs registry', () => {
 
     test('reportProgress updates state', async ({ page }) => {
         const states = await page.evaluate(async () => {
-            const j = window.__layersJobs
+            const j = window.__LAYERS_TEST_HOOKS.jobs
             const { id } = j.createJob('test-kind', async (api) => {
                 api.reportProgress('starting', 0, 100)
                 await new Promise(r => setTimeout(r, 10))
@@ -39,7 +39,7 @@ test.describe('agent: jobs registry', () => {
 
     test('cancelJob aborts running job', async ({ page }) => {
         const final = await page.evaluate(async () => {
-            const j = window.__layersJobs
+            const j = window.__LAYERS_TEST_HOOKS.jobs
             const { id } = j.createJob('test-kind', async (api) => {
                 while (!api.abortSignal.aborted) {
                     await new Promise(r => setTimeout(r, 5))
@@ -55,7 +55,7 @@ test.describe('agent: jobs registry', () => {
 
     test('waitForJob with timeout returns timedOut marker', async ({ page }) => {
         const out = await page.evaluate(async () => {
-            const j = window.__layersJobs
+            const j = window.__LAYERS_TEST_HOOKS.jobs
             const { id } = j.createJob('test-kind', async () => {
                 await new Promise(r => setTimeout(r, 500))
                 return { ok: true }
@@ -67,13 +67,13 @@ test.describe('agent: jobs registry', () => {
     })
 
     test('getJob returns null for unknown id', async ({ page }) => {
-        const r = await page.evaluate(() => window.__layersJobs.getJob('does-not-exist'))
+        const r = await page.evaluate(() => window.__LAYERS_TEST_HOOKS.jobs.getJob('does-not-exist'))
         expect(r).toBeNull()
     })
 
     test('listJobs caps at 50 entries', async ({ page }) => {
         const count = await page.evaluate(async () => {
-            const j = window.__layersJobs
+            const j = window.__LAYERS_TEST_HOOKS.jobs
             j._reset()
             for (let i = 0; i < 60; i++) {
                 const { id } = j.createJob('test-kind', async () => ({ i }))
@@ -86,7 +86,7 @@ test.describe('agent: jobs registry', () => {
 
     test('failed job records error code', async ({ page }) => {
         const final = await page.evaluate(async () => {
-            const j = window.__layersJobs
+            const j = window.__LAYERS_TEST_HOOKS.jobs
             const { id } = j.createJob('test-kind', async () => {
                 const e = new Error('boom')
                 e.code = 'INTENTIONAL'

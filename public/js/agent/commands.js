@@ -38,6 +38,7 @@ import {
     autoWhiteBalance as autoWhiteBalanceFn
 } from '../utils/auto-adjust.js'
 import * as jobsRegistry from './jobs.js'
+import { JOB_KINDS } from './jobs.js'
 import { getFontaineLoader } from '../layers/fontaine-loader.js'
 import { runVideoExport } from '../ui/video-exporter.js'
 
@@ -1476,7 +1477,7 @@ export async function installFontBundle(_args, _app) {
     // race over manifest/extraction. Existence of an unsettled job from a prior
     // call means we should send the caller back to poll the original jobId.
     const existing = jobsRegistry.listJobs().find(j =>
-        j.kind === 'install-font-bundle' &&
+        j.kind === JOB_KINDS.INSTALL_FONT_BUNDLE &&
         j.status !== 'succeeded' &&
         j.status !== 'failed' &&
         j.status !== 'cancelled'
@@ -1488,7 +1489,7 @@ export async function installFontBundle(_args, _app) {
     }
     let jobId
     try {
-        const { id } = jobsRegistry.createJob('install-font-bundle', async (api) => {
+        const { id } = jobsRegistry.createJob(JOB_KINDS.INSTALL_FONT_BUNDLE, async (api) => {
             api.reportProgress('starting', 0, 100)
             let lastPercent = 0
             await loader.install({
@@ -1566,7 +1567,7 @@ export async function exportVideo(args, app) {
 
     let jobId
     try {
-        const { id } = jobsRegistry.createJob('export-video', async (api) => {
+        const { id } = jobsRegistry.createJob(JOB_KINDS.EXPORT_VIDEO, async (api) => {
             const result = await runVideoExport({
                 settings,
                 canvas: app._canvas,

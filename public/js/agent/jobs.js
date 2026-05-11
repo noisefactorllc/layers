@@ -7,6 +7,16 @@
  * @module agent/jobs
  */
 
+/**
+ * Job kinds emitted by the agent layer. Agents inspecting `snapshot.jobs`
+ * can use this enum to dispatch on job type. Test-only kinds (those used
+ * exclusively by tests/agent-jobs-registry.spec.js) are NOT included here.
+ */
+export const JOB_KINDS = Object.freeze({
+    INSTALL_FONT_BUNDLE: 'install-font-bundle',
+    EXPORT_VIDEO: 'export-video'
+})
+
 const _jobs = new Map()
 const _waiters = new Map()
 const MAX_JOBS = 50
@@ -201,6 +211,12 @@ export function _reset() {
     _idCounter = 0
 }
 
+/**
+ * Test-only back door — gives Playwright specs direct registry access so they
+ * don't have to round-trip through the agent envelope to create/inspect jobs.
+ * NOT a public API. Production agents must use LayersAgent.{get,wait,cancel}Job.
+ */
 if (typeof window !== 'undefined') {
-    window.__layersJobs = { createJob, getJob, waitForJob, cancelJob, listJobs, _reset }
+    window.__LAYERS_TEST_HOOKS = window.__LAYERS_TEST_HOOKS || {}
+    window.__LAYERS_TEST_HOOKS.jobs = { createJob, getJob, waitForJob, cancelJob, listJobs, _reset }
 }

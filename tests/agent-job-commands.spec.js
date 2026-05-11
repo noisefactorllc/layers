@@ -24,7 +24,7 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
     test('snapshot exposes empty jobs array when no jobs have run', async ({ page }) => {
         await bootApp(page)
         const before = await page.evaluate(() => {
-            window.__layersJobs._reset()
+            window.__LAYERS_TEST_HOOKS.jobs._reset()
             return window.LayersAgent.getState({})
         })
         expect(before.state.jobs).toEqual([])
@@ -33,9 +33,9 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
     test('snapshot exposes jobs after a registry-created job settles', async ({ page }) => {
         await bootApp(page)
         const after = await page.evaluate(async () => {
-            window.__layersJobs._reset()
-            const { id } = window.__layersJobs.createJob('test-kind', async () => ({ ok: 1 }))
-            await window.__layersJobs.waitForJob(id, 2000)
+            window.__LAYERS_TEST_HOOKS.jobs._reset()
+            const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async () => ({ ok: 1 }))
+            await window.__LAYERS_TEST_HOOKS.jobs.waitForJob(id, 2000)
             return window.LayersAgent.getState({})
         })
         expect(after.state.jobs.length).toBeGreaterThan(0)
@@ -47,7 +47,7 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
     test('waitForJob with timeoutMs returns timedOut envelope', async ({ page }) => {
         await bootApp(page)
         const r = await page.evaluate(async () => {
-            const { id } = window.__layersJobs.createJob('test-kind', async () => {
+            const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async () => {
                 await new Promise(r => setTimeout(r, 500))
                 return { ok: 1 }
             })
@@ -60,7 +60,7 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
     test('cancelJob transitions to cancelled', async ({ page }) => {
         await bootApp(page)
         const final = await page.evaluate(async () => {
-            const { id } = window.__layersJobs.createJob('test-kind', async (api) => {
+            const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async (api) => {
                 while (!api.abortSignal.aborted) await new Promise(r => setTimeout(r, 5))
                 api.checkAbort()
             })
