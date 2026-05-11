@@ -611,7 +611,23 @@ export const SCHEMAS = {
             points: { type: 'array' },
             size: { type: 'integer', min: 1, max: 200 },
             opacity: { type: 'number', min: 0, max: 1 },
-            color: { type: 'string' }
+            color: { type: 'string' },
+            mode: { type: 'string', enum: ['brush', 'eraser'] }
+        }
+    },
+    eraseStroke: {
+        type: 'object',
+        required: ['layerId', 'strokeId'],
+        properties: {
+            layerId: { type: 'string', minLength: 1 },
+            strokeId: { type: 'string', minLength: 1 }
+        }
+    },
+    clearDrawingLayer: {
+        type: 'object',
+        required: ['layerId'],
+        properties: {
+            layerId: { type: 'string', minLength: 1 }
         }
     },
     drawShape: {

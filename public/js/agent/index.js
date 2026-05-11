@@ -136,6 +136,8 @@ export function bootstrapAgent(app) {
     registerCommand(LayersAgent, 'contractMask', commands.contractMask)
     registerCommand(LayersAgent, 'smoothMask', commands.smoothMask)
     registerCommand(LayersAgent, 'paintStroke', commands.paintStroke)
+    registerCommand(LayersAgent, 'eraseStroke', commands.eraseStroke)
+    registerCommand(LayersAgent, 'clearDrawingLayer', commands.clearDrawingLayer)
     registerCommand(LayersAgent, 'drawShape', commands.drawShape)
     registerCommand(LayersAgent, 'fillRegion', commands.fillRegion)
     registerCommand(LayersAgent, 'newProject', commands.newProject)

@@ -26,6 +26,12 @@ export class StrokeRenderer {
             this._ctx.lineWidth = stroke.size
             this._ctx.lineCap = 'round'
             this._ctx.lineJoin = 'round'
+            // Eraser strokes punch holes in the previously-rasterized strokes via
+            // `destination-out` compositing. Existing strokes without a `mode`
+            // default to brush behavior (`source-over`).
+            this._ctx.globalCompositeOperation = stroke.mode === 'eraser'
+                ? 'destination-out'
+                : 'source-over'
 
             switch (stroke.type) {
                 case 'path': this._drawPath(stroke); break

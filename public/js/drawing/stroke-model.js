@@ -6,13 +6,14 @@
 
 let strokeCounter = 0
 
-export function createPathStroke({ color, size, opacity = 1, points = [] }) {
+export function createPathStroke({ color, size, opacity = 1, points = [], mode = 'brush' }) {
     return {
         id: `stroke-${strokeCounter++}`,
         type: 'path',
         color,
         size,
         opacity,
+        mode,
         points: points.map(p => ({ x: p.x, y: p.y }))
     }
 }

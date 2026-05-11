@@ -132,7 +132,8 @@ export, video export, font install/list, jobs.
 | `INVALID_ARGS_REQUIRED` | missing required field |
 | `INVALID_ARGS_RANGE` | numeric out of range |
 | `INVALID_ARGS_ENUM` | not in allowed enum |
-| `NOT_FOUND_LAYER` | unknown layer id, child effect id, or stroke id |
+| `NOT_FOUND_LAYER` | unknown layer id or child effect id |
+| `NOT_FOUND_STROKE` | unknown stroke id on a drawing layer (`eraseStroke`) |
 | `NOT_FOUND_EFFECT` | unknown effect id (response includes `didYouMean`) |
 | `NOT_FOUND_JOB` | unknown job id |
 | `CONFLICT_JOB_IN_PROGRESS` | a duplicate job is already running (e.g. installFontBundle) |

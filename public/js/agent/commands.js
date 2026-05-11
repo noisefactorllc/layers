@@ -1752,17 +1752,19 @@ function normalizePoints(points, fieldName, minCount = 2) {
 }
 
 /**
- * Paint a brush stroke through a list of points onto a drawing layer. If
- * `layerId` is omitted, the active drawing layer is used or a new one is
- * created via `_ensureDrawingLayer`.
+ * Paint a brush or eraser stroke through a list of points onto a drawing
+ * layer. If `layerId` is omitted, the active drawing layer is used or a new
+ * one is created via `_ensureDrawingLayer`. When `mode` is `'eraser'`, the
+ * stroke renders with `destination-out` compositing, erasing previously-
+ * painted pixels on the layer instead of laying down color.
  *
- * @param {{layerId?: string, points: Array, size: number, opacity?: number, color: string}} args
+ * @param {{layerId?: string, points: Array, size: number, opacity?: number, color: string, mode?: 'brush'|'eraser'}} args
  * @returns {Promise<{result: {layerId: string, strokeId: string}}>}
  * @throws NOT_FOUND_LAYER — when layerId is given but doesn't exist.
  * @throws CONFLICT_NOT_DRAWING_LAYER — when layerId names a non-drawing layer.
  * @throws INVALID_ARGS_RANGE|INVALID_ARGS_TYPE — when points is malformed.
  */
-export async function paintStroke({ layerId, points, size, opacity, color }, app) {
+export async function paintStroke({ layerId, points, size, opacity, color, mode }, app) {
     const sanitized = normalizePoints(points, 'points', 2)
     let layer
     if (layerId) {
@@ -1775,7 +1777,8 @@ export async function paintStroke({ layerId, points, size, opacity, color }, app
         color,
         size,
         opacity: opacity ?? 1,
-        points: sanitized
+        points: sanitized,
+        mode: mode ?? 'brush'
     })
     layer.strokes.push(stroke)
     await app._rasterizeDrawingLayer(layer)
@@ -1783,6 +1786,55 @@ export async function paintStroke({ layerId, points, size, opacity, color }, app
     app._markDirty?.()
     app._pushUndoState?.()
     return { result: { layerId: layer.id, strokeId: stroke.id } }
+}
+
+/**
+ * Remove a single stroke from a drawing layer's `strokes` array. Mirrors
+ * the human Eraser tool's per-stroke delete, but addressed by id so agents
+ * don't need pixel-space hit testing.
+ *
+ * @param {{layerId: string, strokeId: string}} args
+ * @returns {Promise<{result: {layerId: string, strokeId: string}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NOT_DRAWING_LAYER — when the layer isn't a drawing layer.
+ * @throws NOT_FOUND_STROKE — when the strokeId isn't present on the layer.
+ */
+export async function eraseStroke({ layerId, strokeId }, app) {
+    const layer = requireDrawingLayer(layerId, app)
+    const idx = (layer.strokes || []).findIndex(s => s.id === strokeId)
+    if (idx === -1) {
+        throw commandError('NOT_FOUND_STROKE',
+            `Stroke not found: ${strokeId}`,
+            { layerId, strokeId })
+    }
+    app._finalizePendingUndo?.()
+    layer.strokes.splice(idx, 1)
+    await app._rasterizeDrawingLayer(layer)
+    await app._rebuild?.({ force: true })
+    app._markDirty?.()
+    app._pushUndoState?.()
+    return { result: { layerId, strokeId } }
+}
+
+/**
+ * Remove every stroke from a drawing layer, leaving the layer in place but
+ * empty. Returns the count of strokes that were removed.
+ *
+ * @param {{layerId: string}} args
+ * @returns {Promise<{result: {layerId: string, clearedCount: number}}>}
+ * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NOT_DRAWING_LAYER — when the layer isn't a drawing layer.
+ */
+export async function clearDrawingLayer({ layerId }, app) {
+    const layer = requireDrawingLayer(layerId, app)
+    const clearedCount = (layer.strokes || []).length
+    app._finalizePendingUndo?.()
+    layer.strokes = []
+    await app._rasterizeDrawingLayer(layer)
+    await app._rebuild?.({ force: true })
+    app._markDirty?.()
+    app._pushUndoState?.()
+    return { result: { layerId, clearedCount } }
 }
 
 /**

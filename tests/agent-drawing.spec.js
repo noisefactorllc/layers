@@ -180,6 +180,197 @@ test.describe('drawShape', () => {
     })
 })
 
+test.describe('paintStroke mode', () => {
+    test('mode:"eraser" marks the stroke as eraser', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.paintStroke({
+                points: [[10, 10], [50, 50]],
+                size: 8,
+                color: '#000000',
+                mode: 'eraser'
+            }))
+        expect(env.ok).toBe(true)
+        const stroke = await page.evaluate((info) => {
+            const layer = window.layersApp._layers.find(l => l.id === info.layerId)
+            return layer.strokes.find(s => s.id === info.strokeId)
+        }, env.result)
+        expect(stroke.mode).toBe('eraser')
+    })
+
+    test('mode defaults to "brush" when omitted', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.paintStroke({
+                points: [[0, 0], [10, 10]],
+                size: 5,
+                color: '#ff0000'
+            }))
+        expect(env.ok).toBe(true)
+        const stroke = await page.evaluate((info) => {
+            const layer = window.layersApp._layers.find(l => l.id === info.layerId)
+            return layer.strokes.find(s => s.id === info.strokeId)
+        }, env.result)
+        expect(stroke.mode).toBe('brush')
+    })
+
+    test('rejects unknown mode value', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.paintStroke({
+                points: [[0, 0], [10, 10]],
+                size: 5,
+                color: '#000000',
+                mode: 'smudge'
+            }))
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_ENUM')
+    })
+})
+
+test.describe('eraseStroke', () => {
+    test('removes a stroke by id', async ({ page }) => {
+        await bootApp(page)
+        const { layerId, strokeId } = await page.evaluate(async () => {
+            const env = await window.LayersAgent.paintStroke({
+                points: [[0, 0], [10, 10]], size: 5, color: '#000'
+            })
+            return env.result
+        })
+        const before = await page.evaluate((id) => {
+            const layer = window.layersApp._layers.find(l => l.id === id)
+            return layer.strokes.length
+        }, layerId)
+        expect(before).toBe(1)
+
+        const env = await page.evaluate(({ layerId, strokeId }) =>
+            window.LayersAgent.eraseStroke({ layerId, strokeId }), { layerId, strokeId })
+        expect(env.ok).toBe(true)
+        expect(env.result).toEqual({ layerId, strokeId })
+
+        const layerSnap = env.state.layers.find(l => l.id === layerId)
+        expect(layerSnap.drawing.strokeCount).toBe(0)
+    })
+
+    test('reports strokeCount drop in snapshot', async ({ page }) => {
+        await bootApp(page)
+        const { layerId, ids } = await page.evaluate(async () => {
+            const a = await window.LayersAgent.paintStroke({
+                points: [[0, 0], [10, 10]], size: 5, color: '#000'
+            })
+            const b = await window.LayersAgent.paintStroke({
+                layerId: a.result.layerId,
+                points: [[20, 20], [30, 30]], size: 5, color: '#f00'
+            })
+            const c = await window.LayersAgent.paintStroke({
+                layerId: a.result.layerId,
+                points: [[40, 40], [50, 50]], size: 5, color: '#0f0'
+            })
+            return { layerId: a.result.layerId, ids: [a.result.strokeId, b.result.strokeId, c.result.strokeId] }
+        })
+        const startCount = (await page.evaluate((id) => {
+            return window.LayersAgent.getLayer({ layerId: id })
+        }, layerId)).result.drawing.strokeCount
+        expect(startCount).toBe(3)
+
+        const env = await page.evaluate(({ layerId, strokeId }) =>
+            window.LayersAgent.eraseStroke({ layerId, strokeId }),
+            { layerId, strokeId: ids[1] })
+        expect(env.ok).toBe(true)
+        const layerSnap = env.state.layers.find(l => l.id === layerId)
+        expect(layerSnap.drawing.strokeCount).toBe(2)
+    })
+
+    test('NOT_FOUND_STROKE when strokeId is unknown', async ({ page }) => {
+        await bootApp(page)
+        const layerId = await page.evaluate(async () => {
+            const env = await window.LayersAgent.addLayer({ kind: 'drawing' })
+            return env.result.layerId
+        })
+        const env = await page.evaluate((id) =>
+            window.LayersAgent.eraseStroke({ layerId: id, strokeId: 'stroke-nope' }), layerId)
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('NOT_FOUND_STROKE')
+        expect(env.error.details.strokeId).toBe('stroke-nope')
+        expect(env.error.details.layerId).toBe(layerId)
+    })
+
+    test('NOT_FOUND_LAYER when layerId is unknown', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.eraseStroke({ layerId: 'layer-nope', strokeId: 'stroke-0' }))
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('NOT_FOUND_LAYER')
+    })
+
+    test('CONFLICT_NOT_DRAWING_LAYER on non-drawing layer', async ({ page }) => {
+        await bootApp(page)
+        const id = await page.evaluate(() => window.layersApp._layers[0].id)
+        const env = await page.evaluate((layerId) =>
+            window.LayersAgent.eraseStroke({ layerId, strokeId: 'stroke-0' }), id)
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('CONFLICT_NOT_DRAWING_LAYER')
+    })
+})
+
+test.describe('clearDrawingLayer', () => {
+    test('empties the strokes array and reports clearedCount', async ({ page }) => {
+        await bootApp(page)
+        const layerId = await page.evaluate(async () => {
+            const a = await window.LayersAgent.paintStroke({
+                points: [[0, 0], [10, 10]], size: 5, color: '#000'
+            })
+            await window.LayersAgent.paintStroke({
+                layerId: a.result.layerId,
+                points: [[20, 20], [30, 30]], size: 5, color: '#f00'
+            })
+            await window.LayersAgent.paintStroke({
+                layerId: a.result.layerId,
+                points: [[40, 40], [50, 50]], size: 5, color: '#0f0'
+            })
+            return a.result.layerId
+        })
+
+        const env = await page.evaluate((id) =>
+            window.LayersAgent.clearDrawingLayer({ layerId: id }), layerId)
+        expect(env.ok).toBe(true)
+        expect(env.result.layerId).toBe(layerId)
+        expect(env.result.clearedCount).toBe(3)
+
+        const layerSnap = env.state.layers.find(l => l.id === layerId)
+        expect(layerSnap.drawing.strokeCount).toBe(0)
+    })
+
+    test('clearedCount is 0 when layer was already empty', async ({ page }) => {
+        await bootApp(page)
+        const layerId = await page.evaluate(async () => {
+            const env = await window.LayersAgent.addLayer({ kind: 'drawing' })
+            return env.result.layerId
+        })
+        const env = await page.evaluate((id) =>
+            window.LayersAgent.clearDrawingLayer({ layerId: id }), layerId)
+        expect(env.ok).toBe(true)
+        expect(env.result.clearedCount).toBe(0)
+    })
+
+    test('NOT_FOUND_LAYER when layerId is unknown', async ({ page }) => {
+        await bootApp(page)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.clearDrawingLayer({ layerId: 'layer-nope' }))
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('NOT_FOUND_LAYER')
+    })
+
+    test('CONFLICT_NOT_DRAWING_LAYER on non-drawing layer', async ({ page }) => {
+        await bootApp(page)
+        const id = await page.evaluate(() => window.layersApp._layers[0].id)
+        const env = await page.evaluate((layerId) =>
+            window.LayersAgent.clearDrawingLayer({ layerId }), id)
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('CONFLICT_NOT_DRAWING_LAYER')
+    })
+})
+
 test.describe('fillRegion', () => {
     test('creates a new media layer with the filled region', async ({ page }) => {
         await bootApp(page)
