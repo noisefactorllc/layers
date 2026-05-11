@@ -9,7 +9,13 @@
 
 import { buildSnapshot } from './snapshot.js'
 import { commandError } from './dispatcher.js'
-import { listProjects as listProjectsStorage } from '../utils/project-storage.js'
+import {
+    listProjects as listProjectsStorage,
+    saveProject as saveProjectStorage,
+    loadProject as loadProjectStorage,
+    deleteProject as deleteProjectStorage,
+    getProject as getProjectStorage
+} from '../utils/project-storage.js'
 import * as effectsModule from './effects.js'
 import { createDrawingLayer } from '../layers/layer-model.js'
 // TODO: When a 3rd or 4th name collision shows up (likely Phase 5+), refactor to
@@ -26,6 +32,11 @@ import {
 } from '../selection/selection-modify.js'
 import { floodFill } from '../selection/flood-fill.js'
 import { createPathStroke, createShapeStroke } from '../drawing/stroke-model.js'
+import {
+    autoLevels as autoLevelsFn,
+    autoContrast as autoContrastFn,
+    autoWhiteBalance as autoWhiteBalanceFn
+} from '../utils/auto-adjust.js'
 
 export async function getState(_args, app) {
     return { result: buildSnapshot(app) }
@@ -1231,4 +1242,168 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
     app._pushUndoState?.()
     const newLayer = app._layers[app._layers.length - 1]
     return { result: { layerId: newLayer.id } }
+}
+
+export async function newProject({ width, height, name }, app) {
+    app._finalizePendingUndo?.()
+    app._selectionManager?.clearSelection?.()
+    app._resetLayers()
+    app._renderer?.stop?.()
+    app._resizeCanvas(width, height)
+    await app._rebuild?.()
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    app._renderer?.start?.()
+    app._currentProjectId = null
+    app._currentProjectName = name || null
+    app._markClean?.()
+    app._updateLayerStack?.()
+    app._pushUndoState?.()
+    return { result: { width, height } }
+}
+
+export async function openProject({ projectId }, app) {
+    const stored = await getProjectStorage(projectId).catch(() => null)
+    if (!stored) {
+        throw commandError('NOT_FOUND_PROJECT',
+            `Project not found: ${projectId}`,
+            { projectId })
+    }
+    await app._loadProject(projectId)
+    return { result: { projectId } }
+}
+
+export async function saveProject({ name }, app) {
+    if (name !== undefined) {
+        if (typeof name !== 'string' || name.length === 0) {
+            throw commandError('INVALID_ARGS_REQUIRED',
+                'name must be a non-empty string when supplied',
+                { field: 'name' })
+        }
+    }
+    const haveCurrent = !!app._currentProjectId && !!app._currentProjectName
+    const useName = name || app._currentProjectName
+    if (!haveCurrent && !useName) {
+        throw commandError('INVALID_ARGS_REQUIRED',
+            'name is required when there is no current project to update',
+            { field: 'name' })
+    }
+    await app._saveProject(app._currentProjectId, useName)
+    return { result: { projectId: app._currentProjectId } }
+}
+
+export async function saveProjectAs({ name }, app) {
+    if (typeof name !== 'string' || name.length === 0) {
+        throw commandError('INVALID_ARGS_REQUIRED',
+            'name must be a non-empty string',
+            { field: 'name' })
+    }
+    await app._saveProject(null, name)
+    return { result: { projectId: app._currentProjectId } }
+}
+
+export async function deleteProject({ projectId }, app) {
+    const existing = await getProjectStorage(projectId).catch(() => null)
+    if (!existing) {
+        throw commandError('NOT_FOUND_PROJECT',
+            `Project not found: ${projectId}`,
+            { projectId })
+    }
+    await deleteProjectStorage(projectId)
+    if (app._currentProjectId === projectId) {
+        app._currentProjectId = null
+    }
+    return { result: { projectId } }
+}
+
+export async function undo(_args, app) {
+    await app._undo()
+    return { result: { ok: true } }
+}
+
+export async function redo(_args, app) {
+    await app._redo()
+    return { result: { ok: true } }
+}
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+
+export async function setForegroundColor({ color }, app) {
+    if (!HEX_COLOR_RE.test(color)) {
+        throw commandError('INVALID_ARGS_TYPE',
+            `color must be a 6-digit hex string like '#aabbcc', got '${color}'`,
+            { field: 'color', expected: '#rrggbb' })
+    }
+    app._setForegroundColor(color)
+    return { result: { color } }
+}
+
+export async function setZoom({ mode }, app) {
+    app._setZoom(mode)
+    return { result: { mode } }
+}
+
+export async function play(_args, app) {
+    app._renderer?.start?.()
+    return { result: { isPlaying: true } }
+}
+
+export async function pause(_args, app) {
+    app._renderer?.stop?.()
+    return { result: { isPlaying: false } }
+}
+
+const KNOWN_SETTINGS = ['theme']
+
+/**
+ * Apply a theme name to the document. Mirrors settings-dialog's private
+ * applyTheme — kept inline because that function isn't exported.
+ */
+function applyThemeInline(themeValue) {
+    const resolved = themeValue === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'neutral-dark' : 'neutral-light')
+        : themeValue
+    document.documentElement.dataset.theme = resolved
+}
+
+export async function setSettings(args = {}, _app) {
+    const warnings = []
+    if (typeof args.theme === 'string') {
+        try {
+            localStorage.setItem('layers-theme', args.theme)
+            applyThemeInline(args.theme)
+        } catch (err) {
+            warnings.push(`failed to persist theme: ${err.message || err}`)
+        }
+    }
+    for (const key of Object.keys(args)) {
+        if (!KNOWN_SETTINGS.includes(key)) {
+            warnings.push(`unknown setting key: ${key} (ignored)`)
+        }
+    }
+    return { result: { applied: KNOWN_SETTINGS.filter(k => k in args) }, warnings }
+}
+
+export async function resizeImage({ width, height }, app) {
+    await app._resizeImage(width, height)
+    return { result: { width, height } }
+}
+
+export async function resizeCanvas({ width, height, anchor }, app) {
+    await app._changeCanvasSize(width, height, anchor || 'center')
+    return { result: { width, height, anchor: anchor || 'center' } }
+}
+
+export async function autoLevels(_args, app) {
+    await app._handleAutoCorrection(autoLevelsFn)
+    return { result: { ok: true } }
+}
+
+export async function autoContrast(_args, app) {
+    await app._handleAutoCorrection(autoContrastFn)
+    return { result: { ok: true } }
+}
+
+export async function autoWhiteBalance(_args, app) {
+    await app._handleAutoCorrection(autoWhiteBalanceFn)
+    return { result: { ok: true } }
 }

@@ -602,4 +602,87 @@ export const SCHEMAS = {
             tolerance: { type: 'integer', min: 0, max: 255 }
         }
     },
+    newProject: {
+        type: 'object',
+        required: ['width', 'height'],
+        properties: {
+            width: { type: 'integer', min: 1, max: 8192 },
+            height: { type: 'integer', min: 1, max: 8192 },
+            name: { type: 'string' }
+        }
+    },
+    openProject: {
+        type: 'object',
+        required: ['projectId'],
+        properties: { projectId: { type: 'string' } }
+    },
+    saveProject: {
+        type: 'object',
+        properties: { name: { type: 'string' } }
+    },
+    saveProjectAs: {
+        type: 'object',
+        required: ['name'],
+        properties: { name: { type: 'string' } }
+    },
+    deleteProject: {
+        type: 'object',
+        required: ['projectId'],
+        properties: { projectId: { type: 'string' } }
+    },
+    undo: null,
+    redo: null,
+    setForegroundColor: {
+        type: 'object',
+        required: ['color'],
+        properties: { color: { type: 'string' } }
+    },
+    setZoom: {
+        type: 'object',
+        required: ['mode'],
+        properties: {
+            mode: { type: 'string', enum: ['fit', '50', '100', '200'] }
+        }
+    },
+    play: null,
+    pause: null,
+    setSettings: {
+        type: 'object',
+        properties: {
+            theme: {
+                type: 'string',
+                enum: [
+                    'system',
+                    'gray-dark', 'gray-light',
+                    'neutral-dark', 'neutral-light',
+                    'corporate', 'cyberpunk', 'earthy', 'organic', 'terminal',
+                    'dark', 'light'
+                ]
+            }
+        }
+    },
+    resizeImage: {
+        type: 'object',
+        required: ['width', 'height'],
+        properties: {
+            width: { type: 'integer', min: 1, max: 8192 },
+            height: { type: 'integer', min: 1, max: 8192 }
+        }
+    },
+    resizeCanvas: {
+        type: 'object',
+        required: ['width', 'height'],
+        properties: {
+            width: { type: 'integer', min: 1, max: 8192 },
+            height: { type: 'integer', min: 1, max: 8192 },
+            anchor: {
+                type: 'string',
+                enum: ['top-left', 'top', 'top-right', 'left', 'center',
+                       'right', 'bottom-left', 'bottom', 'bottom-right']
+            }
+        }
+    },
+    autoLevels: null,
+    autoContrast: null,
+    autoWhiteBalance: null,
 }

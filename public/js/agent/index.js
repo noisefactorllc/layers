@@ -109,6 +109,23 @@ export function bootstrapAgent(app) {
     registerCommand(LayersAgent, 'paintStroke', commands.paintStroke)
     registerCommand(LayersAgent, 'drawShape', commands.drawShape)
     registerCommand(LayersAgent, 'fillRegion', commands.fillRegion)
+    registerCommand(LayersAgent, 'newProject', commands.newProject)
+    registerCommand(LayersAgent, 'openProject', commands.openProject)
+    registerCommand(LayersAgent, 'saveProject', commands.saveProject)
+    registerCommand(LayersAgent, 'saveProjectAs', commands.saveProjectAs)
+    registerCommand(LayersAgent, 'deleteProject', commands.deleteProject)
+    registerCommand(LayersAgent, 'undo', commands.undo)
+    registerCommand(LayersAgent, 'redo', commands.redo)
+    registerCommand(LayersAgent, 'setForegroundColor', commands.setForegroundColor)
+    registerCommand(LayersAgent, 'setZoom', commands.setZoom)
+    registerCommand(LayersAgent, 'play', commands.play)
+    registerCommand(LayersAgent, 'pause', commands.pause)
+    registerCommand(LayersAgent, 'setSettings', commands.setSettings)
+    registerCommand(LayersAgent, 'resizeImage', commands.resizeImage)
+    registerCommand(LayersAgent, 'resizeCanvas', commands.resizeCanvas)
+    registerCommand(LayersAgent, 'autoLevels', commands.autoLevels)
+    registerCommand(LayersAgent, 'autoContrast', commands.autoContrast)
+    registerCommand(LayersAgent, 'autoWhiteBalance', commands.autoWhiteBalance)
     if (typeof window !== 'undefined') {
         window.__buildSnapshot = buildSnapshot
     }
