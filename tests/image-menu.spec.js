@@ -66,6 +66,20 @@ test.describe('Image menu adjustments', () => {
         expect(effectId).toBe('filter/grain')
     })
 
+    test('add color replace from color submenu', async ({ page }) => {
+        await page.click('#imageMenu .menu-title')
+        const colorItem = page.locator('#imageMenu .has-submenu', { hasText: 'color' })
+        await colorItem.hover()
+        await page.click('[data-effect="filter/colorReplace"]')
+        await page.waitForTimeout(500)
+
+        const layerCount = await page.evaluate(() => window.layersApp._layers.length)
+        expect(layerCount).toBe(2)
+
+        const effectId = await page.evaluate(() => window.layersApp._layers[1].effectId)
+        expect(effectId).toBe('filter/colorReplace')
+    })
+
     test('auto levels creates effect layer', async ({ page }) => {
         await page.click('#imageMenu .menu-title')
         await page.click('#autoLevelsMenuItem')
