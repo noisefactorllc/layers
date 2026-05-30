@@ -1,0 +1,8 @@
+{
+    "name": "Layers",
+    "appId": "app.layers.desktop",
+    "licenseProductId": "layers",
+    "version": "0.10",
+    "appRootSubdir": "public",
+    "debug": true
+}

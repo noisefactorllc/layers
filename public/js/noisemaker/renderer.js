@@ -16,15 +16,20 @@ export class LayersRenderer {
         this.height = options.height || canvas?.height || 1024
         this.loopDuration = options.loopDuration || 10
 
+        const NOISEMAKER_VERSION = '0.8.0'
+        const NOISEMAKER_BASE = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
+            ? `app://layers/vendor/noisemaker/${NOISEMAKER_VERSION}`
+            : `https://shaders.noisedeck.app/${NOISEMAKER_VERSION}`
+
         this._renderer = new CanvasRenderer({
             canvas,
             canvasContainer: canvas?.parentElement || null,
             width: this.width,
             height: this.height,
-            basePath: 'https://shaders.noisedeck.app/1',
+            basePath: NOISEMAKER_BASE,
             preferWebGPU: false,
             useBundles: true,
-            bundlePath: 'https://shaders.noisedeck.app/1/effects',
+            bundlePath: `${NOISEMAKER_BASE}/effects`,
             alpha: true,
             onFPS: options.onFPS,
             onError: options.onError

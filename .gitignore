@@ -39,3 +39,8 @@ playwright-report/
 
 # Vendor
 public/js/noisemaker/vendor/
+
+# Desktop build artifacts
+/public/vendor/
+/dist-desktop/
+/desktop/node_modules/

@@ -19,11 +19,13 @@ fetch('./deployment-meta.json', { cache: 'no-store' }).then(async (res) => {
     about.setBuild({ hash, deployed })
 }).catch(() => {})
 
-// Noisemaker engine metadata: the AboutDialog fetches it directly from
-// shaders.noisedeck.app/1/deployment-meta.json (a proper JSON file
-// emitted by the scaffold library-release workflow on every noisemaker
-// release). The /0/ rolling symlink auto-tracks the latest patch within
-// major 0.
-about.setNoisemakerFromUrl('https://shaders.noisedeck.app/1/deployment-meta.json')
+// Noisemaker engine metadata: fetch from the appropriate base depending on context.
+// In Electron, assets are served locally via app://layers. In the browser,
+// fetch from the CDN directly.
+const NOISEMAKER_VERSION = '0.8.0'
+const NOISEMAKER_BASE = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
+    ? `app://layers/vendor/noisemaker/${NOISEMAKER_VERSION}`
+    : `https://shaders.noisedeck.app/${NOISEMAKER_VERSION}`
+about.setNoisemakerFromUrl(`${NOISEMAKER_BASE}/deployment-meta.json`)
 
 export { about as aboutDialog }
