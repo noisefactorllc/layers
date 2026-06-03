@@ -15,8 +15,6 @@ const APP_ROOT = app.isPackaged
     ? path.join(__dirname, 'app')
     : path.resolve(__dirname, '..', 'public')
 
-// Vendor lives under APP_ROOT in both dev and packaged so the renderer's
-// `app://<host>/vendor/...` URLs resolve consistently.
 const VENDOR_ROOT = path.join(APP_ROOT, 'vendor', 'noisemaker', versionPin.version)
 
 initShell({

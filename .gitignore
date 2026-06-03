@@ -37,10 +37,11 @@ playwright-report/
 # Git worktrees
 .worktrees/
 
-# Vendor
-public/js/noisemaker/vendor/
-
-# Desktop build artifacts
-/public/vendor/
+# Desktop build output
 /dist-desktop/
 /desktop/node_modules/
+/vendor/
+/public/vendor/
+
+# Vendor
+public/js/noisemaker/vendor/
