@@ -6,7 +6,7 @@
  * - Minified for production
  */
 
-const NOISEMAKER_VERSION = '0.8.0'
+const NOISEMAKER_VERSION = '1.0.60'
 const SHADER_CDN = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
     ? `app://layers/vendor/noisemaker/${NOISEMAKER_VERSION}`
     : `https://shaders.noisedeck.app/${NOISEMAKER_VERSION}`
