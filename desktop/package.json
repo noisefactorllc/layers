@@ -21,7 +21,7 @@
     },
     "build": {
         "appId": "app.layers.desktop",
-        "productName": "Layers",
+        "productName": "Noisedeck Layers",
         "directories": {
             "output": "../dist-desktop",
             "buildResources": "build-resources"

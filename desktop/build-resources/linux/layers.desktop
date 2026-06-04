@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=Layers
+Name=Noisedeck Layers
 Comment=Compositing tool for generative art
 Exec=AppRun %U
 Icon=layers
