@@ -53,7 +53,11 @@
         },
         "linux": {
             "target": [{ "target": "AppImage", "arch": ["x64"] }],
-            "category": "Graphics"
+            "category": "Graphics",
+            "icon": "build-resources/icons",
+            "desktop": {
+                "StartupWMClass": "layers"
+            }
         }
     }
 }

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.layers.desktop</id>
+  <name>Layers</name>
+  <summary>Compositing tool for generative art</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary=https://noisefactor.io/terms</project_license>
+  <developer id="io.noisefactor">
+    <name>Noise Factor LLC</name>
+  </developer>
+  <description>
+    <p>Layers is a compositing tool for combining and transforming generative art created with the Noisemaker rendering engine.</p>
+  </description>
+  <url type="homepage">https://layers.noisefactor.io</url>
+  <url type="bugtracker">https://github.com/noisefactorllc/layers/issues</url>
+  <launchable type="desktop-id">layers.desktop</launchable>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.10.0" date="2026-06-04" />
+  </releases>
+</component>

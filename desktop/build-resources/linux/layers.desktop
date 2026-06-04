@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Layers
+Comment=Compositing tool for generative art
+Exec=AppRun %U
+Icon=layers
+Type=Application
+Categories=Graphics;
+StartupWMClass=layers
