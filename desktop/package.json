@@ -33,12 +33,27 @@
             "license-pub-v1.ed25519",
             "package.json",
             "node_modules/**",
-            { "from": "../public", "to": "app", "filter": ["**/*"] }
+            {
+                "from": "../public",
+                "to": "app",
+                "filter": [
+                    "**/*"
+                ]
+            }
         ],
         "asar": true,
-        "asarUnpack": ["**/@nf/desktop-shell/assets/**"],
+        "asarUnpack": [
+            "**/@nf/desktop-shell/assets/**"
+        ],
         "mac": {
-            "target": [{ "target": "dmg", "arch": ["arm64"] }],
+            "target": [
+                {
+                    "target": "dmg",
+                    "arch": [
+                        "arm64"
+                    ]
+                }
+            ],
             "category": "public.app-category.graphics-design",
             "hardenedRuntime": true,
             "gatekeeperAssess": false,
@@ -48,15 +63,31 @@
             "notarize": true
         },
         "win": {
-            "target": [{ "target": "nsis", "arch": ["x64"] }],
+            "target": [
+                {
+                    "target": "nsis",
+                    "arch": [
+                        "x64"
+                    ]
+                }
+            ],
             "signAndEditExecutable": false
         },
         "linux": {
-            "target": [{ "target": "AppImage", "arch": ["x64"] }],
+            "target": [
+                {
+                    "target": "AppImage",
+                    "arch": [
+                        "x64"
+                    ]
+                }
+            ],
             "category": "Graphics",
             "icon": "build-resources/icons",
             "desktop": {
-                "StartupWMClass": "layers"
+                "entry": {
+                    "StartupWMClass": "layers"
+                }
             }
         }
     }
