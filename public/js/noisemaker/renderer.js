@@ -16,10 +16,7 @@ export class LayersRenderer {
         this.height = options.height || canvas?.height || 1024
         this.loopDuration = options.loopDuration || 10
 
-        const NOISEMAKER_VERSION = '1.0.60'
-        const NOISEMAKER_BASE = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
-            ? `app://layers/vendor/noisemaker/${NOISEMAKER_VERSION}`
-            : `https://shaders.noisedeck.app/1`
+        const NOISEMAKER_BASE = 'https://shaders.noisedeck.app/1'
 
         this._renderer = new CanvasRenderer({
             canvas,

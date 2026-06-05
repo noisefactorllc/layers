@@ -6,11 +6,8 @@
  * - Minified for production
  */
 
-const NOISEMAKER_VERSION = '1.0.60'
-const SHADER_CDN = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
-    ? `app://layers/vendor/noisemaker/${NOISEMAKER_VERSION}`
-    : `https://shaders.noisedeck.app/1`
-const BUNDLE_VERSION = NOISEMAKER_VERSION
+const SHADER_CDN = 'https://shaders.noisedeck.app/1'
+const BUNDLE_VERSION = '1'
 
 const isLocalDev = typeof window !== 'undefined' && (
     window.location.hostname === 'localhost' ||
