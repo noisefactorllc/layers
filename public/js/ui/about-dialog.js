@@ -19,9 +19,7 @@ fetch('./deployment-meta.json', { cache: 'no-store' }).then(async (res) => {
     about.setBuild({ hash, deployed })
 }).catch(() => {})
 
-// Noisemaker engine metadata: fetch from the appropriate base depending on context.
-// In Electron, assets are served locally via app://layers. In the browser,
-// fetch from the CDN directly.
+// Noisemaker engine metadata, fetched from the shaders CDN.
 const NOISEMAKER_BASE = 'https://shaders.noisedeck.app/1'
 about.setNoisemakerFromUrl(`${NOISEMAKER_BASE}/deployment-meta.json`)
 
