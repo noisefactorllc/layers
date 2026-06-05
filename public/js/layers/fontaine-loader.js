@@ -8,7 +8,9 @@
  * @module ui/fontaineLoader
  */
 
-const FONTAINE_BUNDLE_URL = 'https://fonts.noisefactor.io/bundle'
+const FONTAINE_BUNDLE_URL = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
+    ? '../../../vendor/fonts.noisefactor.io/bundle'
+    : 'https://fonts.noisefactor.io/bundle'
 const FONTAINE_BUNDLE_SIZE_MB = 140
 const DB_NAME = 'fontaine'
 const DB_VERSION = 1
