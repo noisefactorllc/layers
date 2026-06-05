@@ -9,7 +9,7 @@
 const NOISEMAKER_VERSION = '1.0.60'
 const SHADER_CDN = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
     ? `app://layers/vendor/noisemaker/${NOISEMAKER_VERSION}`
-    : `https://shaders.noisedeck.app/${NOISEMAKER_VERSION}`
+    : `https://shaders.noisedeck.app/1`
 const BUNDLE_VERSION = NOISEMAKER_VERSION
 
 const isLocalDev = typeof window !== 'undefined' && (

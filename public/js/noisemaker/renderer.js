@@ -19,7 +19,7 @@ export class LayersRenderer {
         const NOISEMAKER_VERSION = '1.0.60'
         const NOISEMAKER_BASE = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
             ? `app://layers/vendor/noisemaker/${NOISEMAKER_VERSION}`
-            : `https://shaders.noisedeck.app/${NOISEMAKER_VERSION}`
+            : `https://shaders.noisedeck.app/1`
 
         this._renderer = new CanvasRenderer({
             canvas,

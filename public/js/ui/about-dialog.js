@@ -25,7 +25,7 @@ fetch('./deployment-meta.json', { cache: 'no-store' }).then(async (res) => {
 const NOISEMAKER_VERSION = '1.0.60'
 const NOISEMAKER_BASE = (typeof window !== 'undefined' && window.electronAPI?.isElectron)
     ? `app://layers/vendor/noisemaker/${NOISEMAKER_VERSION}`
-    : `https://shaders.noisedeck.app/${NOISEMAKER_VERSION}`
+    : `https://shaders.noisedeck.app/1`
 about.setNoisemakerFromUrl(`${NOISEMAKER_BASE}/deployment-meta.json`)
 
 export { about as aboutDialog }
