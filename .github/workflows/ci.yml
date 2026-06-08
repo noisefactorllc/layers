@@ -12,15 +12,29 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
+      # Audit-mode egress monitoring: records every outbound connection the
+      # runner makes so exfil/C2 from a compromised dependency is detectable.
+      # Non-blocking (audit) — does not fail the build.
+      - name: Harden runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2
+        with:
+          egress-policy: audit
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '20'
           cache: 'npm'
 
       - name: Install
-        run: npm ci
+        # --ignore-scripts blocks dependency lifecycle scripts (the install-time
+        # code-exec vector for a compromised package). Modern native deps
+        # (esbuild, sharp, rollup) ship prebuilt platform binaries as optional
+        # deps and do not need postinstall. If a repo's build genuinely needs a
+        # rebuild, that fails only this dep-bump PR's gate (surfaces in triage),
+        # never a production build.
+        run: npm ci --ignore-scripts
 
       - name: Lint
         run: |
