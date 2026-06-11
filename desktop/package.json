@@ -20,6 +20,10 @@
         "electron-builder": "^26.8.1"
     },
     "build": {
+        "publish": {
+            "provider": "generic",
+            "url": "https://downloads.noisefactor.io/updates/layers"
+        },
         "appId": "app.layers.desktop",
         "productName": "Noisedeck Layers",
         "directories": {
@@ -49,6 +53,12 @@
             "target": [
                 {
                     "target": "dmg",
+                    "arch": [
+                        "arm64"
+                    ]
+                },
+                {
+                    "target": "zip",
                     "arch": [
                         "arm64"
                     ]
