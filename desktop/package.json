@@ -24,6 +24,9 @@
             "provider": "generic",
             "url": "https://downloads.noisefactor.io/updates/layers"
         },
+        "dmg": {
+            "writeUpdateInfo": false
+        },
         "appId": "app.layers.desktop",
         "productName": "Noisedeck Layers",
         "directories": {
