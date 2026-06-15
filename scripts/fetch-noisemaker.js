@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Downloads pinned Noisemaker engine + effect bundles to <repo>/vendor/noisemaker/<v>/.
+ * Downloads pinned Noisemaker engine + effect bundles to <repo>/public/vendor/noisemaker/<v>/.
  * Writes SHA256SUMS for app-launch integrity verification.
  */
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { dirname, join, relative, sep, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,8 +17,14 @@ async function main() {
     const pin = JSON.parse(await readFile(PIN_PATH, 'utf8'))
     const { version, baseUrl } = pin
     const versionUrl = `${baseUrl}/${version}`
-    const destRoot = join(REPO_ROOT, 'public', 'vendor', 'noisemaker', version)
+    const vendorRoot = join(REPO_ROOT, 'public', 'vendor', 'noisemaker')
+    const destRoot = join(vendorRoot, version)
     const effectsDest = join(destRoot, 'effects')
+    // Clean any previously-vendored versions first. Stale engine copies must not
+    // accumulate here: electron-builder bundles public/** verbatim, so an old
+    // version would ship as dead weight in the desktop app. Only the pinned
+    // version should ever be present.
+    await rm(vendorRoot, { recursive: true, force: true })
     await mkdir(effectsDest, { recursive: true })
 
     const checksums = []
