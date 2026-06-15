@@ -125,10 +125,10 @@ function getSelectionBounds(selectionPath) {
             for (let x = 0; x < mask.width; x++) {
                 const idx = (y * mask.width + x) * 4 + 3
                 if (mask.data[idx] > 127) {
-                    minX = Math.min(minX, x)
-                    maxX = Math.max(maxX, x)
-                    minY = Math.min(minY, y)
-                    maxY = Math.max(maxY, y)
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
                 }
             }
         }

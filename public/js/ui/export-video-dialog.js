@@ -32,6 +32,12 @@ export class ExportVideoDialog {
 
         this._handleKeydown = this._handleKeydown.bind(this)
         this._handleDialogClick = this._handleDialogClick.bind(this)
+        // Stable handler refs so _addEventListeners/_removeEventListeners pair up.
+        // The dialog reuses the same DOM nodes across every open/close, so fresh
+        // anonymous closures would stack up (leak + duplicate firing) on each open.
+        this._handleInputChange = () => this._updateCalculations()
+        this._handleBeginClick = () => this.beginExport()
+        this._handleCancelClick = () => this.cancel()
     }
 
     _cacheElements() {
@@ -231,32 +237,41 @@ export class ExportVideoDialog {
         }, 800)
     }
 
-    _addEventListeners() {
-        const inputs = [
+    _getCalcInputs() {
+        return [
             this._elements.widthInput,
             this._elements.heightInput,
             this._elements.framerateSelect,
             this._elements.durationInput,
             this._elements.loopCountInput,
             this._elements.qualitySelect
-        ]
+        ].filter(Boolean)
+    }
 
-        for (const input of inputs) {
-            if (input) {
-                input.addEventListener('input', () => this._updateCalculations())
-                input.addEventListener('change', () => this._updateCalculations())
-            }
+    _addEventListeners() {
+        for (const input of this._getCalcInputs()) {
+            input.addEventListener('input', this._handleInputChange)
+            input.addEventListener('change', this._handleInputChange)
         }
 
-        this._elements.beginBtn?.addEventListener('click', () => this.beginExport())
-        this._elements.cancelBtn?.addEventListener('click', () => this.cancel())
-        this._elements.progressCancelBtn?.addEventListener('click', () => this.cancel())
+        this._elements.beginBtn?.addEventListener('click', this._handleBeginClick)
+        this._elements.cancelBtn?.addEventListener('click', this._handleCancelClick)
+        this._elements.progressCancelBtn?.addEventListener('click', this._handleCancelClick)
 
         document.addEventListener('keydown', this._handleKeydown)
         this._dialog.addEventListener('click', this._handleDialogClick)
     }
 
     _removeEventListeners() {
+        for (const input of this._getCalcInputs()) {
+            input.removeEventListener('input', this._handleInputChange)
+            input.removeEventListener('change', this._handleInputChange)
+        }
+
+        this._elements.beginBtn?.removeEventListener('click', this._handleBeginClick)
+        this._elements.cancelBtn?.removeEventListener('click', this._handleCancelClick)
+        this._elements.progressCancelBtn?.removeEventListener('click', this._handleCancelClick)
+
         document.removeEventListener('keydown', this._handleKeydown)
         this._dialog?.removeEventListener('click', this._handleDialogClick)
     }
