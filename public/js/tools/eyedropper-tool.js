@@ -7,6 +7,8 @@
  * @module tools/eyedropper-tool
  */
 
+import { readRenderPixels } from '../utils/canvas-readback.js'
+
 export class EyedropperTool {
     constructor(options) {
         this._overlay = options.overlay
@@ -40,11 +42,8 @@ export class EyedropperTool {
 
     _onClick(e) {
         const pt = this._getCanvasCoords(e)
-        const gl = this._canvas.getContext('webgl') || this._canvas.getContext('webgl2')
-        if (!gl) return
-
-        const pixels = new Uint8Array(4)
-        gl.readPixels(pt.x, this._canvas.height - pt.y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+        // Bottom-up 1px read at the click point, backend-agnostic (WebGL2/WebGPU).
+        const pixels = readRenderPixels(this._canvas, pt.x, this._canvas.height - pt.y, 1, 1)
 
         const hex = '#' + [pixels[0], pixels[1], pixels[2]]
             .map(v => v.toString(16).padStart(2, '0')).join('')

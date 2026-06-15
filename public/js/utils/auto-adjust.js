@@ -3,20 +3,21 @@
  * Analyzes canvas pixels to compute correction parameters
  */
 
+import { readRenderPixels } from './canvas-readback.js'
+
 /**
- * Read current canvas pixels via WebGL
+ * Read current canvas pixels for analysis. Uses WebGL readback when available
+ * and a 2D-snapshot fallback otherwise, so analysis works under both the WebGL2
+ * and WebGPU backends.
  * @param {HTMLCanvasElement} canvas
- * @returns {Uint8Array} RGBA pixel data (unordered — callers use aggregate stats only)
+ * @returns {Uint8Array|null} RGBA pixel data (unordered — callers use aggregate stats only)
  */
 function readCanvasPixels(canvas) {
-    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
-    if (!gl) return null
-
-    const width = canvas.width
-    const height = canvas.height
-    const pixels = new Uint8Array(width * height * 4)
-    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
-    return pixels
+    try {
+        return readRenderPixels(canvas, 0, 0, canvas.width, canvas.height)
+    } catch {
+        return null
+    }
 }
 
 /**

@@ -9,6 +9,7 @@
  */
 
 import { floodFill } from '../selection/flood-fill.js'
+import { readRenderPixels } from '../utils/canvas-readback.js'
 
 export class FillTool {
     constructor(options) {
@@ -56,14 +57,10 @@ export class FillTool {
         const width = this._canvas.width
         const height = this._canvas.height
 
-        // Read composited pixels from WebGL canvas
-        const gl = this._canvas.getContext('webgl') || this._canvas.getContext('webgl2')
-        if (!gl) return
+        // Read composited pixels (bottom-up), backend-agnostic (WebGL2/WebGPU).
+        const pixels = readRenderPixels(this._canvas, 0, 0, width, height)
 
-        const pixels = new Uint8Array(width * height * 4)
-        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
-
-        // WebGL readPixels is bottom-up, flip vertically
+        // readPixels order is bottom-up, flip vertically
         const flipped = new Uint8ClampedArray(width * height * 4)
         for (let y = 0; y < height; y++) {
             const srcRow = (height - 1 - y) * width * 4

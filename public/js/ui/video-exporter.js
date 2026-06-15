@@ -6,6 +6,8 @@
  * @module ui/video-exporter
  */
 
+import { readRenderPixels } from '../utils/canvas-readback.js'
+
 export async function runVideoExport(opts) {
     const {
         settings, canvas, renderer, files,
@@ -91,16 +93,12 @@ export async function runVideoExport(opts) {
                     videoQuality: settings.quality
                 })
             } else {
-                const gl = canvas.getContext('webgl2')
-                if (gl) {
-                    const pixels = new Uint8Array(canvas.width * canvas.height * 4)
-                    gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
-                    files.addZipFrame(pixels, {
-                        width: canvas.width,
-                        height: canvas.height,
-                        totalFrames
-                    })
-                }
+                const pixels = readRenderPixels(canvas, 0, 0, canvas.width, canvas.height)
+                files.addZipFrame(pixels, {
+                    width: canvas.width,
+                    height: canvas.height,
+                    totalFrames
+                })
             }
 
             if (n % 5 === 0) {
