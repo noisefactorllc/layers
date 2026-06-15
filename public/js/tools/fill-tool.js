@@ -1,7 +1,7 @@
 /**
  * Fill Tool - Flood fill from click point, creating a new media layer
  *
- * Reads composited pixels from the WebGL canvas, performs flood fill
+ * Reads composited pixels from the render canvas, performs flood fill
  * using the existing flood-fill algorithm, and creates a new media layer
  * with the filled region.
  *

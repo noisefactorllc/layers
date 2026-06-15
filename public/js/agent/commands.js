@@ -2249,8 +2249,9 @@ function autoCorrectionResult(addedLayer) {
 }
 
 /**
- * Auto-levels: add an adjustment layer that stretches per-channel histograms
- * to full range. Returns `applied: false` when no adjustment was needed.
+ * Auto-levels: add an adjustment layer that stretches the overall tonal range
+ * toward full (derived from per-channel percentiles, applied as global
+ * brightness/contrast). Returns `applied: false` when no adjustment was needed.
  *
  * @returns {Promise<{result: {applied: boolean, layerId: string|null}}>}
  */

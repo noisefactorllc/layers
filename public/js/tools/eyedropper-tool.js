@@ -1,5 +1,5 @@
 /**
- * Eyedropper Tool - Sample a pixel color from the WebGL canvas
+ * Eyedropper Tool - Sample a pixel color from the render canvas
  *
  * Reads a pixel at the click position, sets the foreground color,
  * and auto-returns to the previous tool.

@@ -22,7 +22,7 @@ function readCanvasPixels(canvas) {
 
 /**
  * Compute histogram from pixel data
- * @param {Uint8ClampedArray} pixels - RGBA pixel data
+ * @param {Uint8Array} pixels - RGBA pixel data
  * @returns {{ r, g, b, lum, percentile, mean, totalPixels }}
  */
 function computeHistogram(pixels) {
@@ -62,7 +62,10 @@ function computeHistogram(pixels) {
 }
 
 /**
- * Auto Levels - stretch per-channel histogram to full range
+ * Auto Levels - stretch the overall tonal range to fill 0-1.
+ * Per-channel 1st/99th percentiles are reduced to a single low/high and
+ * expressed as global brightness/contrast (filter/adjust has no per-channel
+ * levels).
  *
  * filter/adjust shader model (brightness/contrast subset):
  *   brightness: default 1, range 0-10, multiplicative (color *= brightness)
