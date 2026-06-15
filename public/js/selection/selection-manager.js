@@ -87,6 +87,15 @@ class SelectionManager {
         /** @type {number} */
         this._dashOffset = 0
 
+        // Cached Path2D for the selection outline. Rebuilt only when
+        // _selectionPath changes (it is always reassigned, never mutated in
+        // place), so the marching-ants loop reuses the geometry instead of
+        // re-tracing it twice per frame — critical for wand/mask paths whose
+        // outline is an O(width*height) boundary scan.
+        /** @type {Path2D | null} */
+        this._cachedStrokePath = null
+        this._cachedStrokePathSource = null
+
         /** @type {{x: number, y: number} | null} */
         this._copyOrigin = null
 
@@ -752,20 +761,42 @@ class SelectionManager {
     _strokePath() {
         if (!this._selectionPath || !this._ctx) return
 
-        const path = this._selectionPath
-        this._ctx.beginPath()
+        // Reuse the cached geometry unless the selection itself changed. The
+        // marching-ants loop calls this twice per frame with only lineDashOffset
+        // differing; without the cache, wand/mask paths would re-run their
+        // O(width*height) boundary scan on every stroke.
+        if (this._cachedStrokePathSource !== this._selectionPath) {
+            this._cachedStrokePath = this._buildStrokePath(this._selectionPath)
+            this._cachedStrokePathSource = this._selectionPath
+        }
+
+        if (this._cachedStrokePath) {
+            this._ctx.stroke(this._cachedStrokePath)
+        }
+    }
+
+    /**
+     * Build a Path2D outlining the given selection path. For wand/mask paths
+     * this traces the mask boundary (an O(width*height) scan), so callers cache
+     * the result rather than rebuilding it per animation frame.
+     * @param {object} path - Selection path
+     * @returns {Path2D}
+     * @private
+     */
+    _buildStrokePath(path) {
+        const p = new Path2D()
 
         if (path.type === 'rect') {
-            this._ctx.rect(path.x, path.y, path.width, path.height)
+            p.rect(path.x, path.y, path.width, path.height)
         } else if (path.type === 'oval') {
-            this._ctx.ellipse(path.cx, path.cy, path.rx, path.ry, 0, 0, Math.PI * 2)
+            p.ellipse(path.cx, path.cy, path.rx, path.ry, 0, 0, Math.PI * 2)
         } else if (path.type === 'lasso' || path.type === 'polygon') {
             if (path.points.length > 0) {
-                this._ctx.moveTo(path.points[0].x, path.points[0].y)
+                p.moveTo(path.points[0].x, path.points[0].y)
                 for (let i = 1; i < path.points.length; i++) {
-                    this._ctx.lineTo(path.points[i].x, path.points[i].y)
+                    p.lineTo(path.points[i].x, path.points[i].y)
                 }
-                this._ctx.closePath()
+                p.closePath()
             }
         } else if (path.type === 'wand' || path.type === 'mask') {
             const mask = path.type === 'wand' ? path.mask : path.data
@@ -789,14 +820,14 @@ class SelectionManager {
                         startX = x
                         inEdge = true
                     } else if (!isEdgeHere && inEdge) {
-                        this._ctx.moveTo(startX, y)
-                        this._ctx.lineTo(x, y)
+                        p.moveTo(startX, y)
+                        p.lineTo(x, y)
                         inEdge = false
                     }
                 }
                 if (inEdge) {
-                    this._ctx.moveTo(startX, y)
-                    this._ctx.lineTo(width, y)
+                    p.moveTo(startX, y)
+                    p.lineTo(width, y)
                 }
             }
 
@@ -813,19 +844,19 @@ class SelectionManager {
                         startY = y
                         inEdge = true
                     } else if (!isEdgeHere && inEdge) {
-                        this._ctx.moveTo(x, startY)
-                        this._ctx.lineTo(x, y)
+                        p.moveTo(x, startY)
+                        p.lineTo(x, y)
                         inEdge = false
                     }
                 }
                 if (inEdge) {
-                    this._ctx.moveTo(x, startY)
-                    this._ctx.lineTo(x, height)
+                    p.moveTo(x, startY)
+                    p.lineTo(x, height)
                 }
             }
         }
 
-        this._ctx.stroke()
+        return p
     }
 
     /**
