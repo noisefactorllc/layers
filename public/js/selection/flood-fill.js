@@ -38,32 +38,43 @@ function floodFill(imageData, startX, startY, tolerance) {
         return diff <= threshold
     }
 
-    const queue = [[startX, startY]]
-    const visited = new Set()
-    visited.add(startY * width + startX)
+    // Stack of pixel indices (y * width + x). A flat numeric stack with O(1)
+    // push/pop replaces the previous array-of-[x, y] queue drained via
+    // Array.shift(): shift() is O(n), which made a large fill O(n^2) and could
+    // freeze the main thread on a big uniform region. Flood fill visits the
+    // same connected component regardless of traversal order, so the resulting
+    // mask is identical (only BFS -> DFS order changes). A Uint8Array visited
+    // map replaces the boxed-number Set for lower memory and faster membership.
+    const visited = new Uint8Array(width * height)
+    const start = startY * width + startX
+    const stack = [start]
+    visited[start] = 1
 
-    while (queue.length > 0) {
-        const [x, y] = queue.shift()
-        const pixelIdx = y * width + x
-        const dataIdx = pixelIdx * 4
+    while (stack.length > 0) {
+        const pixelIdx = stack.pop()
 
-        if (!matches(dataIdx)) continue
+        if (!matches(pixelIdx * 4)) continue
 
         mask[pixelIdx] = 255
 
-        const neighbors = [
-            [x - 1, y],
-            [x + 1, y],
-            [x, y - 1],
-            [x, y + 1]
-        ]
+        const x = pixelIdx % width
+        const y = (pixelIdx - x) / width
 
-        for (const [nx, ny] of neighbors) {
-            if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue
-            const nIdx = ny * width + nx
-            if (visited.has(nIdx)) continue
-            visited.add(nIdx)
-            queue.push([nx, ny])
+        if (x > 0) {
+            const n = pixelIdx - 1
+            if (!visited[n]) { visited[n] = 1; stack.push(n) }
+        }
+        if (x < width - 1) {
+            const n = pixelIdx + 1
+            if (!visited[n]) { visited[n] = 1; stack.push(n) }
+        }
+        if (y > 0) {
+            const n = pixelIdx - width
+            if (!visited[n]) { visited[n] = 1; stack.push(n) }
+        }
+        if (y < height - 1) {
+            const n = pixelIdx + width
+            if (!visited[n]) { visited[n] = 1; stack.push(n) }
         }
     }
 
