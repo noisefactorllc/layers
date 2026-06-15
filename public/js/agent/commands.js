@@ -35,6 +35,7 @@ import { createDrawingLayer } from '../layers/layer-model.js'
 // fine; the divergence is collision avoidance, not a coding-standard split.
 import * as selectionMods from '../selection/selection-modify.js'
 import { floodFill } from '../selection/flood-fill.js'
+import { readRenderPixels } from '../utils/canvas-readback.js'
 import { createPathStroke, createShapeStroke } from '../drawing/stroke-model.js'
 import {
     autoLevels as autoLevelsFn,
@@ -1921,17 +1922,16 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
     }
     const tol = tolerance ?? 32
 
-    // Read composited pixels from the WebGL canvas (mirrors FillTool._onClick).
-    const gl = canvas.getContext('webgl') || canvas.getContext('webgl2')
-    if (!gl) {
-        throw commandError('INTERNAL_ERROR',
-            'Could not get WebGL context for fill', {})
-    }
+    // Read composited pixels from the render canvas (mirrors FillTool._onClick).
     const w = canvas.width, h = canvas.height
-    const pixels = new Uint8Array(w * h * 4)
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels)
+    let pixels
+    try {
+        pixels = readRenderPixels(canvas, 0, 0, w, h)
+    } catch {
+        throw commandError('INTERNAL_ERROR', 'Could not read canvas pixels for fill', {})
+    }
 
-    // WebGL readPixels is bottom-up; flip vertically for image-space coords.
+    // readPixels order is bottom-up; flip vertically for image-space coords.
     const flipped = new Uint8ClampedArray(w * h * 4)
     for (let row = 0; row < h; row++) {
         const srcRow = (h - 1 - row) * w * 4
