@@ -765,6 +765,22 @@ export class LayersRenderer {
     }
 
     _uploadTextTextures() {
+        // Prune canvases whose text layer no longer exists (deleted, flattened,
+        // merged, or replaced). Runs on every rebuild, so this is the single
+        // chokepoint that keeps _textCanvases from accumulating orphans. Keyed
+        // by all text layers regardless of visibility, so toggling a layer
+        // hidden/visible doesn't churn its canvas.
+        const liveTextLayerIds = new Set(
+            this._layers
+                .filter(l => l.sourceType === 'effect' && this._isTextEffect(l.effectId))
+                .map(l => l.id)
+        )
+        for (const layerId of this._textCanvases.keys()) {
+            if (!liveTextLayerIds.has(layerId)) {
+                this._textCanvases.delete(layerId)
+            }
+        }
+
         const passes = this._renderer.pipeline?.graph?.passes
         if (!passes) return
 
