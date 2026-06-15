@@ -14,6 +14,9 @@
  * @module utils/canvas-readback
  */
 
+// Reused 2D scratch canvas for the non-WebGL fallback. Safe to share because
+// every call uses it synchronously (drawImage -> getImageData) on the main
+// thread with no re-entry; a worker or async caller would need its own.
 let _scratch = null
 let _scratchCtx = null
 
