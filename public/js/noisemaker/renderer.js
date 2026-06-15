@@ -98,6 +98,11 @@ export class LayersRenderer {
     }
 
     _updateVideoTextures() {
+        // Runs on every animation frame. Skip the pipeline-pass walk and its
+        // allocations entirely unless at least one loaded media is a video, so
+        // the common image-only case costs nothing per frame.
+        if (!this._hasVideoMedia()) return
+
         const allStepIndices = this._getMediaStepIndices()
         if (!allStepIndices) return
 
@@ -117,6 +122,17 @@ export class LayersRenderer {
                 // Silently ignore texture update errors during playback
             }
         }
+    }
+
+    /**
+     * @returns {boolean} true if any loaded media texture is a video.
+     * @private
+     */
+    _hasVideoMedia() {
+        for (const media of this._mediaTextures.values()) {
+            if (media.type === 'video') return true
+        }
+        return false
     }
 
     /**
