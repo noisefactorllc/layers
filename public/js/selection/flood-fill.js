@@ -1,6 +1,6 @@
 /**
  * Flood Fill Algorithm
- * Queue-based flood fill for magic wand selection
+ * Stack-based (DFS) flood fill for magic wand selection
  *
  * @module selection/flood-fill
  */

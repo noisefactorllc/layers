@@ -1,9 +1,9 @@
 /**
  * Command dispatcher — wraps every LayersAgent command in:
- *   - Argument validation (Task 3 will add schema enforcement)
+ *   - Argument validation against the command's registered schema
  *   - Serialized execution (one command in flight at a time)
  *   - Standard success/failure envelope
- *   - Latest state snapshot attached to every response (Task 7+ will add real state)
+ *   - Latest state snapshot attached to every response
  *
  * @module agent/dispatcher
  */

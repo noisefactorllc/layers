@@ -60,7 +60,7 @@ class LayersApp {
         this._selectionManager = null
         this._copyOrigin = null
         this._moveTool = null
-        this._currentTool = 'selection' // 'selection' | 'move'
+        this._currentTool = 'selection' // 'selection' | 'move' | 'clone' | 'transform' | 'brush' | 'eraser' | 'shape' | 'fill' | 'eyedropper'
         this._previousTool = 'selection'
 
         // Global foreground color
@@ -3626,7 +3626,7 @@ class LayersApp {
 
     /**
      * Set current tool mode
-     * @param {'selection' | 'move' | 'clone' | 'transform'} tool
+     * @param {'selection' | 'move' | 'clone' | 'transform' | 'brush' | 'eraser' | 'shape' | 'fill' | 'eyedropper'} tool
      * @private
      */
     _setToolMode(tool) {

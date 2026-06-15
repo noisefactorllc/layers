@@ -616,7 +616,8 @@ class FontaineLoader {
 
     /**
      * Pick the best file from a font's file list.
-     * Prefers woff2, non-italic, variable fonts, then falls back.
+     * Prefers non-italic woff2, then any woff2, then a non-italic variable/static
+     * ttf/otf, then non-italic woff, then the first file as a last resort.
      * @param {Array<{filename: string}>} files
      * @returns {object|undefined}
      * @private

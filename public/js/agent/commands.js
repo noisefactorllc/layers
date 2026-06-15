@@ -1911,7 +1911,7 @@ export async function drawShape({ layerId, shape, x, y, width, height, color, si
  * @param {{x: number, y: number, color: string, tolerance?: number}} args
  * @returns {Promise<{result: {layerId: string}}>}
  * @throws INVALID_ARGS_RANGE — when (x, y) is outside the canvas.
- * @throws INTERNAL_ERROR — when the WebGL context can't be acquired.
+ * @throws INTERNAL_ERROR — when canvas pixel readback fails (neither WebGL nor the 2D fallback could read the canvas).
  */
 export async function fillRegion({ x, y, color, tolerance }, app) {
     const canvas = app._canvas
