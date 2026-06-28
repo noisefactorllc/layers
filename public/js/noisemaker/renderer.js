@@ -668,11 +668,16 @@ export class LayersRenderer {
 
         if (mediaType === 'image') {
             const img = new Image()
-            await new Promise((resolve, reject) => {
-                img.onload = resolve
-                img.onerror = reject
-                img.src = url
-            })
+            try {
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve
+                    img.onerror = reject
+                    img.src = url
+                })
+            } catch (err) {
+                URL.revokeObjectURL(url) // not yet stored in _mediaTextures, revoke here
+                throw err
+            }
             const width = img.naturalWidth || img.width
             const height = img.naturalHeight || img.height
             this._mediaTextures.set(layerId, { type: 'image', element: img, url, width, height })
@@ -685,18 +690,24 @@ export class LayersRenderer {
             video.muted = true
             video.playsInline = true
             video.crossOrigin = 'anonymous'
-            await new Promise((resolve, reject) => {
-                video.onloadedmetadata = resolve
-                video.onerror = () => {
-                    const mediaError = video.error
-                    const message = mediaError
-                        ? `Video error: ${mediaError.message || 'Code ' + mediaError.code}`
-                        : 'Unknown video error'
-                    reject(new Error(message))
-                }
-                video.src = url
-                video.load()
-            })
+            try {
+                await new Promise((resolve, reject) => {
+                    video.onloadedmetadata = resolve
+                    video.onerror = () => {
+                        const mediaError = video.error
+                        const message = mediaError
+                            ? `Video error: ${mediaError.message || 'Code ' + mediaError.code}`
+                            : 'Unknown video error'
+                        reject(new Error(message))
+                    }
+                    video.src = url
+                    video.load()
+                })
+            } catch (err) {
+                video.src = '' // release the half-initialized element + blob
+                URL.revokeObjectURL(url)
+                throw err
+            }
             const width = video.videoWidth
             const height = video.videoHeight
             this._mediaTextures.set(layerId, { type: 'video', element: video, url, width, height })
@@ -709,6 +720,7 @@ export class LayersRenderer {
             return { width, height }
         }
 
+        URL.revokeObjectURL(url) // unknown media type — nothing stored, don't leak
         return { width: 0, height: 0 }
     }
 
