@@ -406,16 +406,21 @@ class SelectionManager {
 
         const coords = this._getCanvasCoords(e)
         this._selectionMode = this._getModeFromEvent(e)
+        this._previousSelection = this._selectionPath
 
-        if (this._selectionPath && !this._isPointInSelection(coords.x, coords.y)) {
+        // Capture _previousSelection first, then only discard the prior selection
+        // up front in replace mode — add/subtract must keep it so mouseup can
+        // combine (matches the wand branch).
+        if (this._selectionMode === 'replace' && this._selectionPath &&
+            !this._isPointInSelection(coords.x, coords.y)) {
             this.clearSelection()
         }
 
-        this._previousSelection = this._selectionPath
         this._isDrawing = true
         this._drawStart = coords
         this._selectionPath = null
         this._stopAnimation()
+        this._clearOverlay() // drop any stale marching-ants frame from the prior selection
         this._lassoPoints = []
         if (this._currentTool === 'lasso') {
             this._lassoPoints.push(coords)
@@ -864,6 +869,14 @@ class SelectionManager {
      * @private
      */
     _startAnimation() {
+        if (!this._selectionPath) {
+            // Nothing to animate (e.g. a subtract emptied the selection) — make
+            // sure any prior loop is stopped and the overlay cleared, rather
+            // than spinning a permanent no-op rAF.
+            this._stopAnimation()
+            this._clearOverlay()
+            return
+        }
         if (this._animationId) return
 
         const animate = () => {
