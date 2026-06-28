@@ -63,6 +63,7 @@ export class EraserTool {
         if (e.button !== 0) return
         this._dragging = true
         this._deletedInDrag = new Set()
+        this._finalizePendingUndo() // flush any pending debounce once, before the gesture
         this._tryDelete(e)
     }
 
@@ -77,6 +78,11 @@ export class EraserTool {
     _onMouseUp(e) {
         if (!this._dragging) return
         this._dragging = false
+        // One undo step for the whole erase gesture (see class doc). Pushing per
+        // delete also raced the async rasterize, snapshotting the wrong state.
+        if (this._deletedInDrag.size > 0) {
+            this._pushUndoState()
+        }
         this._deletedInDrag.clear()
     }
 
@@ -88,13 +94,11 @@ export class EraserTool {
         const hit = this._hitTest(layer.strokes, pt)
 
         if (hit && !this._deletedInDrag.has(hit.id)) {
-            this._finalizePendingUndo()
             this._deletedInDrag.add(hit.id)
             layer.strokes = layer.strokes.filter(s => s.id !== hit.id)
             await this._rasterizeDrawingLayer(layer)
             await this._rebuild({ force: true })
             this._markDirty()
-            this._pushUndoState()
         }
     }
 
