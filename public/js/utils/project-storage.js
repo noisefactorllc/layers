@@ -150,11 +150,16 @@ async function cleanupUnusedMedia(usedMediaIds) {
  * @returns {Promise<Set<string>>}
  */
 async function getAllUsedMediaIds() {
-    const projects = await listProjects()
+    // listProjects() returns only metadata (id/name/dates) — it strips `layers`.
+    // Fetch each full project record so we can see which media blobs are still
+    // referenced; otherwise the set is always empty and cleanupUnusedMedia()
+    // would delete every blob (including those used by other projects).
+    const list = await listProjects()
     const usedIds = new Set()
 
-    for (const project of projects) {
-        for (const layer of project.layers || []) {
+    for (const { id } of list) {
+        const project = await getProject(id)
+        for (const layer of project?.layers || []) {
             if (layer.mediaId) {
                 usedIds.add(layer.mediaId)
             }
@@ -194,7 +199,10 @@ export async function saveProject(projectData, existingId = null) {
 
     const processedLayers = []
     for (const layer of projectData.layers) {
-        const processedLayer = { ...layer, mediaFile: null }
+        // drawingCanvas holds a live HTMLCanvasElement (rasterized strokes) which
+        // is not structured-cloneable — IndexedDB put() would throw DataCloneError.
+        // Strokes are persisted instead and re-rasterized on load.
+        const processedLayer = { ...layer, mediaFile: null, drawingCanvas: null }
 
         if (layer.sourceType === 'media' && layer.mediaFile) {
             const mediaId = await generateMediaId(layer.mediaFile)

@@ -186,9 +186,10 @@ class LayersApp {
      * @private
      */
     async _restoreState(snapshot) {
-        // Unload all current media
+        // Unload all current media and drawing textures (drawing layers are
+        // registered in _mediaTextures too; re-rasterized below if they survive)
         for (const layer of this._layers) {
-            if (layer.sourceType === 'media') {
+            if (layer.sourceType === 'media' || layer.sourceType === 'drawing') {
                 this._renderer.unloadMedia(layer.id)
             }
         }
@@ -1342,7 +1343,7 @@ class LayersApp {
             this._undoDebounceTimer = null
         }
         this._layers.forEach(l => {
-            if (l.sourceType === 'media') {
+            if (l.sourceType === 'media' || l.sourceType === 'drawing') {
                 this._renderer.unloadMedia(l.id)
             }
         })
@@ -1395,8 +1396,8 @@ class LayersApp {
         this._finalizePendingUndo()
         const layer = this._layers[index]
 
-        // Unload media if needed
-        if (layer.sourceType === 'media') {
+        // Unload media/drawing texture if needed
+        if (layer.sourceType === 'media' || layer.sourceType === 'drawing') {
             this._renderer.unloadMedia(layerId)
         }
 
@@ -3959,6 +3960,22 @@ class LayersApp {
                         layer.mediaFile = file
                         await this._renderer.loadMedia(layer.id, file, layer.mediaType)
                     }
+                }
+            }
+
+            // Re-rasterize drawing layers from persisted strokes (their canvas
+            // is not serialized, so the GPU texture must be rebuilt on load)
+            for (const layer of this._layers) {
+                if (layer.sourceType === 'drawing' && layer.strokes?.length > 0) {
+                    await this._rasterizeDrawingLayer(layer)
+                }
+            }
+
+            // Re-upload mask textures (the renderer starts with empty texture
+            // maps, so masks decoded above must be re-registered to render)
+            for (const layer of this._layers) {
+                if (layer.mask) {
+                    this._renderer.uploadMaskTexture(layer.id, layer.mask)
                 }
             }
 
