@@ -39,6 +39,7 @@ class MoveTool {
         this._dragStart = null
         this._layerStartPos = null
         this._didCloneOperation = false
+        this._pointerUpPending = false
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
@@ -78,6 +79,7 @@ class MoveTool {
         this._dragStart = null
         this._layerStartPos = null
         this._didCloneOperation = false
+        this._pointerUpPending = false
     }
 
     _getCanvasCoords(e) {
@@ -135,7 +137,14 @@ class MoveTool {
             const success = await asyncFn()
             if (success) {
                 this._didCloneOperation = true
-                this._startDrag(startCoords, this._getActiveLayer())
+                if (this._pointerUpPending) {
+                    // Released during the async work — finish the gesture in place
+                    // instead of dragging a layer with no button held.
+                    this._reset()
+                    this._onComplete?.()
+                } else {
+                    this._startDrag(startCoords, this._getActiveLayer())
+                }
             } else {
                 this._reset()
             }
@@ -163,7 +172,12 @@ class MoveTool {
     }
 
     _onMouseUp() {
-        if (this._state === State.EXTRACTING) return
+        if (this._state === State.EXTRACTING) {
+            // Extraction still running — remember the release so _doAsyncThenDrag
+            // completes the gesture instead of starting a drag.
+            this._pointerUpPending = true
+            return
+        }
 
         const didClone = this._didCloneOperation
         this._reset()
