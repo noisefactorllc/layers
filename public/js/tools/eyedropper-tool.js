@@ -43,7 +43,8 @@ export class EyedropperTool {
     _onClick(e) {
         const pt = this._getCanvasCoords(e)
         // Bottom-up 1px read at the click point, backend-agnostic (WebGL2/WebGPU).
-        const pixels = readRenderPixels(this._canvas, pt.x, this._canvas.height - pt.y, 1, 1)
+        // Top-origin row pt.y maps to bottom-up row height-1-pt.y (matches fill-tool).
+        const pixels = readRenderPixels(this._canvas, pt.x, this._canvas.height - 1 - pt.y, 1, 1)
 
         const hex = '#' + [pixels[0], pixels[1], pixels[2]]
             .map(v => v.toString(16).padStart(2, '0')).join('')
