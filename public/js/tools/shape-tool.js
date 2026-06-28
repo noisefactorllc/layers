@@ -107,13 +107,22 @@ export class ShapeTool {
         if (this._state !== State.DRAWING) return
         this._state = State.IDLE
 
-        if (this._startPt && this._currentPt && this._targetLayer) {
+        // Capture this gesture's state and clear instance state BEFORE awaiting,
+        // so a new shape begun during the rebuild isn't clobbered on resume.
+        const startPt = this._startPt
+        const currentPt = this._currentPt
+        const targetLayer = this._targetLayer
+        this._startPt = null
+        this._currentPt = null
+        this._targetLayer = null
+
+        if (startPt && currentPt && targetLayer) {
             this._finalizePendingUndo()
 
-            const x = Math.min(this._startPt.x, this._currentPt.x)
-            const y = Math.min(this._startPt.y, this._currentPt.y)
-            const width = Math.abs(this._currentPt.x - this._startPt.x)
-            const height = Math.abs(this._currentPt.y - this._startPt.y)
+            const x = Math.min(startPt.x, currentPt.x)
+            const y = Math.min(startPt.y, currentPt.y)
+            const width = Math.abs(currentPt.x - startPt.x)
+            const height = Math.abs(currentPt.y - startPt.y)
 
             const stroke = createShapeStroke({
                 type: this._shapeType,
@@ -124,17 +133,15 @@ export class ShapeTool {
                 filled: this._filled
             })
 
-            this._targetLayer.strokes.push(stroke)
-            await this._rasterizeDrawingLayer(this._targetLayer)
+            targetLayer.strokes.push(stroke)
+            await this._rasterizeDrawingLayer(targetLayer)
             await this._rebuild({ force: true })
             this._markDirty()
             this._pushUndoState()
         }
 
-        this._startPt = null
-        this._currentPt = null
-        this._targetLayer = null
-        this._clearPreview()
+        // Only clear the preview if no new shape began during the awaits above.
+        if (this._state === State.IDLE) this._clearPreview()
     }
 
     _drawPreview() {
