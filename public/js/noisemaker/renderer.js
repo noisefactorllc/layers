@@ -117,15 +117,73 @@ export class LayersRenderer {
         const visibleMediaLayers = this._layers.filter(l => l.visible && (l.sourceType === 'media' || l.sourceType === 'drawing'))
 
         for (let i = 0; i < visibleMediaLayers.length && i < stepIndices.length; i++) {
-            const media = this._mediaTextures.get(visibleMediaLayers[i].id)
+            const layer = visibleMediaLayers[i]
+            const media = this._mediaTextures.get(layer.id)
             if (!media || media.type !== 'video') continue
 
+            // Per-frame uploads must run through the same CPU scale/flip as
+            // updateLayerTransform, or each new video frame would clobber
+            // the transformed texture with the raw element and the layer's
+            // flip/scale would never stick. (Rotation is a shader uniform —
+            // unaffected by uploads.)
+            const scaleX = layer.scaleX ?? 1
+            const scaleY = layer.scaleY ?? 1
+            const flipH = layer.flipH || false
+            const flipV = layer.flipV || false
+            const source = (scaleX !== 1 || scaleY !== 1 || flipH || flipV)
+                ? this._drawTransformedMediaFrame(media, scaleX, scaleY, flipH, flipV)
+                : media.element
+
             try {
-                this._renderer.updateTextureFromSource?.(`imageTex_step_${stepIndices[i]}`, media.element, { flipY: false })
+                this._renderer.updateTextureFromSource?.(`imageTex_step_${stepIndices[i]}`, source, { flipY: false })
             } catch {
                 // Silently ignore texture update errors during playback
             }
         }
+    }
+
+    /**
+     * Draw a media element's current frame into a per-media canvas with
+     * CPU-side scale/flip applied (no rotation — the shader's rotation
+     * uniform handles that without bounding-box inflation). The canvas is
+     * cached on the media descriptor so per-frame video redraws reuse it;
+     * it is released with the descriptor on unloadMedia.
+     *
+     * Must be an HTMLCanvasElement, NOT an OffscreenCanvas: the engine's
+     * updateTextureFromSource silently ignores OffscreenCanvas sources
+     * (verified empirically — no throw, no texture update), which is why
+     * the pre-refactor transform path never actually flipped pixels.
+     * Every working upload path here (masks, text) uses a DOM canvas.
+     * @param {{element: CanvasImageSource, width: number, height: number, transformCanvas?: HTMLCanvasElement}} media
+     * @param {number} scaleX
+     * @param {number} scaleY
+     * @param {boolean} flipH
+     * @param {boolean} flipV
+     * @returns {HTMLCanvasElement}
+     * @private
+     */
+    _drawTransformedMediaFrame(media, scaleX, scaleY, flipH, flipV) {
+        const destW = Math.max(1, Math.ceil(media.width * Math.abs(scaleX)))
+        const destH = Math.max(1, Math.ceil(media.height * Math.abs(scaleY)))
+
+        let canvas = media.transformCanvas
+        if (!canvas || canvas.width !== destW || canvas.height !== destH) {
+            canvas = document.createElement('canvas')
+            canvas.width = destW
+            canvas.height = destH
+            media.transformCanvas = canvas
+        }
+        const ctx = canvas.getContext('2d')
+
+        ctx.clearRect(0, 0, destW, destH)
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
+        ctx.save()
+        ctx.translate(destW / 2, destH / 2)
+        ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1)
+        ctx.drawImage(media.element, -destW / 2, -destH / 2, destW, destH)
+        ctx.restore()
+        return canvas
     }
 
     /**
@@ -498,29 +556,15 @@ export class LayersRenderer {
         }
 
         if (needsCpuTransform) {
-            // CPU-side scale and flip (no rotation — shader handles that)
-            const destW = Math.ceil(srcW * Math.abs(scaleX))
-            const destH = Math.ceil(srcH * Math.abs(scaleY))
-
-            if (!this._transformCanvas || this._transformCanvas.width !== destW || this._transformCanvas.height !== destH) {
-                this._transformCanvas = new OffscreenCanvas(destW, destH)
-            }
-            const canvas = this._transformCanvas
-            canvas.width = destW
-            canvas.height = destH
-            const ctx = canvas.getContext('2d')
-
-            ctx.clearRect(0, 0, destW, destH)
-            ctx.imageSmoothingEnabled = true
-            ctx.imageSmoothingQuality = 'high'
-            ctx.translate(destW / 2, destH / 2)
-            ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1)
-            ctx.drawImage(media.element, -destW / 2, -destH / 2, destW, destH)
+            // CPU-side scale and flip (no rotation — shader handles that).
+            // Same helper as the per-frame video path, so a video's next
+            // frame upload reproduces this transform instead of clobbering it.
+            const canvas = this._drawTransformedMediaFrame(media, scaleX, scaleY, flipH, flipV)
 
             try {
                 this._renderer.updateTextureFromSource?.(textureId, canvas, { flipY: false })
                 this._renderer.applyStepParameterValues?.({
-                    [`step_${stepIndex}`]: { imageSize: [destW, destH], rotation }
+                    [`step_${stepIndex}`]: { imageSize: [canvas.width, canvas.height], rotation }
                 })
             } catch (err) {
                 console.warn(`[LayersRenderer] Failed to upload transformed texture for layer ${layerId}:`, err)
