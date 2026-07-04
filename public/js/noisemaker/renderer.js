@@ -40,6 +40,10 @@ export class LayersRenderer {
         this._textCanvases = new Map()
         this._videoUpdateRAF = null
         this._layerStepMap = new Map()
+        // Serial queue for pipeline mutations (rebuild/tryCompile). The app
+        // has fire-and-forget rebuild call sites, so overlapping calls would
+        // otherwise interleave their compile + post-compile steps.
+        this._compileTail = Promise.resolve()
     }
 
     get canvas() {
@@ -223,12 +227,40 @@ export class LayersRenderer {
     }
 
     /**
-     * Rebuild DSL from current layers and recompile
+     * Run an async pipeline mutation exclusively, after any in-flight one
+     * settles (success or failure). Mirrors the agent dispatcher's serial
+     * queue. Without this, overlapping rebuilds would race their compiles
+     * and interleave post-compile texture/param application on the shared
+     * pipeline.
+     * @template T
+     * @param {() => Promise<T>} fn
+     * @returns {Promise<T>}
+     * @private
+     */
+    _serializeCompileOp(fn) {
+        const next = this._compileTail.then(fn, fn)
+        this._compileTail = next.catch(() => {})
+        return next
+    }
+
+    /**
+     * Rebuild DSL from current layers and recompile.
+     * Overlapping calls are serialized; each queued rebuild reads the layer
+     * state current at the time it runs, so a burst of rebuilds coalesces
+     * into one compile of the latest state plus cheap no-ops.
      * @param {object} [options={}] - Options
      * @param {boolean} [options.force=false] - Force rebuild even if DSL unchanged (needed after layer reorder)
      * @returns {Promise<{success: boolean, error?: string}>}
      */
-    async rebuild(options = {}) {
+    rebuild(options = {}) {
+        return this._serializeCompileOp(() => this._rebuildNow(options))
+    }
+
+    /**
+     * The rebuild body. Must only run inside _serializeCompileOp.
+     * @private
+     */
+    async _rebuildNow(options = {}) {
         const { force = false } = options
 
         if (!this._initialized) {
@@ -240,8 +272,9 @@ export class LayersRenderer {
             return { success: true }
         }
 
+        let dsl = ''
         try {
-            const dsl = this._buildDsl()
+            dsl = this._buildDsl()
 
             // force=true is needed after layer reorder because the DSL may be
             // string-identical but the layer-to-step mapping needs to be rebuilt
@@ -249,10 +282,13 @@ export class LayersRenderer {
                 return { success: true }
             }
 
-            this._currentDsl = dsl
             console.debug('[LayersRenderer] Built DSL:', dsl)
 
             await this._loadAndCompile(dsl)
+            // Record the DSL only after it compiled: a failed compile must
+            // not make the next rebuild short-circuit on the dedup check
+            // above and report success against a stale pipeline.
+            this._currentDsl = dsl
             this._normalizeColorUniforms()
 
             this._buildLayerStepMap()
@@ -263,13 +299,14 @@ export class LayersRenderer {
 
             return { success: true }
         } catch (err) {
-            this._logDslError('Compilation error', this._currentDsl, err)
+            this._logDslError('Compilation error', dsl, err)
             return { success: false, error: err.message || String(err) }
         }
     }
 
     /**
-     * Try to compile DSL without rebuilding layer state
+     * Try to compile DSL without rebuilding layer state.
+     * Serialized with rebuild(): both mutate the shared pipeline.
      * @param {string} dsl - DSL to compile
      * @returns {Promise<{success: boolean, error?: string}>}
      */
@@ -278,14 +315,16 @@ export class LayersRenderer {
             return { success: true }
         }
 
-        try {
-            await this._loadAndCompile(dsl)
-            this._normalizeColorUniforms()
-            return { success: true }
-        } catch (err) {
-            this._logDslError('tryCompile failed', dsl, err)
-            return { success: false, error: err.message || String(err) }
-        }
+        return this._serializeCompileOp(async () => {
+            try {
+                await this._loadAndCompile(dsl)
+                this._normalizeColorUniforms()
+                return { success: true }
+            } catch (err) {
+                this._logDslError('tryCompile failed', dsl, err)
+                return { success: false, error: err.message || String(err) }
+            }
+        })
     }
 
     /**
