@@ -8,7 +8,28 @@
 
 import { readRenderPixels } from '../utils/canvas-readback.js'
 
+// One export at a time: the exporter pauses/restarts the shared renderer and
+// resizes the shared canvas, so overlapping runs corrupt each other's frames
+// and race the resolution restore. This module is the chokepoint for BOTH the
+// export dialog and the agent's exportVideo command — the agent-side job
+// guard cannot see a dialog-initiated export, so the refusal lives here.
+let _exportInFlight = false
+
 export async function runVideoExport(opts) {
+    if (_exportInFlight) {
+        const err = new Error('A video export is already running')
+        err.code = 'CONFLICT_EXPORT_IN_PROGRESS'
+        throw err
+    }
+    _exportInFlight = true
+    try {
+        return await runVideoExportInner(opts)
+    } finally {
+        _exportInFlight = false
+    }
+}
+
+async function runVideoExportInner(opts) {
     const {
         settings, canvas, renderer, files,
         getResolution, setResolution,
