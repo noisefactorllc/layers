@@ -958,6 +958,12 @@ export class LayersRenderer {
     updateTextParams(layerId, params) {
         const layer = this._layers.find(l => l.id === layerId)
         if (!layer || !this._isTextEffect(layer.effectId)) return
+        // A hidden layer's cached stepIndex is stale: _uploadTextTextures
+        // only reassigns indices for visible layers, so writing through it
+        // could overwrite a texture slot now owned by another text layer.
+        // The caller keeps params on layer.effectParams; the canvas
+        // re-renders from them on the rebuild that makes the layer visible.
+        if (!layer.visible) return
         if (!this._textCanvases.has(layerId)) return
 
         this._renderTextCanvas(layerId, params)
@@ -981,6 +987,12 @@ export class LayersRenderer {
 
             const registered = await loader.registerFontByName(font)
             if (registered) {
+                // Re-check visibility: the layer may have been hidden while
+                // the font loaded, making its cached stepIndex stale (see
+                // updateTextParams). A deleted layer is already safe — its
+                // canvas is pruned on rebuild and _renderTextCanvas no-ops.
+                const layer = this._layers.find(l => l.id === layerId)
+                if (!layer?.visible) return
                 this._renderTextCanvas(layerId, params)
             }
         } catch {
