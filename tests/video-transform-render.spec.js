@@ -161,15 +161,22 @@ test.describe('video layer CPU transforms vs per-frame uploads', () => {
         expect(isRed(flipped.right)).toBe(true)
     })
 
-    test('scaled video keeps its scale across per-frame updates', async ({ page }) => {
+    test('scaled + flipped video applies both through the transform helper', async ({ page }) => {
         await bootApp(page)
         const layerId = await addStripeVideoLayer(page)
 
-        // Scale 2x: the video now spans center±64, so a point at center+48
-        // (outside the unscaled 64px footprint, inside the scaled one) must
-        // show the video's blue right half rather than the backdrop.
+        // Scale 2x AND flipH together. Scale alone is not a differential: the
+        // imageSize uniform stretches even the raw (untransformed) texture, so
+        // the right half reads blue pre- and post-fix. Adding the flip swaps
+        // the halves, which ONLY happens if the transformed canvas actually
+        // reaches the texture — so this isolates the fix.
+        //
+        // Scaled 2x, the 64px video spans center±64. Both sample points below
+        // sit at ±48 — outside the *unscaled* center±32 footprint, so a video
+        // colour appearing there proves scale — while the flip means the left
+        // half now reads blue and the right half red (swapped from raw).
         const env = await page.evaluate((id) =>
-            window.LayersAgent.setLayerTransform({ layerId: id, transform: { scaleX: 2, scaleY: 2 } }), layerId)
+            window.LayersAgent.setLayerTransform({ layerId: id, transform: { scaleX: 2, scaleY: 2, flipH: true } }), layerId)
         expect(env.ok).toBe(true)
 
         const out = await page.evaluate(async () => {
@@ -179,10 +186,12 @@ test.describe('video layer CPU transforms vs per-frame uploads', () => {
             const canvas = app._canvas
             app._renderer.render(0) // defined readback: render + read same task
             const midY = Math.floor(canvas.height / 2)
-            const x = Math.floor(canvas.width / 2) + 48
-            const p = readRenderPixels(canvas, x, midY, 1, 1)
-            return [p[0], p[1], p[2]]
+            const left = readRenderPixels(canvas, Math.floor(canvas.width / 2) - 48, midY, 1, 1)
+            const right = readRenderPixels(canvas, Math.floor(canvas.width / 2) + 48, midY, 1, 1)
+            return { left: [left[0], left[1], left[2]], right: [right[0], right[1], right[2]] }
         })
-        expect(isBlue(out)).toBe(true)
+        // Pre-fix these read the opposite colours (raw orientation stretched).
+        expect(isBlue(out.left)).toBe(true)
+        expect(isRed(out.right)).toBe(true)
     })
 })

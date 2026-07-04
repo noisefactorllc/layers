@@ -517,7 +517,10 @@ export class LayersRenderer {
 
     /**
      * Update layer transform.
-     * Scale and flip are applied CPU-side via OffscreenCanvas.
+     * Scale and flip are applied CPU-side via `_drawTransformedMediaFrame`,
+     * which draws into a per-media DOM canvas — NOT an OffscreenCanvas, which
+     * the engine's updateTextureFromSource silently ignores (see the note in
+     * that helper).
      * Rotation uses the shader's built-in rotation uniform to avoid
      * bounding-box inflation that would make the image appear scaled.
      * @param {string} layerId
