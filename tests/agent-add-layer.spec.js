@@ -28,6 +28,7 @@ test.describe('LayersAgent.addLayer — effect kind', () => {
         expect(stateLast.id).toBe(env.result.layerId)
         expect(stateLast.sourceType).toBe('effect')
         expect(stateLast.effect.id).toBe('synth/gradient')
+        expect(stateLast.effect.params).toEqual({ type: 2 })
     })
 
     test('addLayer returns NOT_FOUND_EFFECT for unknown effectId', async ({ page }) => {

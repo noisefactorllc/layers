@@ -34,6 +34,13 @@ test.describe('WebGL error handling', () => {
         await expect(page.locator('#canvas')).toBeVisible()
         await expect(page.locator('layer-item').first()).toBeVisible()
 
+        const gradientState = await page.evaluate(() => ({
+            params: window.layersApp._layers[0].effectParams,
+            dsl: window.layersApp._renderer.currentDsl
+        }))
+        expect(gradientState.params).toEqual({ type: 2 })
+        expect(gradientState.dsl).toContain('gradient(type: 2)')
+
         await page.waitForTimeout(500)
         await page.screenshot({ path: 'test-results/webgl-gradient-test.png' })
 

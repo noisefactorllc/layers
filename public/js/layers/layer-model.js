@@ -7,6 +7,10 @@
 
 let layerCounter = 0
 
+const DEFAULT_EFFECT_PARAMS = {
+    'synth/gradient': { type: 2 }
+}
+
 /**
  * Convert camelCase to Human Case (Title Case with spaces)
  * @param {string} str - Input string in camelCase
@@ -90,11 +94,12 @@ export function createMediaLayer(file, mediaType, name) {
  */
 export function createEffectLayer(effectId, name, params = {}) {
     const effectName = effectId.split('/').pop()
+    const defaultParams = DEFAULT_EFFECT_PARAMS[effectId]
     return createLayer({
         name: name || camelToHumanCase(effectName),
         sourceType: 'effect',
         effectId,
-        effectParams: params
+        effectParams: defaultParams ? { ...defaultParams, ...params } : params
     })
 }
 
