@@ -2406,8 +2406,30 @@ export async function installFontBundle(_args, _app) {
  * stays alive until the document unloads. Holds for both MP4 and ZIP —
  * the dispatcher strips the live Blob handle either way so the envelope
  * stays JSON-clean.
+ *
+ * @throws CONFLICT_JOB_IN_PROGRESS — when a video export is already running.
+ *         `details.jobId` is the existing run; the caller should poll it via
+ *         getJob/waitForJob (or cancelJob it) rather than retrying.
  */
 export async function exportVideo(args, app) {
+    // Reject duplicate runs: only one video export can be active. The runner
+    // pauses/restarts the shared renderer and resizes the shared canvas
+    // (setResolution), so two concurrent exports would corrupt each other's
+    // frames and race the resolution restore. Existence of an unsettled job
+    // from a prior call means we should send the caller back to poll the
+    // original jobId. (Same pattern as installFontBundle.)
+    const existing = jobsRegistry.listJobs().find(j =>
+        j.kind === JOB_KINDS.EXPORT_VIDEO &&
+        j.status !== 'succeeded' &&
+        j.status !== 'failed' &&
+        j.status !== 'cancelled'
+    )
+    if (existing) {
+        throw commandError('CONFLICT_JOB_IN_PROGRESS',
+            'A video export is already running.',
+            { jobId: existing.id })
+    }
+
     const w = args?.width ?? app._canvas.width
     const h = args?.height ?? app._canvas.height
     const captureOnly = !!args?.captureOnly

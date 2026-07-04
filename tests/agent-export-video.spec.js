@@ -165,4 +165,42 @@ test.describe('agent: exportVideo', () => {
             r2.result.jobId)
         expect(final2.result.status).toBe('succeeded')
     })
+
+    test('a second exportVideo while one is running returns CONFLICT_JOB_IN_PROGRESS', async ({ page }) => {
+        // Two concurrent exports would fight over the shared canvas resolution
+        // (setResolution) and the renderer's pause/restart, corrupting both.
+        // Mirrors installFontBundle: the second call is rejected and pointed
+        // at the running job.
+        const r1 = await page.evaluate(() => window.LayersAgent.exportVideo({
+            width: 64, height: 64, framerate: 30, duration: 5,
+            format: 'zip', quality: 'low'
+        }))
+        expect(r1.ok).toBe(true)
+
+        const r2 = await page.evaluate(() => window.LayersAgent.exportVideo({
+            width: 64, height: 64, framerate: 30, duration: 0.1,
+            format: 'zip', quality: 'low'
+        }))
+        expect(r2.ok).toBe(false)
+        expect(r2.error.code).toBe('CONFLICT_JOB_IN_PROGRESS')
+        expect(r2.error.details.jobId).toBe(r1.result.jobId)
+
+        // Once the running job settles (cancelled here), a fresh export is
+        // allowed again.
+        await page.evaluate((id) => window.LayersAgent.cancelJob({ jobId: id }), r1.result.jobId)
+        const final1 = await page.evaluate((id) =>
+            window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 5000 }),
+            r1.result.jobId)
+        expect(final1.result.status).toBe('cancelled')
+
+        const r3 = await page.evaluate(() => window.LayersAgent.exportVideo({
+            width: 64, height: 64, framerate: 30, duration: 0.1,
+            format: 'zip', quality: 'low'
+        }))
+        expect(r3.ok).toBe(true)
+        const final3 = await page.evaluate((id) =>
+            window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 30000 }),
+            r3.result.jobId)
+        expect(final3.result.status).toBe('succeeded')
+    })
 })
