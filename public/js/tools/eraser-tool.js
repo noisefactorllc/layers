@@ -32,6 +32,9 @@ export class EraserTool {
         this._onMouseUp = this._onMouseUp.bind(this)
     }
 
+    /** True while an erase drag gesture is between mousedown and mouseup. */
+    get isErasing() { return this._dragging }
+
     activate() {
         if (this._active) return
         this._active = true

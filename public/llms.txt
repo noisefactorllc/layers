@@ -92,6 +92,9 @@ Examples:
 - `THEME_PERSIST_FAILED` from `setSettings` -- localStorage write threw
 - `PROJECT_STORAGE_ERROR` from `listProjects` -- storage layer threw; result
   was best-effort (usually an empty list)
+- `SESSION_TAKEN_OFFLINE` from `newProject`/`openProject` -- an online Seance
+  session was taken offline first, since these commands replace the whole
+  composition and a shared session can't represent that
 
 ---
 

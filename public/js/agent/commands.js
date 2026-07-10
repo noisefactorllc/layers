@@ -452,6 +452,13 @@ async function addMediaLayer({ source, mediaType, name }, app) {
         throw commandError('INVALID_ARGS_REQUIRED', 'mediaType is required for kind=media',
             { field: 'mediaType' })
     }
+    // Media layers can't ride the Seance node doc (bytes are local-only);
+    // _handleAddMediaLayer also no-ops with a toast for the human path, but
+    // the agent needs a real error rather than a fabricated success.
+    if (app._onlineAdapter?.isOnline()) {
+        throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
+            'Media layers are not supported while a Layers collaboration session is online', {})
+    }
     const file = await sourceToFile(source, name || 'media')
     await app._handleAddMediaLayer(file, mediaType)
     const layer = app._layers[app._layers.length - 1]
@@ -1968,13 +1975,36 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
 }
 
 /**
+ * If a Seance session is online, take it offline first. Used by commands
+ * that wholesale-replace `_layers`/canvas (new/open project) — the human
+ * File-menu path for the same actions confirms this with the user first
+ * (_confirmLeaveOnlineSession), but an agent can't answer a confirm dialog,
+ * so this does it unconditionally and reports it via the envelope's
+ * `warnings` array instead of blocking or silently corrupting the session.
+ * @param {object} app
+ * @returns {Array<{code: string, message: string}>} warnings (empty array
+ *   when the session was already offline)
+ */
+function offlineIfOnline(app) {
+    if (!app._onlineAdapter?.isOnline()) return []
+    app._onlineAdapter.goOffline()
+    return [{
+        code: 'SESSION_TAKEN_OFFLINE',
+        message: 'A Seance session was online; taken offline first (this command replaces the whole composition, which a shared session can’t represent)'
+    }]
+}
+
+/**
  * Reset state and start a new project at the given canvas size. Discards
- * unsaved changes silently (agents must save first if they care).
+ * unsaved changes silently (agents must save first if they care). If a
+ * Seance session is online, it's taken offline first — see
+ * offlineIfOnline() — and the envelope's `warnings` array reports it.
  *
  * @param {{width: number, height: number, name?: string}} args
- * @returns {Promise<{result: {width: number, height: number}}>}
+ * @returns {Promise<{result: {width: number, height: number}, warnings?: Array<{code: string, message: string}>}>}
  */
 export async function newProject({ width, height, name }, app) {
+    const warnings = offlineIfOnline(app)
     app._finalizePendingUndo?.()
     app._selectionManager?.clearSelection?.()
     app._resetLayers()
@@ -1988,14 +2018,16 @@ export async function newProject({ width, height, name }, app) {
     app._markClean?.()
     app._updateLayerStack?.()
     app._pushUndoState?.()
-    return { result: { width, height } }
+    return { result: { width, height }, warnings }
 }
 
 /**
- * Load a previously-saved project by id.
+ * Load a previously-saved project by id. If a Seance session is online,
+ * it's taken offline first — see offlineIfOnline() — and the envelope's
+ * `warnings` array reports it.
  *
  * @param {{projectId: string}} args
- * @returns {Promise<{result: {projectId: string}}>}
+ * @returns {Promise<{result: {projectId: string}, warnings?: Array<{code: string, message: string}>}>}
  * @throws NOT_FOUND_PROJECT — when no project has that id.
  */
 export async function openProject({ projectId }, app) {
@@ -2005,8 +2037,9 @@ export async function openProject({ projectId }, app) {
             `Project not found: ${projectId}`,
             { projectId })
     }
+    const warnings = offlineIfOnline(app)
     await app._loadProject(projectId)
-    return { result: { projectId } }
+    return { result: { projectId }, warnings }
 }
 
 /**

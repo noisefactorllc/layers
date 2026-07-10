@@ -48,6 +48,9 @@ export class BrushTool {
     get opacity() { return this._opacity }
     set opacity(v) { this._opacity = Math.max(0, Math.min(1, v)) }
 
+    /** True while a stroke gesture is between mousedown and mouseup. */
+    get isDrawing() { return this._state === State.DRAWING }
+
     activate() {
         if (this._active) return
         this._active = true

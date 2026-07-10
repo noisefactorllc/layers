@@ -43,6 +43,30 @@ import * as strokeModel from './drawing/stroke-model.js'
 import { StrokeRenderer } from './drawing/stroke-renderer.js'
 import { autoLevels, autoContrast, autoWhiteBalance } from './utils/auto-adjust.js'
 import { bootstrapAgent } from './agent/index.js'
+import { SeanceDialog } from 'handfish'  // Register <seance-dialog> custom element
+import { createLayersOnlineAdapter } from './collab/onlineAdapter.js'
+
+const ONLINE_COLLABORATION_FEATURE = 'onlineCollaboration'
+
+/**
+ * Feature-flag check for online collaboration. Ships enabled by default;
+ * the flag machinery stays as a code-level kill-switch (mirrors
+ * polymorphic/noisedeck) — remove the DEFAULTS entry to re-gate it.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isFeatureEnabled(name) {
+    const DEFAULTS = { onlineCollaboration: true }
+    if (DEFAULTS[name]) return true
+    const params = new URLSearchParams(window.location.search)
+    const fromUrl = (params.get('features') || '').split(',').map(s => s.trim()).filter(Boolean)
+    if (fromUrl.includes(name)) return true
+    try {
+        return localStorage.getItem(`feature.${name}`) === 'true'
+    } catch {
+        return false
+    }
+}
 
 /**
  * Main application class
@@ -82,6 +106,10 @@ class LayersApp {
         // Mask editing
         this._maskEditMode = false
         this._maskEditLayerId = null
+
+        // Seance online collaboration adapter — created in init() when the
+        // onlineCollaboration feature flag is enabled (default: on).
+        this._onlineAdapter = null
     }
 
     /**
@@ -146,6 +174,17 @@ class LayersApp {
             canvasHeight: this._canvas.height
         })
         this._updateUndoMenuState()
+        // Publish funnel, systemic form: every composition mutation path in
+        // this app records undo (directly or via the debounced sibling
+        // below), so hooking it here — rather than every tool call site —
+        // covers transform/move/clone/flip and any future mutation for
+        // free. schedulePublish() is a 150ms-debounced diff against the
+        // last-published model; by flush time the mutation has landed, so
+        // this is safe even when _pushUndoState() is called before the
+        // caller's own mutation finishes. Redundant with the _rebuild()/
+        // param-path hooks (schedulePublish() is idempotent while a publish
+        // is already pending) but harmless.
+        this._onlineAdapter?.schedulePublish()
     }
 
     /**
@@ -164,6 +203,12 @@ class LayersApp {
         }, 500)
         // Update menu immediately so undo shows as available
         this._updateUndoMenuState()
+        // Also re-arm the (much shorter) publish debounce immediately rather
+        // than waiting for the 500ms undo timer to settle — during a
+        // continuous drag (transform/move) this call repeats on every
+        // mousemove, so this keeps peers seeing progressive updates roughly
+        // every 150ms instead of only once the drag stops.
+        this._onlineAdapter?.schedulePublish()
     }
 
     /**
@@ -299,6 +344,28 @@ class LayersApp {
             cancelText: 'Cancel',
             danger: true
         })
+    }
+
+    /**
+     * If a Seance session is online, confirm leaving it and go offline
+     * before proceeding (new/open/load project all replace `_layers`
+     * wholesale, which isn't something a shared session can represent).
+     * A no-op (returns true) while offline.
+     * @returns {Promise<boolean>} true if ok to proceed, false to cancel
+     * @private
+     */
+    async _confirmLeaveOnlineSession() {
+        if (!this._onlineAdapter?.isOnline()) return true
+
+        const ok = await confirmDialog.show({
+            message: 'This will take your Layers session offline. Continue?',
+            confirmText: 'Go Offline',
+            cancelText: 'Cancel'
+        })
+        if (!ok) return false
+
+        this._onlineAdapter.goOffline()
+        return true
     }
 
     /**
@@ -526,9 +593,23 @@ class LayersApp {
         // Apply default zoom mode
         this._applyZoom()
 
-        // Hide loading screen and show open dialog
+        // Seance online collaboration — wire the adapter + "go online..."
+        // menu item (cheap, no network). A `?seance=` boot join (if present)
+        // applies directly with no confirm, while the loading screen stays
+        // up for it exactly as it would for any other boot path; on
+        // success it replaces the initial open dialog, and any join failure
+        // (dialect mismatch, network error, unknown session) falls back to
+        // the normal open dialog exactly as if `?seance=` had never been
+        // there.
+        this._initOnlineCollaboration()
+        const joinedFromUrl = this._onlineAdapter
+            ? await this._onlineAdapter.joinFromUrl().catch((err) => {
+                console.error('[Layers] Failed to join Seance session from URL:', err)
+                return false
+            })
+            : false
         this._hideLoadingScreen()
-        this._showOpenDialog()
+        if (!joinedFromUrl) this._showOpenDialog()
 
         // Expose drawing module for tests
         window._drawingTestExports = { ...strokeModel, StrokeRenderer, createDrawingLayer }
@@ -542,6 +623,33 @@ class LayersApp {
         } catch (err) {
             console.error('[Layers] Failed to bootstrap agent API:', err)
         }
+    }
+
+    /**
+     * Create the Seance online-collaboration adapter (when the feature flag
+     * is enabled), wire the "go online..." File-menu item + its leading
+     * separator, and wire the <seance-dialog>'s semantic events.
+     *
+     * Visibility uses style.display, not the `hidden` attribute — handfish
+     * menu-item CSS cascades on `[hidden]` in a way that fights this menu's
+     * own show/hide classes, so `hidden` silently fails to hide submenu rows.
+     * @private
+     */
+    _initOnlineCollaboration() {
+        const menuItem = document.getElementById('goOnlineMenuItem')
+        const separator = document.getElementById('onlineCollabMenuSeparator')
+        const enabled = isFeatureEnabled(ONLINE_COLLABORATION_FEATURE)
+
+        for (const el of [menuItem, separator]) {
+            if (el) el.style.display = enabled ? '' : 'none'
+        }
+        if (!enabled) return
+
+        this._onlineAdapter = createLayersOnlineAdapter(this)
+        this._onlineAdapter.wireUi()
+
+        const dialog = document.getElementById('seanceDialog')
+        menuItem?.addEventListener('click', () => dialog?.show?.())
     }
 
     /**
@@ -750,12 +858,32 @@ class LayersApp {
     }
 
     /**
+     * Gate an operation that would create (or morph a layer into) a media
+     * layer while a Seance session is online — media layers can't ride the
+     * shared node doc (see collab/docModel.js §5 in the design doc: their
+     * bytes only exist in local storage). Same toast wording family as the
+     * pre-existing gates below and in _handlePaste()/agent addMediaLayer.
+     * @param {string} what - gerund/noun phrase describing the blocked action
+     * @returns {boolean} true if blocked (caller must bail without mutating)
+     * @private
+     */
+    _blockedMediaOnline(what) {
+        if (!this._onlineAdapter?.isOnline()) return false
+        toast.warning(`${what} isn’t supported while a Layers session is online`)
+        return true
+    }
+
+    /**
      * Handle adding a media layer
      * @param {File} file - Media file
      * @param {string} mediaType - 'image' or 'video'
      * @private
      */
     async _handleAddMediaLayer(file, mediaType) {
+        if (this._onlineAdapter?.isOnline()) {
+            toast.warning('Media layers aren’t supported while a Layers session is online')
+            return
+        }
         this._finalizePendingUndo()
         const layer = createMediaLayer(file, mediaType)
         this._layers.push(layer)
@@ -1453,6 +1581,7 @@ class LayersApp {
                 this._renderer.updateLayerParams(detail.layerId, detail.value)
                 this._renderer.syncDsl()
                 this._pushUndoStateDebounced()
+                this._onlineAdapter?.schedulePublish()
             } else {
                 await this._rebuild()
                 this._pushUndoState()
@@ -1468,6 +1597,7 @@ class LayersApp {
                 // Keep DSL in sync to prevent spurious rebuild on next structural change
                 this._renderer.syncDsl()
                 this._pushUndoStateDebounced()
+                this._onlineAdapter?.schedulePublish()
                 break
 
             case 'opacity':
@@ -1752,6 +1882,13 @@ class LayersApp {
             console.error('[Layers] Rebuild failed:', result.error)
             toast.error('Failed to render: ' + result.error)
         }
+        // Publish funnel: nearly every structural mutation (add/delete
+        // layer, mask ops, brush/eraser strokes, reorder, undo/redo,
+        // project load, resize...) already routes through _rebuild(), so
+        // hooking it here covers them all with one debounced call. The
+        // cheap updateLayerParams() path bypasses _rebuild() and schedules
+        // its own publish (see _handleLayerChange()).
+        this._onlineAdapter?.schedulePublish()
     }
 
     /**
@@ -1801,6 +1938,7 @@ class LayersApp {
      * @private
      */
     async _addMediaLayerFromCanvas(canvas, name) {
+        if (this._blockedMediaOnline('Adding this layer')) return
         const layer = createMediaLayer(null, 'image', name || 'Fill')
         layer.mediaFile = null
         this._layers.push(layer)
@@ -2035,6 +2173,7 @@ class LayersApp {
         // File menu - New / Open (both show the same open dialog with reset)
         for (const id of ['newMenuItem', 'openMenuItem']) {
             document.getElementById(id)?.addEventListener('click', async () => {
+                if (!await this._confirmLeaveOnlineSession()) return
                 if (!await this._confirmUnsavedChanges()) return
                 openDialog.show({
                     canClose: true,
@@ -2066,6 +2205,7 @@ class LayersApp {
 
         // File menu - New from Clipboard
         document.getElementById('newFromClipboardMenuItem')?.addEventListener('click', async () => {
+            if (!await this._confirmLeaveOnlineSession()) return
             if (!await this._confirmUnsavedChanges()) return
             await this._handleNewFromClipboard({ resetLayers: true })
         })
@@ -2086,6 +2226,7 @@ class LayersApp {
 
         // File menu - Load Project
         document.getElementById('loadProjectMenuItem')?.addEventListener('click', async () => {
+            if (!await this._confirmLeaveOnlineSession()) return
             if (!await this._confirmUnsavedChanges()) return
             this._showLoadProjectDialog()
         })
@@ -2563,6 +2704,7 @@ class LayersApp {
      * @private
      */
     async _flattenImage() {
+        if (this._blockedMediaOnline('Flattening')) return
         if (this._layers.length === 0) return
 
         this._finalizePendingUndo()
@@ -2607,6 +2749,7 @@ class LayersApp {
      * @private
      */
     async _rasterizeLayer(layerId) {
+        if (this._blockedMediaOnline('Rasterizing')) return
         const layer = this._layers.find(l => l.id === layerId)
         if (!layer || layer.sourceType === 'media') return
 
@@ -2633,6 +2776,7 @@ class LayersApp {
      * @private
      */
     async _flattenLayers(layerIds) {
+        if (this._blockedMediaOnline('Flattening')) return
         if (layerIds.length < 2) return
 
         this._finalizePendingUndo()
@@ -3010,6 +3154,11 @@ class LayersApp {
      * @private
      */
     async _duplicateActiveLayer() {
+        // Gated unconditionally (not just for an already-media active layer):
+        // this always rasterizes the active layer's composite into a NEW
+        // media layer below, regardless of the source layer's own
+        // sourceType — an effect or drawing layer duplicate is media too.
+        if (this._blockedMediaOnline('Duplicating')) return false
         this._finalizePendingUndo()
         const layer = this._getActiveLayer()
         if (!layer) return false
@@ -3200,6 +3349,11 @@ class LayersApp {
      * @private
      */
     async _rasterizeLayerInPlace(layerId) {
+        // _rasterizeLayer() already gates before calling this today, but this
+        // is gated too since it mutates _layers directly and its own doc
+        // comment invites other internal callers ("used internally before
+        // extraction") that might not go through _rasterizeLayer() first.
+        if (this._blockedMediaOnline('Rasterizing')) return null
         const layerIndex = this._layers.findIndex(l => l.id === layerId)
         if (layerIndex === -1) return null
 
@@ -3316,6 +3470,7 @@ class LayersApp {
      * @private
      */
     async _extractFromSingleLayer(layer, punchHole) {
+        if (this._blockedMediaOnline('Extracting the selection')) return false
         const selectionPath = this._selectionManager.selectionPath
         const canvasWidth = this._canvas.width
         const canvasHeight = this._canvas.height
@@ -3400,6 +3555,7 @@ class LayersApp {
      * @private
      */
     async _extractFromMultipleLayers(layerIds, punchHole) {
+        if (this._blockedMediaOnline('Extracting the selection')) return false
         const selectionPath = this._selectionManager.selectionPath
         const canvasWidth = this._canvas.width
         const canvasHeight = this._canvas.height
@@ -3770,6 +3926,10 @@ class LayersApp {
      * @private
      */
     async _handlePaste() {
+        if (this._onlineAdapter?.isOnline()) {
+            toast.warning('Media layers aren’t supported while a Layers session is online')
+            return
+        }
         const result = await pasteFromClipboard()
         if (!result) {
             return // No image in clipboard, silent fail

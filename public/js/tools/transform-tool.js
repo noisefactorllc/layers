@@ -100,6 +100,11 @@ class TransformTool {
         return this._active
     }
 
+    /** True while a handle drag gesture is between mousedown and mouseup. */
+    get isDragging() {
+        return this._state === State.DRAGGING
+    }
+
     /** Redraw the overlay (e.g. after layer selection changes) */
     redraw() {
         if (this._active) this._drawOverlay()

@@ -74,6 +74,16 @@ class MoveTool {
         return this._active
     }
 
+    /**
+     * True while a move/clone gesture is in flight: dragging a layer, or
+     * awaiting the async extraction/duplication that precedes a clone drag
+     * (EXTRACTING also mutates `_layers`, so it's just as unsafe to clobber
+     * as an active drag).
+     */
+    get isDragging() {
+        return this._state !== State.IDLE
+    }
+
     _reset() {
         this._state = State.IDLE
         this._dragStart = null

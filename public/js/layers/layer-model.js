@@ -227,3 +227,17 @@ export async function decodeMasks(layers) {
 export function resetLayerCounter() {
     layerCounter = 0
 }
+
+/**
+ * Fast-forward the internal layer id counter so future locally-created
+ * layers/children never collide with ids adopted from a remote source
+ * (e.g. a joined Seance collaboration session — see collab/docModel.js,
+ * which reuses wire-supplied ids verbatim so publishes stay echo-safe).
+ * No-op if the counter is already at or past `minNext`.
+ * @param {number} minNext
+ */
+export function bumpLayerCounter(minNext) {
+    if (Number.isFinite(minNext) && minNext > layerCounter) {
+        layerCounter = minNext
+    }
+}
