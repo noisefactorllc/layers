@@ -1606,6 +1606,7 @@ class LayersApp {
         }
         this._selectionManager?.clearSelection()
         this._copyOrigin = null
+        if (this._layerStack) this._layerStack.selectedLayerId = null
         this._layers = []
         this._undoManager.clear()
         this._updateUndoMenuState()
@@ -2297,9 +2298,9 @@ class LayersApp {
         // through to the open dialog so the user is never stranded.
         welcomeDialog.init({
             onNewCanvas: () => this._startProjectReplacement(({ leaveOnline }) =>
-                this._showOpenDialog({ replaceProject: this._layers.length > 0, leaveOnline })),
+                this._showOpenDialog({ replaceProject: this._layers.length > 0 || leaveOnline, leaveOnline })),
             onOpenFile: () => this._startProjectReplacement(({ leaveOnline }) =>
-                this._openMediaFilePicker({ replaceProject: this._layers.length > 0, leaveOnline })),
+                this._openMediaFilePicker({ replaceProject: this._layers.length > 0 || leaveOnline, leaveOnline })),
             onDismiss: () => this._showOpenDialog(),
         })
         document.getElementById('welcomeMenuItem')?.addEventListener('click', () => {
@@ -4253,6 +4254,7 @@ class LayersApp {
             this._currentProjectName = project.name
             // Update UI and rebuild
             this._updateLayerStack()
+            this._selectTopmostLayer()
             // Wait for any pending microtasks (canvas observer uses queueMicrotask)
             await new Promise(resolve => queueMicrotask(resolve))
             await this._rebuild()

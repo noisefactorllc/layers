@@ -47,6 +47,53 @@ async function chooseBrokenPng(chooser) {
     })
 }
 
+async function openFileMenuItem(page, id) {
+    const fileMenu = page.locator('.menu').nth(1)
+    await fileMenu.locator('.menu-title').click()
+    await fileMenu.locator(`#${id}`).click()
+}
+
+async function installOnlineSession(page) {
+    await page.evaluate(() => {
+        window.__welcomeWentOffline = false
+        let online = true
+        window.layersApp._onlineAdapter = {
+            isOnline: () => online,
+            goOffline: () => {
+                online = false
+                window.__welcomeWentOffline = true
+            },
+            schedulePublish: () => {},
+        }
+    })
+}
+
+async function acceptOnlineGuard(page) {
+    const confirm = page.locator('.confirm-dialog-backdrop.visible')
+    await expect(confirm.locator('.confirm-message')).toHaveText(
+        'This will take your Layers session offline. Continue?')
+    await confirm.locator('#confirm-ok').click()
+}
+
+async function acceptUnsavedGuard(page) {
+    const confirm = page.locator('.confirm-dialog-backdrop.visible')
+    await expect(confirm.locator('.confirm-message')).toHaveText(
+        'You have unsaved changes. Discard them?')
+    await confirm.locator('#confirm-ok').click()
+}
+
+async function writeClipboardImage(page, width = 40, height = 30) {
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+    await page.evaluate(async ({ width, height }) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        canvas.getContext('2d').fillRect(0, 0, width, height)
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+    }, { width, height })
+}
+
 test.describe('Welcome dialog', () => {
     test('auto-shows on first run (forced); open dialog suppressed', async ({ page }) => {
         await boot(page, '?welcome=1')
@@ -62,6 +109,30 @@ test.describe('Welcome dialog', () => {
         await expect(page.getByRole('button', { name: 'Open file', exact: true })).toBeVisible()
         await expect(page.getByRole('button', { name: 'Close', exact: true })).toBeVisible()
     })
+
+    for (const action of ['new', 'open']) {
+        test(`online empty composition commits offline after successful ${action}`, async ({ page }) => {
+            await boot(page, '?welcome=1')
+            await installOnlineSession(page)
+
+            if (action === 'new') {
+                await page.locator('.welcome-tile[data-action="new"]').click()
+                await acceptOnlineGuard(page)
+                await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
+                await page.locator('.media-option[data-type="solid"]').click()
+                await page.locator('.canvas-size-dialog .action-btn.primary').click()
+                await expect(page.locator('.open-dialog-backdrop.visible')).toBeHidden()
+            } else {
+                const chooserPromise = page.waitForEvent('filechooser')
+                await page.locator('.welcome-tile[data-action="open"]').click()
+                await acceptOnlineGuard(page)
+                await (await chooserPromise).setFiles(path.resolve('public/img/og-image.png'))
+                await expect.poll(() => page.evaluate(() => window.layersApp._layers.length)).toBe(1)
+            }
+
+            expect(await page.evaluate(() => window.__welcomeWentOffline)).toBe(true)
+        })
+    }
 
     test('"don\'t show again" persists and skips welcome next load', async ({ page }) => {
         await boot(page, '?welcome=1')
@@ -303,7 +374,14 @@ test.describe('Welcome dialog', () => {
         await (await chooserPromise).setFiles(path.resolve('public/img/og-image.png'))
         await expect.poll(() => page.evaluate(() => Boolean(window.__resolveWelcomeMedia))).toBe(true)
 
-        await page.evaluate(() => window.layersApp._handleCreateSolidBase(333, 222))
+        await openFileMenuItem(page, 'newMenuItem')
+        await acceptUnsavedGuard(page)
+        await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
+        await page.locator('.media-option[data-type="solid"]').click()
+        await page.locator('.canvas-size-dialog input[type="number"]').nth(0).fill('333')
+        await page.locator('.canvas-size-dialog input[type="number"]').nth(1).fill('222')
+        await page.locator('.canvas-size-dialog .action-btn.primary').click()
+        await expect(page.locator('.open-dialog-backdrop.visible')).toBeHidden()
         await expect.poll(() => page.evaluate(() => window.layersApp._canvas.width)).toBe(333)
         const newerProject = await page.evaluate(() => ({
             layerIds: window.layersApp._layers.map(layer => layer.id),
@@ -341,6 +419,91 @@ test.describe('Welcome dialog', () => {
             hasSelection: window.layersApp._selectionManager.hasSelection(),
             copyOrigin: window.layersApp._copyOrigin,
         }))).toEqual({ hasSelection: false, copyOrigin: null })
+    })
+
+    test('reset clears the layer-stack selection', async ({ page }) => {
+        await boot(page, '?welcome=1')
+        await createProjectFromWelcome(page)
+        expect(await page.evaluate(() => window.layersApp._layerStack.selectedLayerId)).toBeTruthy()
+
+        expect(await page.evaluate(() => {
+            const app = window.layersApp
+            app._resetLayers()
+            return {
+                layerCount: app._layers.length,
+                selectedLayerId: app._layerStack.selectedLayerId,
+            }
+        })).toEqual({ layerCount: 0, selectedLayerId: null })
+    })
+
+    for (const hasImage of [true, false]) {
+        test(`online clipboard ${hasImage ? 'success commits offline' : 'without an image stays online'}`, async ({ page }) => {
+            await boot(page, '?welcome=1')
+            await createProjectFromWelcome(page)
+            if (hasImage) {
+                await writeClipboardImage(page, 40, 30)
+            } else {
+                await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+                await page.evaluate(() => navigator.clipboard.writeText('no image'))
+            }
+            await installOnlineSession(page)
+
+            await openFileMenuItem(page, 'newFromClipboardMenuItem')
+            await acceptOnlineGuard(page)
+            await acceptUnsavedGuard(page)
+
+            if (hasImage) {
+                await expect.poll(() => page.evaluate(() => window.layersApp._canvas.width)).toBe(40)
+                expect(await page.evaluate(() => window.__welcomeWentOffline)).toBe(true)
+            } else {
+                await expect(page.getByText('No image found in clipboard', { exact: true })).toBeVisible()
+                expect(await page.evaluate(() => window.__welcomeWentOffline)).toBe(false)
+            }
+        })
+    }
+
+    test('cancelled project manager stays online', async ({ page }) => {
+        await boot(page, '?welcome=1')
+        await createProjectFromWelcome(page)
+        await installOnlineSession(page)
+
+        await openFileMenuItem(page, 'loadProjectMenuItem')
+        await acceptOnlineGuard(page)
+        await acceptUnsavedGuard(page)
+        const manager = page.locator('.project-manager-dialog[open]')
+        await expect(manager).toBeVisible()
+        await manager.locator('.pm-cancel-btn').click()
+
+        await expect(manager).toBeHidden()
+        expect(await page.evaluate(() => window.__welcomeWentOffline)).toBe(false)
+    })
+
+    test('successful online project load selects the saved topmost layer and commits offline', async ({ page }) => {
+        await boot(page, '?welcome=1')
+        await createProjectFromWelcome(page)
+        const saved = await page.evaluate(async () => {
+            await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'synth/gradient' })
+            const saved = await window.LayersAgent.saveProjectAs({ name: 'welcome-load-target' })
+            const app = window.layersApp
+            const topmostId = app._layers[app._layers.length - 1].id
+            await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'synth/solid' })
+            return { projectId: saved.result.projectId, topmostId }
+        })
+        await installOnlineSession(page)
+
+        await openFileMenuItem(page, 'loadProjectMenuItem')
+        await acceptOnlineGuard(page)
+        await acceptUnsavedGuard(page)
+        const manager = page.locator('.project-manager-dialog[open]')
+        await expect(manager).toBeVisible()
+        await manager.locator(`.project-item[data-id="${saved.projectId}"]`).click()
+        await manager.locator('.pm-open-btn').click()
+        await expect(manager).toBeHidden({ timeout: 10000 })
+
+        expect(await page.evaluate(() => ({
+            wentOffline: window.__welcomeWentOffline,
+            selectedLayerId: window.layersApp._layerStack.selectedLayerId,
+        }))).toEqual({ wentOffline: true, selectedLayerId: saved.topmostId })
     })
 
     test('Open file replacement unloads the prior media resource', async ({ page }) => {
