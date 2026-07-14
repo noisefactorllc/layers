@@ -2284,13 +2284,15 @@ class LayersApp {
             this._showCanvasSizeDialog()
         })
 
-        // Image menu - Effect items (data-driven)
-        document.getElementById('imageMenu')?.addEventListener('click', (e) => {
-            const effectItem = e.target.closest('[data-effect]')
-            if (!effectItem) return
-            if (this._layers.length === 0) return
-            this._handleAddEffectLayer(effectItem.dataset.effect)
-        })
+        // Image + Filter menus - Effect items (data-driven)
+        for (const menuId of ['imageMenu', 'filterMenu']) {
+            document.getElementById(menuId)?.addEventListener('click', (e) => {
+                const effectItem = e.target.closest('[data-effect]')
+                if (!effectItem) return
+                if (this._layers.length === 0) return
+                this._handleAddEffectLayer(effectItem.dataset.effect)
+            })
+        }
 
         // Auto correction handlers
         document.getElementById('autoLevelsMenuItem')?.addEventListener('click', () => {

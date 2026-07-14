@@ -165,8 +165,6 @@
                         <hr class="menu-seperator">
                         <div class="has-submenu" data-submenu="tone">tone</div>
                         <div class="has-submenu" data-submenu="color">color</div>
-                        <div class="has-submenu" data-submenu="blur-sharpen">blur &amp; sharpen</div>
-                        <div class="has-submenu" data-submenu="stylize">stylize</div>
                         <hr class="menu-seperator">
                         <div id="cropToSelectionMenuItem" class="disabled">crop to selection</div>
                         <hr class="menu-seperator">
@@ -186,20 +184,6 @@
                         <div data-effect="filter/colorReplace">color replace</div>
                         <div data-effect="filter/invert">invert</div>
                         <div data-effect="filter/tetraColorArray">gradient palette</div>
-                    </div>
-                    <div class="submenu hide" data-submenu-id="blur-sharpen">
-                        <div data-effect="filter/blur">blur</div>
-                        <div data-effect="filter/motionBlur">motion blur</div>
-                        <div data-effect="filter/zoomBlur">zoom blur</div>
-                        <div data-effect="filter/sharpen">sharpen</div>
-                    </div>
-                    <div class="submenu hide" data-submenu-id="stylize">
-                        <div data-effect="filter/bloom">bloom</div>
-                        <div data-effect="filter/grain">grain</div>
-                        <div data-effect="filter/vignette">vignette</div>
-                        <div data-effect="filter/edge">edge detect</div>
-                        <div data-effect="filter/dither">dither</div>
-                        <div data-effect="filter/emboss">emboss</div>
                     </div>
                 </div>
 
@@ -237,6 +221,63 @@
                         <div id="expandSelectionMenuItem" class="disabled">expand...</div>
                         <div id="contractSelectionMenuItem" class="disabled">contract...</div>
                         <div id="featherSelectionMenuItem" class="disabled">feather...</div>
+                    </div>
+                </div>
+
+                <!-- Filter Menu -->
+                <div class="menu" id="filterMenu">
+                    <div class="menu-title">filter</div>
+                    <div class="menu-items hide">
+                        <div class="has-submenu" data-submenu="blur">blur</div>
+                        <div class="has-submenu" data-submenu="sharpen">sharpen</div>
+                        <div class="has-submenu" data-submenu="pixelate">pixelate</div>
+                        <div class="has-submenu" data-submenu="stylize">stylize</div>
+                        <div class="has-submenu" data-submenu="sketch">sketch</div>
+                        <div class="has-submenu" data-submenu="brush-strokes">brush strokes</div>
+                        <div class="has-submenu" data-submenu="artistic">artistic</div>
+                        <div class="has-submenu" data-submenu="texture">texture</div>
+                    </div>
+                    <div class="submenu hide" data-submenu-id="blur">
+                        <div data-effect="filter/blur">blur</div>
+                        <div data-effect="filter/motionBlur">motion blur</div>
+                        <div data-effect="filter/zoomBlur">zoom blur</div>
+                        <div data-effect="filter/spinBlur">spin blur</div>
+                    </div>
+                    <div class="submenu hide" data-submenu-id="sharpen">
+                        <div data-effect="filter/sharpen">sharpen</div>
+                        <div data-effect="filter/unsharpMask">unsharp mask</div>
+                    </div>
+                    <div class="submenu hide" data-submenu-id="pixelate">
+                        <div data-effect="filter/halftone">halftone</div>
+                        <div data-effect="filter/dither">dither</div>
+                    </div>
+                    <div class="submenu hide" data-submenu-id="stylize">
+                        <div data-effect="filter/bloom">bloom</div>
+                        <div data-effect="filter/vignette">vignette</div>
+                        <div data-effect="filter/edge">edge detect</div>
+                        <div data-effect="filter/emboss">emboss</div>
+                        <div data-effect="filter/extrude">extrude</div>
+                        <div data-effect="filter/oilPaint">oil paint</div>
+                        <div data-effect="filter/wind">wind</div>
+                    </div>
+                    <div class="submenu hide" data-submenu-id="sketch">
+                        <div data-effect="filter/chrome">chrome</div>
+                        <div data-effect="filter/photocopy">photocopy</div>
+                        <div data-effect="filter/stamp">stamp</div>
+                    </div>
+                    <div class="submenu hide" data-submenu-id="brush-strokes">
+                        <div data-effect="filter/hatch">hatch</div>
+                        <div data-effect="filter/strokes">strokes</div>
+                    </div>
+                    <div class="submenu hide" data-submenu-id="artistic">
+                        <div data-effect="filter/watercolor">watercolor</div>
+                        <div data-effect="filter/plasticWrap">plastic wrap</div>
+                    </div>
+                    <div class="submenu hide" data-submenu-id="texture">
+                        <div data-effect="filter/grain">grain</div>
+                        <div data-effect="filter/craquelure">craquelure</div>
+                        <div data-effect="filter/mosaicTiles">mosaic tiles</div>
+                        <div data-effect="filter/patchwork">patchwork</div>
                     </div>
                 </div>
 
