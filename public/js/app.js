@@ -2213,10 +2213,94 @@ class LayersApp {
     _setupMenuHandlers() {
         // Submenu state — hoisted so menu title handlers can access it
         let activeSubmenu = null
-        const hideSubmenu = () => {
+        let activeSubmenuTrigger = null
+        const setTitleExpanded = (title, expanded) => {
+            if (title?.hasAttribute('aria-expanded')) {
+                title.setAttribute('aria-expanded', String(expanded))
+            }
+        }
+        const hideSubmenu = ({ restoreFocus = false } = {}) => {
             if (activeSubmenu) {
                 activeSubmenu.classList.add('hide')
+                if (activeSubmenuTrigger?.hasAttribute('aria-expanded')) {
+                    activeSubmenuTrigger.setAttribute('aria-expanded', 'false')
+                }
+                const triggerToRestore = activeSubmenuTrigger
                 activeSubmenu = null
+                activeSubmenuTrigger = null
+                if (restoreFocus) triggerToRestore?.focus()
+            }
+        }
+        const closeDropdowns = (except = null) => {
+            document.querySelectorAll('.menu-items').forEach(items => {
+                if (items === except) return
+                items.classList.add('hide')
+                setTitleExpanded(items.closest('.menu')?.querySelector('.menu-title'), false)
+            })
+        }
+        const clampFilterDropdown = (menu, items) => {
+            if (menu.id !== 'filterMenu') return
+            const viewportInset = 8
+            items.style.left = ''
+            const rect = items.getBoundingClientRect()
+            let left = Number.parseFloat(getComputedStyle(items).left) || 0
+            let adjustedLeft = rect.left
+            if (rect.right > window.innerWidth - viewportInset) {
+                const overflow = rect.right - (window.innerWidth - viewportInset)
+                left -= overflow
+                adjustedLeft -= overflow
+            }
+            if (adjustedLeft < viewportInset) {
+                left += viewportInset - adjustedLeft
+            }
+            items.style.left = `${left}px`
+        }
+        const showSubmenu = (trigger, submenu, { focusFirst = false } = {}) => {
+            hideSubmenu()
+            const menuEl = trigger.closest('.menu')
+            const menuRect = menuEl.getBoundingClientRect()
+            const triggerRect = trigger.getBoundingClientRect()
+            const menuItemsRect = trigger.closest('.menu-items').getBoundingClientRect()
+            const viewportInset = 8
+            const toolbarRight = document.getElementById('toolbar')?.getBoundingClientRect().right || 0
+            const leftInset = menuEl.id === 'filterMenu'
+                ? Math.max(viewportInset, toolbarRight + viewportInset)
+                : viewportInset
+
+            // Position relative to .menu (position: relative).
+            submenu.style.top = `${triggerRect.top - menuRect.top}px`
+            submenu.style.left = `${menuItemsRect.right - menuRect.left}px`
+            submenu.classList.remove('hide')
+
+            let submenuRect = submenu.getBoundingClientRect()
+            if (submenuRect.right > window.innerWidth - viewportInset) {
+                submenu.style.left = `${menuItemsRect.left - menuRect.left - submenuRect.width}px`
+                submenuRect = submenu.getBoundingClientRect()
+            }
+            if (submenuRect.left < leftInset) {
+                submenu.style.left = `${leftInset - menuRect.left}px`
+                submenuRect = submenu.getBoundingClientRect()
+            }
+
+            let top = Number.parseFloat(submenu.style.top) || 0
+            let adjustedTop = submenuRect.top
+            if (submenuRect.bottom > window.innerHeight - viewportInset) {
+                const overflow = submenuRect.bottom - (window.innerHeight - viewportInset)
+                top -= overflow
+                adjustedTop -= overflow
+            }
+            if (adjustedTop < viewportInset) {
+                top += viewportInset - adjustedTop
+            }
+            submenu.style.top = `${top}px`
+
+            activeSubmenu = submenu
+            activeSubmenuTrigger = trigger
+            if (trigger.hasAttribute('aria-expanded')) {
+                trigger.setAttribute('aria-expanded', 'true')
+            }
+            if (focusFirst) {
+                submenu.querySelector('[role="menuitem"]')?.focus()
             }
         }
 
@@ -2230,39 +2314,30 @@ class LayersApp {
                 title.addEventListener('click', (e) => {
                     e.stopPropagation()
                     hideSubmenu()
-                    // Close other menus
-                    document.querySelectorAll('.menu-items').forEach(m => {
-                        if (m !== items) m.classList.add('hide')
-                    })
-                    items.classList.toggle('hide')
+                    const shouldOpen = items.classList.contains('hide')
+                    closeDropdowns(items)
+                    items.classList.toggle('hide', !shouldOpen)
+                    setTitleExpanded(title, shouldOpen)
+                    if (shouldOpen) clampFilterDropdown(menu, items)
                 })
             }
         })
         document.querySelectorAll('.has-submenu[data-submenu]').forEach(trigger => {
             const submenuId = trigger.dataset.submenu
-            const submenu = document.querySelector(`.submenu[data-submenu-id="${submenuId}"]`)
+            const menu = trigger.closest('.menu')
+            const submenu = menu?.querySelector(`:scope > .submenu[data-submenu-id="${submenuId}"]`)
             if (!submenu) return
 
             trigger.addEventListener('mouseenter', () => {
-                hideSubmenu()
-                const menuEl = trigger.closest('.menu')
-                const menuRect = menuEl.getBoundingClientRect()
-                const triggerRect = trigger.getBoundingClientRect()
-                const menuItemsEl = trigger.closest('.menu-items')
-                const menuItemsRect = menuItemsEl.getBoundingClientRect()
-
-                // Position relative to .menu (position: relative)
-                submenu.style.top = (triggerRect.top - menuRect.top) + 'px'
-                submenu.style.left = (menuItemsRect.right - menuRect.left) + 'px'
-                submenu.classList.remove('hide')
-
-                // Flip left if it would overflow viewport
-                const submenuRect = submenu.getBoundingClientRect()
-                if (submenuRect.right > window.innerWidth) {
-                    submenu.style.left = (menuItemsRect.left - menuRect.left - submenuRect.width) + 'px'
-                }
-                activeSubmenu = submenu
+                showSubmenu(trigger, submenu)
             })
+
+            if (menu.id === 'filterMenu') {
+                trigger.addEventListener('click', (e) => {
+                    e.stopPropagation()
+                    showSubmenu(trigger, submenu, { focusFirst: e.detail === 0 })
+                })
+            }
 
             trigger.addEventListener('mouseleave', (e) => {
                 if (e.relatedTarget && submenu.contains(e.relatedTarget)) return
@@ -2277,9 +2352,95 @@ class LayersApp {
             submenu.addEventListener('click', () => hideSubmenu())
         })
 
+        const filterMenu = document.getElementById('filterMenu')
+        const filterTitle = filterMenu?.querySelector(':scope > .menu-title')
+        const filterItems = filterMenu?.querySelector(':scope > .menu-items')
+        const filterTriggers = filterItems
+            ? [...filterItems.querySelectorAll(':scope > [role="menuitem"]')]
+            : []
+        const openFilterMenu = (focusIndex) => {
+            hideSubmenu()
+            closeDropdowns(filterItems)
+            filterItems.classList.remove('hide')
+            setTitleExpanded(filterTitle, true)
+            clampFilterDropdown(filterMenu, filterItems)
+            filterTriggers.at(focusIndex)?.focus()
+        }
+        const closeFilterMenu = ({ restoreFocus = false } = {}) => {
+            hideSubmenu()
+            filterItems?.classList.add('hide')
+            setTitleExpanded(filterTitle, false)
+            if (restoreFocus) filterTitle?.focus()
+        }
+
+        filterTitle?.addEventListener('keydown', (e) => {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.stopPropagation()
+                return
+            }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault()
+                e.stopPropagation()
+                openFilterMenu(e.key === 'ArrowDown' ? 0 : -1)
+            } else if (e.key === 'Escape') {
+                e.preventDefault()
+                e.stopPropagation()
+                closeFilterMenu({ restoreFocus: true })
+            }
+        })
+
+        filterTriggers.forEach((trigger, index) => {
+            trigger.addEventListener('keydown', (e) => {
+                if (e.key === ' ' || e.key === 'Enter') {
+                    e.stopPropagation()
+                    return
+                }
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    hideSubmenu()
+                    const offset = e.key === 'ArrowDown' ? 1 : -1
+                    filterTriggers[(index + offset + filterTriggers.length) % filterTriggers.length].focus()
+                } else if (e.key === 'ArrowRight') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    const submenu = filterMenu.querySelector(
+                        `:scope > .submenu[data-submenu-id="${trigger.dataset.submenu}"]`)
+                    if (submenu) showSubmenu(trigger, submenu, { focusFirst: true })
+                } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    if (activeSubmenu) hideSubmenu({ restoreFocus: true })
+                    else closeFilterMenu({ restoreFocus: true })
+                }
+            })
+        })
+
+        filterMenu?.querySelectorAll(':scope > .submenu').forEach(submenu => {
+            const effects = [...submenu.querySelectorAll(':scope > [role="menuitem"]')]
+            effects.forEach((effect, index) => {
+                effect.addEventListener('keydown', (e) => {
+                    if (e.key === ' ' || e.key === 'Enter') {
+                        e.stopPropagation()
+                        return
+                    }
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        const offset = e.key === 'ArrowDown' ? 1 : -1
+                        effects[(index + offset + effects.length) % effects.length].focus()
+                    } else if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        hideSubmenu({ restoreFocus: true })
+                    }
+                })
+            })
+        })
+
         // Close menus on outside click
         document.addEventListener('click', () => {
-            document.querySelectorAll('.menu-items').forEach(m => m.classList.add('hide'))
+            closeDropdowns()
             hideSubmenu()
         })
 

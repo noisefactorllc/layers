@@ -167,6 +167,146 @@ test.describe('Filter menu', () => {
         })))
     })
 
+    test('keeps the complete menu bar inside a narrow viewport', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+
+        const controls = await page.locator(
+            '#menuLeft > .menu > .menu-title, #playPauseBtn').evaluateAll(elements =>
+            elements.map(element => {
+                const rect = element.getBoundingClientRect()
+                return {
+                    label: element.textContent.trim() || element.getAttribute('title'),
+                    left: rect.left,
+                    right: rect.right,
+                    top: rect.top,
+                    bottom: rect.bottom,
+                }
+            }))
+
+        for (const control of controls) {
+            expect(control.left, `${control.label} left edge`).toBeGreaterThanOrEqual(0)
+            expect(control.right, `${control.label} right edge`).toBeLessThanOrEqual(390)
+            expect(control.top, `${control.label} top edge`).toBeGreaterThanOrEqual(0)
+            expect(control.bottom, `${control.label} bottom edge`).toBeLessThanOrEqual(320)
+        }
+    })
+
+    test('clamps the filter dropdown and keeps every submenu effect reachable', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+
+        await page.locator('#filterMenu > .menu-title').click()
+        const dropdown = page.locator('#filterMenu > .menu-items')
+        await expect(dropdown).toBeVisible()
+        const dropdownRect = await dropdown.boundingBox()
+        expect(dropdownRect.x).toBeGreaterThanOrEqual(0)
+        expect(dropdownRect.x + dropdownRect.width).toBeLessThanOrEqual(390)
+        const toolbarRight = await page.locator('#toolbar').evaluate(element =>
+            element.getBoundingClientRect().right)
+
+        for (const group of EXPECTED_GROUPS.slice(2)) {
+            await page.locator(
+                `#filterMenu > .menu-items > [data-submenu="${group.submenuId}"]`).hover()
+            const submenu = page.locator(
+                `#filterMenu > .submenu[data-submenu-id="${group.submenuId}"]`)
+            await expect(submenu).toBeVisible()
+
+            const submenuRect = await submenu.boundingBox()
+            expect(submenuRect.x, `${group.label} left edge`).toBeGreaterThanOrEqual(toolbarRight)
+            expect(submenuRect.x + submenuRect.width, `${group.label} right edge`)
+                .toBeLessThanOrEqual(390)
+            expect(submenuRect.y, `${group.label} top edge`).toBeGreaterThanOrEqual(0)
+            expect(submenuRect.y + submenuRect.height, `${group.label} bottom edge`)
+                .toBeLessThanOrEqual(320)
+
+            for (const [effectId, label] of group.effects) {
+                const effect = submenu.locator(`[data-effect="${effectId}"]`)
+                await effect.evaluate(element => element.scrollIntoView({ block: 'nearest' }))
+                const effectRect = await effect.boundingBox()
+                expect(effectRect.y, `${label} top edge`).toBeGreaterThanOrEqual(submenuRect.y)
+                expect(effectRect.y + effectRect.height, `${label} bottom edge`)
+                    .toBeLessThanOrEqual(submenuRect.y + submenuRect.height)
+            }
+        }
+    })
+
+    test('supports complete Filter keyboard and ARIA operation', async ({ page }) => {
+        await bootBlank(page)
+
+        const title = page.getByRole('button', { name: 'filter', exact: true })
+        const dropdown = page.locator('#filterMenu > .menu-items')
+        const blurGroup = dropdown.getByRole('menuitem', { name: 'blur', exact: true })
+        const sharpenGroup = dropdown.getByRole('menuitem', { name: 'sharpen', exact: true })
+        const blurSubmenu = page.locator('#filterMenu > .submenu[data-submenu-id="blur"]')
+        const blurEffect = blurSubmenu.getByRole('menuitem', { name: 'blur', exact: true })
+        const motionBlurEffect = blurSubmenu.getByRole('menuitem', { name: 'motion blur', exact: true })
+
+        await expect(title).toHaveAttribute('aria-haspopup', 'menu')
+        await expect(title).toHaveAttribute('aria-expanded', 'false')
+        await expect(dropdown).toHaveAttribute('role', 'menu')
+
+        await title.focus()
+        await page.keyboard.press('Enter')
+        await expect(dropdown).toBeVisible()
+        await expect(title).toHaveAttribute('aria-expanded', 'true')
+        await page.keyboard.press('Escape')
+        await expect(dropdown).toBeHidden()
+        await expect(title).toBeFocused()
+
+        await page.keyboard.press('Space')
+        await expect(dropdown).toBeVisible()
+        await page.keyboard.press('Escape')
+
+        await page.keyboard.press('ArrowDown')
+        await expect(dropdown).toBeVisible()
+        await expect(blurGroup).toBeFocused()
+        await expect(blurGroup).toHaveAttribute('aria-haspopup', 'menu')
+        await expect(blurGroup).toHaveAttribute('aria-expanded', 'false')
+
+        await page.keyboard.press('ArrowDown')
+        await expect(sharpenGroup).toBeFocused()
+        await page.keyboard.press('ArrowUp')
+        await expect(blurGroup).toBeFocused()
+
+        await page.keyboard.press('ArrowRight')
+        await expect(blurSubmenu).toBeVisible()
+        await expect(blurGroup).toHaveAttribute('aria-expanded', 'true')
+        await expect(blurEffect).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await expect(motionBlurEffect).toBeFocused()
+        await page.keyboard.press('ArrowUp')
+        await expect(blurEffect).toBeFocused()
+
+        await page.keyboard.press('ArrowLeft')
+        await expect(blurSubmenu).toBeHidden()
+        await expect(blurGroup).toHaveAttribute('aria-expanded', 'false')
+        await expect(blurGroup).toBeFocused()
+
+        await page.keyboard.press('Enter')
+        await expect(blurSubmenu).toBeVisible()
+        await expect(blurEffect).toBeFocused()
+        await page.keyboard.press('Escape')
+        await expect(blurSubmenu).toBeHidden()
+        await expect(blurGroup).toBeFocused()
+        await page.keyboard.press('Escape')
+        await expect(dropdown).toBeHidden()
+        await expect(title).toHaveAttribute('aria-expanded', 'false')
+        await expect(title).toBeFocused()
+
+        const before = await page.evaluate(() => window.layersApp._layers.length)
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowRight')
+        await expect(blurEffect).toBeFocused()
+        await page.keyboard.press('Space')
+        await expect.poll(() => page.evaluate(() => ({
+            count: window.layersApp._layers.length,
+            effectId: window.layersApp._layers.at(-1)?.effectId,
+        })), { timeout: 10000 }).toEqual({ count: before + 1, effectId: 'filter/blur' })
+        await expect(dropdown).toBeHidden()
+        await expect(title).toHaveAttribute('aria-expanded', 'false')
+    })
+
     test('clicking filter > stylize > oil paint adds its effect layer', async ({ page }) => {
         await bootBlank(page)
         const before = await page.evaluate(() => window.layersApp._layers.length)
@@ -176,13 +316,10 @@ test.describe('Filter menu', () => {
             '#filterMenu > .submenu[data-submenu-id="stylize"] > [data-effect="filter/oilPaint"]')
         await expect(oilPaint).toBeVisible()
         await oilPaint.click()
-        await expect.poll(() => page.evaluate(() => window.layersApp._layers.length)).toBe(before + 1)
-        const after = await page.evaluate(() => ({
-            n: window.layersApp._layers.length,
-            ids: window.layersApp._layers.map(l => l.effectId),
-        }))
-        expect(after.n).toBe(before + 1)
-        expect(after.ids).toContain('filter/oilPaint')
+        await expect.poll(() => page.evaluate(() => ({
+            count: window.layersApp._layers.length,
+            effectId: window.layersApp._layers.at(-1)?.effectId,
+        })), { timeout: 10000 }).toEqual({ count: before + 1, effectId: 'filter/oilPaint' })
     })
 
     test('curated groups exactly mirror the ordered image and filter taxonomy', async ({ page }) => {

@@ -215,9 +215,10 @@ export async function listEffectCategories(_args, app) {
 }
 
 /**
- * Return the same effect groups the human Image menu shows: tone, color,
- * blur-sharpen, stylize. Useful for agents that want to mirror the curated
- * UX rather than crawl every namespace.
+ * Return the same effect groups the human Image and Filter menus show: tone,
+ * color, blur, sharpen, pixelate, stylize, sketch, brush strokes, artistic,
+ * and texture. Useful for agents that want to mirror the curated UX rather
+ * than crawl every namespace.
  *
  * @returns {Promise<{result: {groups: Array}}>}
  */
