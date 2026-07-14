@@ -52,18 +52,19 @@ test.describe('Image menu adjustments', () => {
         expect(effectId).toBe('filter/adjust')
     })
 
-    test('add effect from stylize submenu', async ({ page }) => {
-        await page.click('#imageMenu .menu-title')
-        const stylizeItem = page.locator('#imageMenu .has-submenu', { hasText: 'stylize' })
+    test('add effect from filter stylize submenu', async ({ page }) => {
+        // Stylize moved from the image menu into the new photoshop-style filter menu.
+        await page.click('#filterMenu .menu-title')
+        const stylizeItem = page.locator('#filterMenu .has-submenu', { hasText: 'stylize' })
         await stylizeItem.hover()
-        await page.click('[data-effect="filter/grain"]')
+        await page.click('[data-effect="filter/emboss"]')
         await page.waitForTimeout(500)
 
         const layerCount = await page.evaluate(() => window.layersApp._layers.length)
         expect(layerCount).toBe(2)
 
         const effectId = await page.evaluate(() => window.layersApp._layers[1].effectId)
-        expect(effectId).toBe('filter/grain')
+        expect(effectId).toBe('filter/emboss')
     })
 
     test('add color replace from color submenu', async ({ page }) => {
