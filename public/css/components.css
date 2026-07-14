@@ -1339,6 +1339,8 @@ dialog[open] {
 .welcome-dialog {
     width: 480px;
     max-width: 90vw;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     text-align: center;
 }
 

@@ -677,27 +677,46 @@ class LayersApp {
      * Show the open dialog to select initial base layer
      * @private
      */
-    _showOpenDialog() {
+    _showOpenDialog({ replaceProject = false } = {}) {
         openDialog.show({
+            canClose: replaceProject,
             onOpen: async (file, mediaType) => {
+                if (replaceProject) this._resetLayers()
                 await this._handleOpenMedia(file, mediaType)
             },
             onSolid: async (width, height) => {
+                if (replaceProject) this._resetLayers()
                 await this._handleCreateSolidBase(width, height)
             },
             onGradient: async (width, height) => {
+                if (replaceProject) this._resetLayers()
                 await this._handleCreateGradientBase(width, height)
             },
             onTransparent: async (width, height) => {
+                if (replaceProject) this._resetLayers()
                 await this._handleCreateTransparentBase(width, height)
             },
             onClipboard: async () => {
-                await this._handleNewFromClipboard()
+                await this._handleNewFromClipboard({ resetLayers: replaceProject })
             },
             onLoadProject: () => {
                 this._showLoadProjectDialog(true)
             }
         })
+    }
+
+    /**
+     * Run the shared guards before starting any flow that can replace the
+     * current project.
+     * @param {Function} startFlow - replacement chooser/picker callback
+     * @returns {Promise<boolean>} whether replacement was accepted
+     * @private
+     */
+    async _startProjectReplacement(startFlow) {
+        if (!await this._confirmLeaveOnlineSession()) return false
+        if (!await this._confirmUnsavedChanges()) return false
+        await startFlow()
+        return true
     }
 
     /**
@@ -720,15 +739,16 @@ class LayersApp {
      * full open dialog if the picker is dismissed without a file.
      * @private
      */
-    _openMediaFilePicker() {
+    _openMediaFilePicker({ replaceProject = false } = {}) {
         const input = document.createElement('input')
         input.type = 'file'
         input.accept = 'image/*,video/*'
-        input.addEventListener('cancel', () => this._showOpenDialog())
+        input.addEventListener('cancel', () => this._showOpenDialog({ replaceProject }))
         input.addEventListener('change', () => {
             const file = input.files?.[0]
-            if (!file) { this._showOpenDialog(); return }
+            if (!file) { this._showOpenDialog({ replaceProject }); return }
             const mediaType = file.type.startsWith('video') ? 'video' : 'image'
+            if (replaceProject) this._resetLayers()
             this._handleOpenMedia(file, mediaType)
         })
         input.click()
@@ -2215,8 +2235,10 @@ class LayersApp {
         // existing new-canvas / open-media flows; closing without a choice falls
         // through to the open dialog so the user is never stranded.
         welcomeDialog.init({
-            onNewCanvas: () => this._showOpenDialog(),
-            onOpenFile: () => this._openMediaFilePicker(),
+            onNewCanvas: () => this._startProjectReplacement(() =>
+                this._showOpenDialog({ replaceProject: this._layers.length > 0 })),
+            onOpenFile: () => this._startProjectReplacement(() =>
+                this._openMediaFilePicker({ replaceProject: this._layers.length > 0 })),
             onDismiss: () => this._showOpenDialog(),
         })
         document.getElementById('welcomeMenuItem')?.addEventListener('click', () => {
@@ -2225,35 +2247,9 @@ class LayersApp {
 
         // File menu - New / Open (both show the same open dialog with reset)
         for (const id of ['newMenuItem', 'openMenuItem']) {
-            document.getElementById(id)?.addEventListener('click', async () => {
-                if (!await this._confirmLeaveOnlineSession()) return
-                if (!await this._confirmUnsavedChanges()) return
-                openDialog.show({
-                    canClose: true,
-                    onOpen: async (file, mediaType) => {
-                        this._resetLayers()
-                        await this._handleOpenMedia(file, mediaType)
-                    },
-                    onSolid: async (width, height) => {
-                        this._resetLayers()
-                        await this._handleCreateSolidBase(width, height)
-                    },
-                    onGradient: async (width, height) => {
-                        this._resetLayers()
-                        await this._handleCreateGradientBase(width, height)
-                    },
-                    onTransparent: async (width, height) => {
-                        this._resetLayers()
-                        await this._handleCreateTransparentBase(width, height)
-                    },
-                    onClipboard: async () => {
-                        await this._handleNewFromClipboard({ resetLayers: true })
-                    },
-                    onLoadProject: () => {
-                        this._showLoadProjectDialog(true)
-                    }
-                })
-            })
+            document.getElementById(id)?.addEventListener('click', () =>
+                this._startProjectReplacement(() =>
+                    this._showOpenDialog({ replaceProject: true })))
         }
 
         // File menu - New from Clipboard

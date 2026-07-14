@@ -94,7 +94,10 @@ class WelcomeDialog {
                 <label class="welcome-dontshow-label">
                     <input type="checkbox" id="welcome-dontshow"> don't show again
                 </label>
-                <button class="action-btn welcome-close" type="button">Close</button>
+                <button class="action-btn welcome-close" type="button">
+                    <span class="icon-material">close</span>
+                    <span>Close</span>
+                </button>
             </div>
         `
 
