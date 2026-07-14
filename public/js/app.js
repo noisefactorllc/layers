@@ -111,6 +111,11 @@ class LayersApp {
         // Seance online collaboration adapter — created in init() when the
         // onlineCollaboration feature flag is enabled (default: on).
         this._onlineAdapter = null
+
+        // The sole media candidate currently being decoded. Keeping the
+        // candidate outside `_layers` makes replacement transactional until
+        // the renderer has validated it.
+        this._pendingMediaLoad = null
     }
 
     /**
@@ -348,10 +353,9 @@ class LayersApp {
     }
 
     /**
-     * If a Seance session is online, confirm leaving it and go offline
-     * before proceeding (new/open/load project all replace `_layers`
-     * wholesale, which isn't something a shared session can represent).
-     * A no-op (returns true) while offline.
+     * If a Seance session is online, confirm that the user is willing to
+     * leave it. This guard is deliberately non-mutating: the session only
+     * goes offline when a selected replacement successfully commits.
      * @returns {Promise<boolean>} true if ok to proceed, false to cancel
      * @private
      */
@@ -363,10 +367,7 @@ class LayersApp {
             confirmText: 'Go Offline',
             cancelText: 'Cancel'
         })
-        if (!ok) return false
-
-        this._onlineAdapter.goOffline()
-        return true
+        return ok
     }
 
     /**
@@ -677,30 +678,29 @@ class LayersApp {
      * Show the open dialog to select initial base layer
      * @private
      */
-    _showOpenDialog({ replaceProject = false } = {}) {
+    _showOpenDialog({ replaceProject = false, leaveOnline = false } = {}) {
         openDialog.show({
             canClose: replaceProject,
             onOpen: async (file, mediaType) => {
-                if (replaceProject) this._resetLayers()
-                await this._handleOpenMedia(file, mediaType)
+                await this._handleOpenMedia(file, mediaType, { replaceProject, leaveOnline })
             },
             onSolid: async (width, height) => {
-                if (replaceProject) this._resetLayers()
+                if (replaceProject) this._commitProjectReplacement({ leaveOnline })
                 await this._handleCreateSolidBase(width, height)
             },
             onGradient: async (width, height) => {
-                if (replaceProject) this._resetLayers()
+                if (replaceProject) this._commitProjectReplacement({ leaveOnline })
                 await this._handleCreateGradientBase(width, height)
             },
             onTransparent: async (width, height) => {
-                if (replaceProject) this._resetLayers()
+                if (replaceProject) this._commitProjectReplacement({ leaveOnline })
                 await this._handleCreateTransparentBase(width, height)
             },
             onClipboard: async () => {
-                await this._handleNewFromClipboard({ resetLayers: replaceProject })
+                await this._handleNewFromClipboard({ replaceProject, leaveOnline })
             },
             onLoadProject: () => {
-                this._showLoadProjectDialog(true)
+                this._showLoadProjectDialog(true, { replaceProject, leaveOnline })
             }
         })
     }
@@ -713,9 +713,10 @@ class LayersApp {
      * @private
      */
     async _startProjectReplacement(startFlow) {
+        const leaveOnline = Boolean(this._onlineAdapter?.isOnline())
         if (!await this._confirmLeaveOnlineSession()) return false
         if (!await this._confirmUnsavedChanges()) return false
-        await startFlow()
+        await startFlow({ leaveOnline })
         return true
     }
 
@@ -739,17 +740,24 @@ class LayersApp {
      * full open dialog if the picker is dismissed without a file.
      * @private
      */
-    _openMediaFilePicker({ replaceProject = false } = {}) {
+    _openMediaFilePicker({ replaceProject = false, leaveOnline = false } = {}) {
         const input = document.createElement('input')
         input.type = 'file'
         input.accept = 'image/*,video/*'
-        input.addEventListener('cancel', () => this._showOpenDialog({ replaceProject }))
-        input.addEventListener('change', () => {
+        input.addEventListener('cancel', () => {
+            this._showOpenDialog({ replaceProject, leaveOnline })
+        })
+        input.addEventListener('change', async () => {
             const file = input.files?.[0]
-            if (!file) { this._showOpenDialog({ replaceProject }); return }
+            if (!file) {
+                this._showOpenDialog({ replaceProject, leaveOnline })
+                return
+            }
             const mediaType = file.type.startsWith('video') ? 'video' : 'image'
-            if (replaceProject) this._resetLayers()
-            this._handleOpenMedia(file, mediaType)
+            const result = await this._handleOpenMedia(file, mediaType, { replaceProject, leaveOnline })
+            if (result === 'failed') {
+                this._showOpenDialog({ replaceProject, leaveOnline })
+            }
         })
         input.click()
     }
@@ -763,6 +771,7 @@ class LayersApp {
      * @private
      */
     async _initializeBaseLayer(layer, width, height, successMessage) {
+        this._cancelPendingMediaLoad()
         this._layers = [layer]
         this._updateLayerStack()
 
@@ -790,6 +799,30 @@ class LayersApp {
 
         openDialog.element.close()
         toast.success(successMessage)
+    }
+
+    /**
+     * Mark any in-flight media candidate as superseded. Its own continuation
+     * performs cleanup after the renderer's load promise settles.
+     * @param {object|null} preserve - operation allowed to keep committing
+     * @private
+     */
+    _cancelPendingMediaLoad(preserve = null) {
+        if (this._pendingMediaLoad && this._pendingMediaLoad !== preserve) {
+            this._pendingMediaLoad.cancelled = true
+            this._pendingMediaLoad = null
+        }
+    }
+
+    /**
+     * Commit the destructive portion of a project replacement.
+     * @private
+     */
+    _commitProjectReplacement({ leaveOnline = false, preserveMediaLoad = null } = {}) {
+        if (leaveOnline && this._onlineAdapter?.isOnline()) {
+            this._onlineAdapter.goOffline()
+        }
+        this._resetLayers({ preserveMediaLoad })
     }
 
     /**
@@ -837,24 +870,45 @@ class LayersApp {
      * Handle opening a media file
      * @param {File} file - Media file
      * @param {string} mediaType - 'image' or 'video'
+     * @param {{replaceProject?:boolean, leaveOnline?:boolean}} options
+     * @returns {Promise<'opened'|'failed'|'cancelled'>}
      * @private
      */
-    async _handleOpenMedia(file, mediaType) {
-        // Create base layer
+    async _handleOpenMedia(file, mediaType, { replaceProject = false, leaveOnline = false } = {}) {
         const layer = createMediaLayer(file, mediaType)
-        this._layers = [layer]
+        this._cancelPendingMediaLoad()
+        const operation = { cancelled: false, committed: false }
+        this._pendingMediaLoad = operation
+
+        const isCurrent = () => !operation.cancelled && this._pendingMediaLoad === operation
+        const abandon = () => {
+            if (!operation.committed) this._renderer.unloadMedia(layer.id)
+            if (this._pendingMediaLoad === operation) this._pendingMediaLoad = null
+        }
 
         // Load media into renderer
         let dimensions = { width: 0, height: 0 }
         try {
             dimensions = await this._renderer.loadMedia(layer.id, file, mediaType)
         } catch (err) {
+            const current = isCurrent()
+            abandon()
+            if (!current) return 'cancelled'
             console.error('[Layers] Failed to load media:', err)
             toast.error('Failed to load media: ' + err.message)
-            return
+            return 'failed'
         }
 
-        // Update layer stack
+        if (!isCurrent()) {
+            abandon()
+            return 'cancelled'
+        }
+
+        if (replaceProject) {
+            this._commitProjectReplacement({ leaveOnline, preserveMediaLoad: operation })
+        }
+        this._layers = [layer]
+        operation.committed = true
         this._updateLayerStack()
 
         // Select the layer
@@ -869,11 +923,14 @@ class LayersApp {
 
         // Wait for any pending microtasks (canvas observer uses queueMicrotask)
         await new Promise(resolve => queueMicrotask(resolve))
+        if (!isCurrent()) return 'cancelled'
         // Compile pipeline at correct dimensions
         await this._rebuild()
+        if (!isCurrent()) return 'cancelled'
 
         // Wait for next frame to ensure WebGL state is stable
         await new Promise(resolve => requestAnimationFrame(resolve))
+        if (!isCurrent()) return 'cancelled'
         this._renderer.start()
 
         // Reset project state and update filename
@@ -887,22 +944,23 @@ class LayersApp {
         // Close the open dialog
         openDialog.element.close()
         toast.success(`Opened ${file.name}`)
+        if (this._pendingMediaLoad === operation) this._pendingMediaLoad = null
+        return 'opened'
     }
 
     /**
      * Handle new project from clipboard image
      * @private
      */
-    async _handleNewFromClipboard({ resetLayers = false } = {}) {
+    async _handleNewFromClipboard({ replaceProject = false, leaveOnline = false } = {}) {
         const result = await pasteFromClipboard()
         if (!result) {
             toast.error('No image found in clipboard')
             return
         }
 
-        if (resetLayers) this._resetLayers()
         const file = new File([result.blob], 'Clipboard Image.png', { type: 'image/png' })
-        await this._handleOpenMedia(file, 'image')
+        await this._handleOpenMedia(file, 'image', { replaceProject, leaveOnline })
     }
 
     /**
@@ -1526,7 +1584,8 @@ class LayersApp {
      * Reset all layers (for new project)
      * @private
      */
-    _resetLayers() {
+    _resetLayers({ preserveMediaLoad = null } = {}) {
+        this._cancelPendingMediaLoad(preserveMediaLoad)
         if (this._undoDebounceTimer) {
             clearTimeout(this._undoDebounceTimer)
             this._undoDebounceTimer = null
@@ -1545,6 +1604,8 @@ class LayersApp {
         if (this._maskEditMode) {
             this._exitMaskEditMode()
         }
+        this._selectionManager?.clearSelection()
+        this._copyOrigin = null
         this._layers = []
         this._undoManager.clear()
         this._updateUndoMenuState()
@@ -2235,10 +2296,10 @@ class LayersApp {
         // existing new-canvas / open-media flows; closing without a choice falls
         // through to the open dialog so the user is never stranded.
         welcomeDialog.init({
-            onNewCanvas: () => this._startProjectReplacement(() =>
-                this._showOpenDialog({ replaceProject: this._layers.length > 0 })),
-            onOpenFile: () => this._startProjectReplacement(() =>
-                this._openMediaFilePicker({ replaceProject: this._layers.length > 0 })),
+            onNewCanvas: () => this._startProjectReplacement(({ leaveOnline }) =>
+                this._showOpenDialog({ replaceProject: this._layers.length > 0, leaveOnline })),
+            onOpenFile: () => this._startProjectReplacement(({ leaveOnline }) =>
+                this._openMediaFilePicker({ replaceProject: this._layers.length > 0, leaveOnline })),
             onDismiss: () => this._showOpenDialog(),
         })
         document.getElementById('welcomeMenuItem')?.addEventListener('click', () => {
@@ -2248,16 +2309,14 @@ class LayersApp {
         // File menu - New / Open (both show the same open dialog with reset)
         for (const id of ['newMenuItem', 'openMenuItem']) {
             document.getElementById(id)?.addEventListener('click', () =>
-                this._startProjectReplacement(() =>
-                    this._showOpenDialog({ replaceProject: true })))
+                this._startProjectReplacement(({ leaveOnline }) =>
+                    this._showOpenDialog({ replaceProject: true, leaveOnline })))
         }
 
         // File menu - New from Clipboard
-        document.getElementById('newFromClipboardMenuItem')?.addEventListener('click', async () => {
-            if (!await this._confirmLeaveOnlineSession()) return
-            if (!await this._confirmUnsavedChanges()) return
-            await this._handleNewFromClipboard({ resetLayers: true })
-        })
+        document.getElementById('newFromClipboardMenuItem')?.addEventListener('click', () =>
+            this._startProjectReplacement(({ leaveOnline }) =>
+                this._handleNewFromClipboard({ replaceProject: true, leaveOnline })))
 
         // File menu - Save Project (uses Save As if no project ID)
         document.getElementById('saveProjectMenuItem')?.addEventListener('click', () => {
@@ -2274,11 +2333,9 @@ class LayersApp {
         })
 
         // File menu - Load Project
-        document.getElementById('loadProjectMenuItem')?.addEventListener('click', async () => {
-            if (!await this._confirmLeaveOnlineSession()) return
-            if (!await this._confirmUnsavedChanges()) return
-            this._showLoadProjectDialog()
-        })
+        document.getElementById('loadProjectMenuItem')?.addEventListener('click', () =>
+            this._startProjectReplacement(({ leaveOnline }) =>
+                this._showLoadProjectDialog(false, { replaceProject: true, leaveOnline })))
 
         document.getElementById('savePngMenuItem')?.addEventListener('click', () => {
             this._quickSavePng()
@@ -4095,11 +4152,11 @@ class LayersApp {
      * @param {boolean} isRequired - If true, dialog cannot be closed without selection
      * @private
      */
-    _showLoadProjectDialog(isRequired = false) {
+    _showLoadProjectDialog(isRequired = false, { replaceProject = false, leaveOnline = false } = {}) {
         projectManagerDialog.show({
             isRequired,
             onLoad: async (projectId) => {
-                await this._loadProject(projectId)
+                await this._loadProject(projectId, { replaceProject, leaveOnline })
             },
             onCancel: isRequired ? () => {
                 // Open dialog is still visible behind, nothing to do
@@ -4139,7 +4196,7 @@ class LayersApp {
      * @param {string} projectId - Project ID
      * @private
      */
-    async _loadProject(projectId) {
+    async _loadProject(projectId, { replaceProject = true, leaveOnline = false } = {}) {
         try {
             const result = await loadProject(projectId)
             if (!result) {
@@ -4149,8 +4206,9 @@ class LayersApp {
 
             const { project, mediaFiles } = result
 
-            // Reset current layers
-            this._resetLayers()
+            // The dialog selection is the load operation's commit point.
+            if (replaceProject) this._commitProjectReplacement({ leaveOnline })
+            else this._resetLayers()
 
             // Resize canvas
             if (project.canvasWidth && project.canvasHeight) {
