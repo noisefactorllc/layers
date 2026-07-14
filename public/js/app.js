@@ -13,6 +13,7 @@ import { openDialog } from './ui/open-dialog.js'
 import { addLayerDialog } from './ui/add-layer-dialog.js'
 import { aboutDialog } from './ui/about-dialog.js'
 import { settingsDialog } from './ui/settings-dialog.js'
+import { welcomeDialog, isWelcomeDismissed } from './ui/welcome-dialog.js'
 import { saveProjectDialog } from './ui/save-project-dialog.js'
 import { projectManagerDialog } from './ui/project-manager-dialog.js'
 import { confirmDialog } from './ui/confirm-dialog.js'
@@ -609,7 +610,13 @@ class LayersApp {
             })
             : false
         this._hideLoadingScreen()
-        if (!joinedFromUrl) this._showOpenDialog()
+        if (!joinedFromUrl) {
+            if (this._shouldAutoShowWelcome()) {
+                welcomeDialog.show({ fallThrough: true })
+            } else {
+                this._showOpenDialog()
+            }
+        }
 
         // Expose drawing module for tests
         window._drawingTestExports = { ...strokeModel, StrokeRenderer, createDrawingLayer }
@@ -691,6 +698,40 @@ class LayersApp {
                 this._showLoadProjectDialog(true)
             }
         })
+    }
+
+    /**
+     * First-run welcome splash gate. Suppressed under automation
+     * (navigator.webdriver) so it never interferes with the test harness;
+     * `?welcome=1` opts back in for the welcome spec.
+     * @returns {boolean}
+     * @private
+     */
+    _shouldAutoShowWelcome() {
+        if (isWelcomeDismissed()) return false
+        const forced = new URLSearchParams(window.location.search).has('welcome')
+        if (window.navigator.webdriver && !forced) return false
+        return true
+    }
+
+    /**
+     * Open a native file picker for image/video and route into the open-media
+     * flow. Backs the welcome dialog's "Open file" tile; falls through to the
+     * full open dialog if the picker is dismissed without a file.
+     * @private
+     */
+    _openMediaFilePicker() {
+        const input = document.createElement('input')
+        input.type = 'file'
+        input.accept = 'image/*,video/*'
+        input.addEventListener('cancel', () => this._showOpenDialog())
+        input.addEventListener('change', () => {
+            const file = input.files?.[0]
+            if (!file) { this._showOpenDialog(); return }
+            const mediaType = file.type.startsWith('video') ? 'video' : 'image'
+            this._handleOpenMedia(file, mediaType)
+        })
+        input.click()
     }
 
     /**
@@ -2168,6 +2209,18 @@ class LayersApp {
         // Logo menu - About
         document.getElementById('aboutMenuItem')?.addEventListener('click', () => {
             aboutDialog.show()
+        })
+
+        // Welcome dialog — re-openable from the logo menu. Tiles route into the
+        // existing new-canvas / open-media flows; closing without a choice falls
+        // through to the open dialog so the user is never stranded.
+        welcomeDialog.init({
+            onNewCanvas: () => this._showOpenDialog(),
+            onOpenFile: () => this._openMediaFilePicker(),
+            onDismiss: () => this._showOpenDialog(),
+        })
+        document.getElementById('welcomeMenuItem')?.addEventListener('click', () => {
+            welcomeDialog.show()
         })
 
         // File menu - New / Open (both show the same open dialog with reset)
