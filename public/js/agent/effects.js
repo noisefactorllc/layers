@@ -22,18 +22,35 @@ const CURATED_GROUPS = [
             { effectId: 'filter/adjust',          label: 'hue/saturation' },
             { effectId: 'filter/grade',           label: 'color grading' },
             { effectId: 'filter/tint',            label: 'tint' },
+            { effectId: 'filter/colorReplace',    label: 'color replace' },
             { effectId: 'filter/invert',          label: 'invert' },
             { effectId: 'filter/tetraColorArray', label: 'gradient palette' }
         ]
     },
     {
-        id: 'blur-sharpen',
-        label: 'blur & sharpen',
+        id: 'blur',
+        label: 'blur',
         effects: [
             { effectId: 'filter/blur',       label: 'blur' },
             { effectId: 'filter/motionBlur', label: 'motion blur' },
             { effectId: 'filter/zoomBlur',   label: 'zoom blur' },
-            { effectId: 'filter/sharpen',    label: 'sharpen' }
+            { effectId: 'filter/spinBlur',   label: 'spin blur' }
+        ]
+    },
+    {
+        id: 'sharpen',
+        label: 'sharpen',
+        effects: [
+            { effectId: 'filter/sharpen',     label: 'sharpen' },
+            { effectId: 'filter/unsharpMask', label: 'unsharp mask' }
+        ]
+    },
+    {
+        id: 'pixelate',
+        label: 'pixelate',
+        effects: [
+            { effectId: 'filter/halftone', label: 'halftone' },
+            { effectId: 'filter/dither',   label: 'dither' }
         ]
     },
     {
@@ -41,11 +58,47 @@ const CURATED_GROUPS = [
         label: 'stylize',
         effects: [
             { effectId: 'filter/bloom',    label: 'bloom' },
-            { effectId: 'filter/grain',    label: 'grain' },
             { effectId: 'filter/vignette', label: 'vignette' },
             { effectId: 'filter/edge',     label: 'edge detect' },
-            { effectId: 'filter/dither',   label: 'dither' },
-            { effectId: 'filter/emboss',   label: 'emboss' }
+            { effectId: 'filter/emboss',   label: 'emboss' },
+            { effectId: 'filter/extrude',  label: 'extrude' },
+            { effectId: 'filter/oilPaint', label: 'oil paint' },
+            { effectId: 'filter/wind',     label: 'wind' }
+        ]
+    },
+    {
+        id: 'sketch',
+        label: 'sketch',
+        effects: [
+            { effectId: 'filter/chrome',    label: 'chrome' },
+            { effectId: 'filter/photocopy', label: 'photocopy' },
+            { effectId: 'filter/stamp',     label: 'stamp' }
+        ]
+    },
+    {
+        id: 'brushStrokes',
+        label: 'brush strokes',
+        effects: [
+            { effectId: 'filter/hatch',   label: 'hatch' },
+            { effectId: 'filter/strokes', label: 'strokes' }
+        ]
+    },
+    {
+        id: 'artistic',
+        label: 'artistic',
+        effects: [
+            { effectId: 'filter/watercolor',  label: 'watercolor' },
+            { effectId: 'filter/plasticWrap', label: 'plastic wrap' }
+        ]
+    },
+    {
+        id: 'texture',
+        label: 'texture',
+        effects: [
+            { effectId: 'filter/grain',       label: 'grain' },
+            { effectId: 'filter/craquelure',  label: 'craquelure' },
+            { effectId: 'filter/mosaicTiles', label: 'mosaic tiles' },
+            { effectId: 'filter/patchwork',   label: 'patchwork' }
         ]
     }
 ]

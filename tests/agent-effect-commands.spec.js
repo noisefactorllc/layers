@@ -51,13 +51,14 @@ test.describe('LayersAgent effect catalog', () => {
         expect(env.result.namespaces.length).toBeGreaterThan(0)
     })
 
-    test('listCuratedEffects mirrors the human Image menu groups', async ({ page }) => {
+    test('listCuratedEffects mirrors the human image + filter menu groups', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() => window.LayersAgent.listCuratedEffects())
         expect(env.ok).toBe(true)
         expect(Array.isArray(env.result.groups)).toBe(true)
         const groupNames = env.result.groups.map(g => g.id)
-        expect(groupNames).toEqual(expect.arrayContaining(['tone', 'color', 'blur-sharpen', 'stylize']))
+        expect(groupNames).toEqual(expect.arrayContaining(
+            ['tone', 'color', 'blur', 'sharpen', 'pixelate', 'stylize', 'texture']))
         const tone = env.result.groups.find(g => g.id === 'tone')
         expect(tone.effects.length).toBeGreaterThan(0)
         expect(tone.effects[0]).toMatchObject({

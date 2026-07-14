@@ -52,4 +52,22 @@ test.describe('Filter menu', () => {
         expect(after.n).toBe(before + 1)
         expect(after.ids).toContain('filter/oilPaint')
     })
+
+    test('curated groups mirror the filter menu and all resolve', async ({ page }) => {
+        await bootBlank(page)
+        const res = await page.evaluate(async () => {
+            const env = await window.LayersAgent.listCuratedEffects()
+            const manifest = window.layersApp._renderer.manifest || {}
+            const curatedIds = env.result.groups.flatMap(g => g.effects.map(e => e.effectId))
+            const menuIds = [...document.querySelectorAll('#filterMenu [data-effect]')]
+                .map(el => el.dataset.effect)
+            const curatedSet = new Set(curatedIds)
+            return {
+                unresolved: curatedIds.filter(id => !(id in manifest)),
+                menuNotCurated: menuIds.filter(id => !curatedSet.has(id)),
+            }
+        })
+        expect(res.unresolved).toEqual([])
+        expect(res.menuNotCurated).toEqual([])
+    })
 })
