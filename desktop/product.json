@@ -2,7 +2,7 @@
     "name": "Noisedeck Layers",
     "appId": "app.layers.desktop",
     "licenseProductId": "layers",
-    "version": "0.10",
+    "version": "0.11",
     "appRootSubdir": "public",
     "debug": false
 }

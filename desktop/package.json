@@ -1,6 +1,6 @@
 {
   "name": "layers-desktop",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "main": "main.js",
   "description": "Layers desktop wrapper (uses @nf/desktop-shell).",
