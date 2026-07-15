@@ -2341,6 +2341,15 @@ class LayersApp {
                 })
             }
         })
+        const repositionOpenToolbarFlyouts = () => {
+            document.querySelectorAll('#toolbar .menu-items:not(.hide)').forEach(items => {
+                const menu = items.closest('.menu')
+                const title = menu?.querySelector(':scope > .menu-title')
+                if (menu && title) positionToolbarFlyout(menu, title, items)
+            })
+        }
+        window.addEventListener('resize', repositionOpenToolbarFlyouts)
+
         document.querySelectorAll('.has-submenu[data-submenu]').forEach(trigger => {
             const submenuId = trigger.dataset.submenu
             const menu = trigger.closest('.menu')

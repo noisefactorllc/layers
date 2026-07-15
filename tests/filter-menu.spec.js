@@ -278,6 +278,42 @@ test.describe('Filter menu', () => {
         })
     }
 
+    test('repositions an open toolbar flyout when the viewport shrinks', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+        await page.locator('.toast-visible').waitFor({ state: 'hidden' })
+
+        const shapeMenu = page.locator('#shapeMenu')
+        const caret = shapeMenu.locator(':scope > .tool-caret')
+        await caret.scrollIntoViewIfNeeded()
+        await caret.click()
+        const flyout = shapeMenu.locator(':scope > .menu-items')
+        await expect(flyout).toBeVisible()
+
+        await page.setViewportSize({ width: 390, height: 240 })
+        await expect.poll(async () => {
+            const rect = await flyout.boundingBox()
+            return rect.y >= 8 && rect.y + rect.height <= 232
+        }).toBe(true)
+        const flyoutRect = await flyout.boundingBox()
+        expect(flyoutRect.y).toBeGreaterThanOrEqual(8)
+        expect(flyoutRect.y + flyoutRect.height).toBeLessThanOrEqual(232)
+
+        const filledOval = flyout.locator('[data-shape="ellipse"][data-filled="true"]')
+        await expect.poll(() => filledOval.evaluate(element => {
+            const rect = element.getBoundingClientRect()
+            const hit = document.elementFromPoint(
+                rect.left + rect.width / 2, rect.top + rect.height / 2)
+            return element.contains(hit)
+        })).toBe(true)
+        await filledOval.click()
+        await expect(filledOval).toHaveClass(/checked/)
+        await expect.poll(() => page.evaluate(() => ({
+            shapeType: window.layersApp._shapeTool.shapeType,
+            filled: window.layersApp._shapeTool.filled,
+        }))).toEqual({ shapeType: 'ellipse', filled: true })
+    })
+
     test('clamps the filter dropdown and keeps every submenu effect reachable', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 320 })
         await bootBlank(page)
