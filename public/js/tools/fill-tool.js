@@ -15,6 +15,7 @@ export class FillTool {
     constructor(options) {
         this._overlay = options.overlay
         this._canvas = options.canvas
+        this._runMutation = options.runMutation
         this._addMediaLayerFromCanvas = options.addMediaLayerFromCanvas
         this._pushUndoState = options.pushUndoState
         this._finalizePendingUndo = options.finalizePendingUndo
@@ -53,6 +54,13 @@ export class FillTool {
     }
 
     async _onClick(e) {
+        if (this._runMutation) {
+            return this._runMutation(() => this._fill(e))
+        }
+        return this._fill(e)
+    }
+
+    async _fill(e) {
         const pt = this._getCanvasCoords(e)
         const width = this._canvas.width
         const height = this._canvas.height

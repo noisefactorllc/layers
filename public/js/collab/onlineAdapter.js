@@ -66,7 +66,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     let sdkPromise = null
 
     let lastPublished = []      // last node model actually sent (for diffing)
-    let applyingRemote = false  // single-flight lock: true for the whole span of one apply attempt (see runApply/applyOnce); also guards the publish funnel while true
+    let applyTaskRunning = false // single-flight lock spanning lifecycle acquisition and the apply attempt
+    let applyingRemote = false  // true only while this adapter owns the lifecycle token and may mutate app state; also guards the publish funnel
     let applyRerunRequested = false // a fresh apply was requested while one was already in flight; coalesced into a rerun after it finishes
     let applyDebounceTimer = null   // coalesces a burst of scheduleApply() calls (one per remote-node event) into a single triggerApply()
     let suppressNextSnapshot = false // true right after our own takeOnline() seed
@@ -75,6 +76,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     let deferredPollTimer = null
     let rejectedNodeHashes = new Map() // node id -> fnv1a(text) of content the server last rejected; suppresses resending unchanged rejected content (cleared once the content changes)
     let rejectToastCooldown = false    // coalesces a burst of node-reject events into one toast
+    let remoteLifecycleToken = null
 
     // -- status -------------------------------------------------------
 
@@ -176,7 +178,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     }
 
     function shouldDeferApply() {
-        return isGestureActive() || isPublishPending()
+        return app._projectInstallActive || app._projectReplacementActive
+            || app._projectLifecycleWaiters > 0
+            || (app._projectLifecycleActive
+                && app._projectLifecycleOwner !== remoteLifecycleToken)
+            || isGestureActive() || isPublishPending()
     }
 
     // Debounce/coalesce a burst of remote-node events (one per changed node)
@@ -230,28 +236,41 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         infoDialog.show({ message: NOT_A_LAYERS_SESSION_MESSAGE })
     }
 
-    // Single-flight owner: applyingRemote spans the WHOLE synchronous+async
-    // life of one apply attempt (set before any awaits, cleared in finally),
-    // so it doubles as the reentrancy guard AND the publish-funnel guard.
-    // A call arriving while one is already in flight coalesces into a
-    // rerun — never two interleaved applies.
+    // applyTaskRunning is the single-flight guard across lifecycle waiting;
+    // applyingRemote is narrower and becomes observable only after this
+    // adapter owns the lifecycle token. This lets an operation already ahead
+    // of a remote rerun commit without mistaking that queued rerun for an
+    // active remote mutation.
     async function runApply() {
-        if (!online) return
-        if (applyingRemote) {
+        if (!online || !isOnline()) return
+        if (applyTaskRunning) {
             applyRerunRequested = true
             return
         }
 
-        applyingRemote = true
+        applyTaskRunning = true
         let needsRerun = false
         try {
+            remoteLifecycleToken = await app._acquireProjectLifecycle()
+            if (!isOnline()) {
+                applyRerunRequested = false
+                return
+            }
+            applyingRemote = true
             needsRerun = await applyOnce()
+        } catch (err) {
+            console.error('[Layers] Failed to apply remote project:', err)
+            toast.warning('A remote project update was rejected')
         } finally {
             applyingRemote = false
+            remoteLifecycleToken?.release()
+            remoteLifecycleToken = null
+            applyTaskRunning = false
         }
 
-        if (needsRerun || applyRerunRequested) {
-            applyRerunRequested = false
+        const rerun = needsRerun || applyRerunRequested
+        applyRerunRequested = false
+        if (rerun && isOnline()) {
             triggerApply()
         }
     }
@@ -292,14 +311,15 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         // nodes. This is what makes the overwrite below provably safe.
         if (JSON.stringify(buildNodeModel(app._layers, canvasDims())) !== before) return true
 
+        bumpLayerCounterPast(layers)
+
         for (const layer of app._layers) {
             if (layer.sourceType === 'media' || layer.sourceType === 'drawing') {
                 app._renderer.unloadMedia(layer.id)
             }
         }
-        if (app._maskEditMode) app._exitMaskEditMode()
+        if (app._maskEditMode) app._exitMaskEditMode({ updateRenderer: false })
 
-        bumpLayerCounterPast(layers)
         app._layers = layers
 
         const canvasChanged = canvas.width && canvas.height &&
@@ -374,7 +394,12 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         let max = -1
         const scan = (id) => {
             const m = /^layer-(\d+)$/.exec(String(id))
-            if (m) max = Math.max(max, Number(m[1]))
+            if (!m) return
+            const value = Number(m[1])
+            if (!Number.isSafeInteger(value) || !Number.isSafeInteger(value + 1)) {
+                throw new Error(`Remote project has unsafe layer id: ${id}`)
+            }
+            max = Math.max(max, value)
         }
         for (const layer of layers) {
             scan(layer.id)
@@ -623,6 +648,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         config,
         wireUi,
         isOnline,
+        isApplyingRemote: () => applyingRemote,
         getStatus,
         takeOnline,
         joinSession,

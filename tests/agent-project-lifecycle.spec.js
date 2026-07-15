@@ -40,6 +40,35 @@ test.describe('newProject', () => {
         expect(env.ok).toBe(false)
         expect(env.error.code).toBe('INVALID_ARGS_RANGE')
     })
+
+    test('failed staging leaves an online session connected', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            let online = true
+            let disconnects = 0
+            app._onlineAdapter = {
+                isOnline: () => online,
+                isApplyingRemote: () => false,
+                goOffline: () => { online = false; disconnects += 1 },
+                schedulePublish: () => {},
+            }
+            app._renderer.stageLayerSet = async () => ({
+                success: false,
+                error: 'candidate compile failed',
+                commit() {},
+                rollback: async () => ({ success: true }),
+            })
+            const envelope = await window.LayersAgent.newProject({
+                width: 210, height: 120, name: 'Should fail',
+            })
+            return { envelope, online, disconnects }
+        })
+
+        expect(result.envelope.ok).toBe(false)
+        expect(result.online).toBe(true)
+        expect(result.disconnects).toBe(0)
+    })
 })
 
 test.describe('saveProject / openProject / deleteProject', () => {
@@ -78,6 +107,61 @@ test.describe('saveProject / openProject / deleteProject', () => {
             window.LayersAgent.openProject({ projectId: 'project-nope' }))
         expect(env.ok).toBe(false)
         expect(env.error.code).toBe('NOT_FOUND_PROJECT')
+    })
+
+    test('openProject reports a generation-cancelled load as a conflict', async ({ page }) => {
+        await bootApp(page)
+        const saved = await page.evaluate(() =>
+            window.LayersAgent.saveProjectAs({ name: 'cancelled-open-target' }))
+        const env = await page.evaluate(async (projectId) => {
+            window.layersApp._loadProject = async () => 'cancelled'
+            return window.LayersAgent.openProject({ projectId })
+        }, saved.result.projectId)
+
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('CONFLICT_PROJECT_REPLACEMENT')
+    })
+
+    test('openProject preserves a not-found result from a deletion race', async ({ page }) => {
+        await bootApp(page)
+        const saved = await page.evaluate(() =>
+            window.LayersAgent.saveProjectAs({ name: 'deleted-open-target' }))
+        const env = await page.evaluate(async (projectId) => {
+            window.layersApp._loadProject = async () => 'not-found'
+            return window.LayersAgent.openProject({ projectId })
+        }, saved.result.projectId)
+
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('NOT_FOUND_PROJECT')
+    })
+
+    test('failed open staging leaves an online session connected', async ({ page }) => {
+        await bootApp(page)
+        const saved = await page.evaluate(() =>
+            window.LayersAgent.saveProjectAs({ name: 'online-open-failure' }))
+        const result = await page.evaluate(async (projectId) => {
+            const app = window.layersApp
+            let online = true
+            let disconnects = 0
+            app._onlineAdapter = {
+                isOnline: () => online,
+                isApplyingRemote: () => false,
+                goOffline: () => { online = false; disconnects += 1 },
+                schedulePublish: () => {},
+            }
+            app._renderer.stageLayerSet = async () => ({
+                success: false,
+                error: 'candidate compile failed',
+                commit() {},
+                rollback: async () => ({ success: true }),
+            })
+            const envelope = await window.LayersAgent.openProject({ projectId })
+            return { envelope, online, disconnects }
+        }, saved.result.projectId)
+
+        expect(result.envelope.ok).toBe(false)
+        expect(result.online).toBe(true)
+        expect(result.disconnects).toBe(0)
     })
 
     test('saveProject (quick-save) requires either current project or name', async ({ page }) => {

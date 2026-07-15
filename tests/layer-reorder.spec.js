@@ -86,9 +86,17 @@ test.describe('Layer reorder FSM', () => {
         // Press ESC
         await page.keyboard.press('Escape')
 
-        // Verify back to IDLE
-        const idleState = await page.evaluate(() => window.layersApp._reorderState)
-        expect(idleState).toBe('IDLE')
+        // Verify the gesture state and its lifecycle lease were both released.
+        const state = await page.evaluate(() => ({
+            reorder: window.layersApp._reorderState,
+            lifecycleActive: window.layersApp._projectLifecycleActive,
+            tokenHeld: window.layersApp._reorderMutationToken !== null,
+        }))
+        expect(state).toEqual({
+            reorder: 'IDLE',
+            lifecycleActive: false,
+            tokenHeld: false,
+        })
     })
 
     test('FSM prevents dragging base layer', async ({ page }) => {

@@ -12,10 +12,14 @@ export class ExportImageDialog {
         this.canvas = options.canvas
         this.getResolution = options.getResolution
         this.setResolution = options.setResolution
+        this.acquireMutation = options.acquireMutation || (() => ({ release() {} }))
+        this.getProjectGeneration = options.getProjectGeneration || (() => 0)
         this.onComplete = options.onComplete || (() => {})
         this.onCancel = options.onCancel || (() => {})
 
         this.originalResolution = null
+        this.state = 'idle'
+        this._projectGeneration = 0
         this._dialog = null
         this._elements = {}
 
@@ -45,6 +49,8 @@ export class ExportImageDialog {
     open() {
         if (!this._dialog && !this._cacheElements()) return
 
+        this.state = 'dialog'
+        this._projectGeneration = this.getProjectGeneration()
         this.originalResolution = this.getResolution()
         this._elements.widthInput.value = this.originalResolution.width
         this._elements.heightInput.value = this.originalResolution.height
@@ -60,6 +66,7 @@ export class ExportImageDialog {
             this._removeEventListeners()
             this._dialog.close()
         }
+        this.state = 'idle'
     }
 
     _setupEventListeners() {
@@ -127,6 +134,15 @@ export class ExportImageDialog {
     }
 
     async _export() {
+        if (this.state !== 'dialog') return
+        if (this._projectGeneration !== this.getProjectGeneration()) {
+            this.close()
+            this.onCancel()
+            return
+        }
+        const mutationToken = this.acquireMutation()
+        if (!mutationToken) return
+        this.state = 'exporting'
         const settings = this._gatherSettings()
         this._savePreferences(settings)
 
@@ -135,6 +151,7 @@ export class ExportImageDialog {
         const needsResize = width !== this.originalResolution.width ||
                           height !== this.originalResolution.height
 
+        let completed = false
         try {
             if (needsResize) {
                 this.setResolution(width, height)
@@ -144,19 +161,25 @@ export class ExportImageDialog {
 
             const qualityValue = settings.format === 'png' ? 1.0 : this._qualityToValue(settings.quality)
             this.files.saveImage(this.canvas, settings.format, qualityValue)
-
-            this.close()
-            this.onComplete(settings.format)
+            completed = true
         } catch (err) {
             console.error('Export image failed:', err)
         } finally {
             if (needsResize) {
                 this.setResolution(this.originalResolution.width, this.originalResolution.height)
             }
+            mutationToken.release()
+        }
+        if (completed) {
+            this.close()
+            this.onComplete(settings.format)
+        } else {
+            this.state = 'dialog'
         }
     }
 
     _cancel() {
+        if (this.state === 'exporting') return
         this.close()
         this.onCancel()
     }

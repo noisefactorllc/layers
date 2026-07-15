@@ -1,15 +1,19 @@
 import { test, expect } from 'playwright/test'
 
+const FIXTURE_SIZE = 512
+
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    await page.fill('#canvas-width', String(FIXTURE_SIZE))
+    await page.fill('#canvas-height', String(FIXTURE_SIZE))
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await page.waitForTimeout(500)
 }
 
-async function addColorLayer(page, color, size = 1024) {
+async function addColorLayer(page, color, size = FIXTURE_SIZE) {
     await page.evaluate(async ({ color, size }) => {
         const canvas = document.createElement('canvas')
         canvas.width = size

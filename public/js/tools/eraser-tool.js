@@ -21,15 +21,19 @@ export class EraserTool {
         this._pushUndoState = options.pushUndoState
         this._finalizePendingUndo = options.finalizePendingUndo
         this._markDirty = options.markDirty
+        this._acquireMutation = options.acquireMutation
 
         this._active = false
         this._dragging = false
         this._deletedInDrag = new Set()
         this._hoveredStrokeId = null
+        this._mutationToken = null
+        this._deleteTail = Promise.resolve()
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
         this._onMouseUp = this._onMouseUp.bind(this)
+        this._onCancel = this._onCancel.bind(this)
     }
 
     /** True while an erase drag gesture is between mousedown and mouseup. */
@@ -42,16 +46,21 @@ export class EraserTool {
             const handler = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp][i]
             this._overlay.addEventListener(evt, handler)
         })
+        this._overlay.addEventListener('pointercancel', this._onCancel)
+        window.addEventListener('blur', this._onCancel)
     }
 
     deactivate() {
         if (!this._active) return
         this._active = false
+        if (this._dragging) void this._finishGesture()
         this._clearOverlay()
         MOUSE_EVENTS.forEach((evt, i) => {
             const handler = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp][i]
             this._overlay.removeEventListener(evt, handler)
         })
+        this._overlay.removeEventListener('pointercancel', this._onCancel)
+        window.removeEventListener('blur', this._onCancel)
     }
 
     _getCanvasCoords(e) {
@@ -64,29 +73,56 @@ export class EraserTool {
 
     _onMouseDown(e) {
         if (e.button !== 0) return
+        const token = this._acquireMutation
+            ? this._acquireMutation()
+            : { release() {} }
+        if (!token) return
+        this._mutationToken = token
         this._dragging = true
         this._deletedInDrag = new Set()
+        this._deleteTail = Promise.resolve()
         this._finalizePendingUndo() // flush any pending debounce once, before the gesture
-        this._tryDelete(e)
+        this._queueDelete(e)
     }
 
     _onMouseMove(e) {
         if (this._dragging) {
-            this._tryDelete(e)
+            this._queueDelete(e)
         } else {
             this._updateHover(e)
         }
     }
 
-    _onMouseUp(e) {
+    _onMouseUp() {
         if (!this._dragging) return
+        void this._finishGesture()
+    }
+
+    _onCancel() {
+        if (this._dragging) void this._finishGesture()
+    }
+
+    async _finishGesture() {
         this._dragging = false
-        // One undo step for the whole erase gesture (see class doc). Pushing per
-        // delete also raced the async rasterize, snapshotting the wrong state.
-        if (this._deletedInDrag.size > 0) {
-            this._pushUndoState()
+        const mutationToken = this._mutationToken
+        this._mutationToken = null
+        try {
+            await this._deleteTail
+            // One undo step for the whole erase gesture (see class doc). Pushing per
+            // delete also raced the async rasterize, snapshotting the wrong state.
+            if (this._deletedInDrag.size > 0) {
+                this._pushUndoState()
+            }
+        } catch (err) {
+            console.error('[EraserTool] Failed to erase stroke:', err)
+        } finally {
+            this._deletedInDrag.clear()
+            mutationToken?.release()
         }
-        this._deletedInDrag.clear()
+    }
+
+    _queueDelete(e) {
+        this._deleteTail = this._deleteTail.then(() => this._tryDelete(e))
     }
 
     async _tryDelete(e) {

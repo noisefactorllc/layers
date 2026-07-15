@@ -397,22 +397,35 @@ test.describe('Filter menu', () => {
             const submenu = page.locator(
                 `#filterMenu > .submenu[data-submenu-id="${group.submenuId}"]`)
             await expect(submenu).toBeVisible()
+            const geometry = await submenu.evaluate((element, effectIds) => {
+                const submenuRect = element.getBoundingClientRect()
+                const effects = effectIds.map(effectId => {
+                    const effect = element.querySelector(`[data-effect="${effectId}"]`)
+                    effect.scrollIntoView({ block: 'nearest' })
+                    const rect = effect.getBoundingClientRect()
+                    return { effectId, top: rect.top, bottom: rect.bottom }
+                })
+                return {
+                    submenu: {
+                        left: submenuRect.left,
+                        right: submenuRect.right,
+                        top: submenuRect.top,
+                        bottom: submenuRect.bottom,
+                    },
+                    effects,
+                }
+            }, group.effects.map(([effectId]) => effectId))
 
-            const submenuRect = await submenu.boundingBox()
-            expect(submenuRect.x, `${group.label} left edge`).toBeGreaterThanOrEqual(toolbarRight)
-            expect(submenuRect.x + submenuRect.width, `${group.label} right edge`)
-                .toBeLessThanOrEqual(390)
-            expect(submenuRect.y, `${group.label} top edge`).toBeGreaterThanOrEqual(0)
-            expect(submenuRect.y + submenuRect.height, `${group.label} bottom edge`)
-                .toBeLessThanOrEqual(320)
+            expect(geometry.submenu.left, `${group.label} left edge`)
+                .toBeGreaterThanOrEqual(toolbarRight)
+            expect(geometry.submenu.right, `${group.label} right edge`).toBeLessThanOrEqual(390)
+            expect(geometry.submenu.top, `${group.label} top edge`).toBeGreaterThanOrEqual(0)
+            expect(geometry.submenu.bottom, `${group.label} bottom edge`).toBeLessThanOrEqual(320)
 
-            for (const [effectId, label] of group.effects) {
-                const effect = submenu.locator(`[data-effect="${effectId}"]`)
-                await effect.evaluate(element => element.scrollIntoView({ block: 'nearest' }))
-                const effectRect = await effect.boundingBox()
-                expect(effectRect.y, `${label} top edge`).toBeGreaterThanOrEqual(submenuRect.y)
-                expect(effectRect.y + effectRect.height, `${label} bottom edge`)
-                    .toBeLessThanOrEqual(submenuRect.y + submenuRect.height)
+            for (const effect of geometry.effects) {
+                const label = group.effects.find(([effectId]) => effectId === effect.effectId)[1]
+                expect(effect.top, `${label} top edge`).toBeGreaterThanOrEqual(geometry.submenu.top)
+                expect(effect.bottom, `${label} bottom edge`).toBeLessThanOrEqual(geometry.submenu.bottom)
             }
         }
     })
@@ -431,6 +444,32 @@ test.describe('Filter menu', () => {
         await expect(title).toHaveAttribute('aria-haspopup', 'menu')
         await expect(title).toHaveAttribute('aria-expanded', 'false')
         await expect(dropdown).toHaveAttribute('role', 'menu')
+        await expect(page.getByRole('menu', {
+            name: 'filter', exact: true, includeHidden: true,
+        })).toHaveCount(1)
+        await expect(page.getByRole('menu', {
+            name: 'blur', exact: true, includeHidden: true,
+        })).toHaveCount(1)
+        expect(await page.evaluate(() => {
+            const menu = document.getElementById('filterMenu')
+            const title = menu.querySelector(':scope > .menu-title')
+            const dropdown = menu.querySelector(':scope > .menu-items')
+            return {
+                titleControlsDropdown: title.getAttribute('aria-controls') === dropdown.id,
+                dropdownLabelledByTitle: dropdown.getAttribute('aria-labelledby') === title.id,
+                submenuRelationships: [...dropdown.querySelectorAll(':scope > [data-submenu]')]
+                    .every(trigger => {
+                        const submenu = menu.querySelector(
+                            `:scope > .submenu[data-submenu-id="${trigger.dataset.submenu}"]`)
+                        return trigger.getAttribute('aria-controls') === submenu?.id
+                            && submenu.getAttribute('aria-labelledby') === trigger.id
+                    }),
+            }
+        })).toEqual({
+            titleControlsDropdown: true,
+            dropdownLabelledByTitle: true,
+            submenuRelationships: true,
+        })
 
         await title.focus()
         await page.keyboard.press('Enter')
@@ -446,6 +485,20 @@ test.describe('Filter menu', () => {
         await expect(blurGroup).toBeFocused()
         await page.keyboard.press('Escape')
         await expect(title).toBeFocused()
+
+        await page.keyboard.press('Enter')
+        await expect(blurGroup).toBeFocused()
+        await page.keyboard.press('Tab')
+        await expect(dropdown).toBeHidden()
+        await expect(title).toHaveAttribute('aria-expanded', 'false')
+        await expect(title).not.toBeFocused()
+
+        await title.focus()
+        await page.keyboard.press('Enter')
+        await expect(blurGroup).toBeFocused()
+        await page.keyboard.press('Shift+Tab')
+        await expect(dropdown).toBeHidden()
+        await expect(title).toHaveAttribute('aria-expanded', 'false')
 
         await page.keyboard.press('ArrowDown')
         await expect(dropdown).toBeVisible()

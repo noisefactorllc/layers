@@ -20,6 +20,7 @@ export class ShapeTool {
         this._pushUndoState = options.pushUndoState
         this._finalizePendingUndo = options.finalizePendingUndo
         this._markDirty = options.markDirty
+        this._acquireMutation = options.acquireMutation
 
         this._color = '#000000'
         this._size = 2
@@ -31,11 +32,13 @@ export class ShapeTool {
         this._state = State.IDLE
         this._startPt = null
         this._currentPt = null
-        this._targetLayer = null
+        this._mutationToken = null
+        this._sharedMutationToken = null
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
         this._onMouseUp = this._onMouseUp.bind(this)
+        this._cancelGesture = this._cancelGesture.bind(this)
     }
 
     get shapeType() { return this._shapeType }
@@ -58,17 +61,26 @@ export class ShapeTool {
             const handler = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp][i]
             this._overlay.addEventListener(evt, handler)
         })
+        this._overlay.addEventListener('pointercancel', this._cancelGesture)
+        window.addEventListener('blur', this._cancelGesture)
     }
 
     deactivate() {
         if (!this._active) return
         this._active = false
+        this._mutationToken?.release()
+        this._mutationToken = null
+        this._state = State.IDLE
+        this._startPt = null
+        this._currentPt = null
         this._clearPreview()
 
         MOUSE_EVENTS.forEach((evt, i) => {
             const handler = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp][i]
             this._overlay.removeEventListener(evt, handler)
         })
+        this._overlay.removeEventListener('pointercancel', this._cancelGesture)
+        window.removeEventListener('blur', this._cancelGesture)
     }
 
     _getCanvasCoords(e) {
@@ -81,8 +93,13 @@ export class ShapeTool {
 
     _onMouseDown(e) {
         if (e.button !== 0) return
+        const token = this._acquireMutation
+            ? this._acquireMutation(this._sharedMutationToken)
+            : { release() {} }
+        if (!token) return
+        this._sharedMutationToken = token
+        this._mutationToken = token
         this._state = State.DRAWING
-        this._targetLayer = this._ensureDrawingLayer()
         this._startPt = this._getCanvasCoords(e)
         this._currentPt = { ...this._startPt }
     }
@@ -103,6 +120,18 @@ export class ShapeTool {
         this._drawPreview()
     }
 
+    _cancelGesture() {
+        if (this._state !== State.DRAWING) return
+        const token = this._mutationToken
+        this._state = State.IDLE
+        this._startPt = null
+        this._currentPt = null
+        this._mutationToken = null
+        token?.release()
+        if (this._sharedMutationToken?.released) this._sharedMutationToken = null
+        this._clearPreview()
+    }
+
     async _onMouseUp(e) {
         if (this._state !== State.DRAWING) return
         this._state = State.IDLE
@@ -111,37 +140,44 @@ export class ShapeTool {
         // so a new shape begun during the rebuild isn't clobbered on resume.
         const startPt = this._startPt
         const currentPt = this._currentPt
-        const targetLayer = this._targetLayer
+        const mutationToken = this._mutationToken
         this._startPt = null
         this._currentPt = null
-        this._targetLayer = null
+        this._mutationToken = null
 
-        if (startPt && currentPt && targetLayer) {
-            this._finalizePendingUndo()
+        try {
+            if (startPt && currentPt) {
+                const targetLayer = this._ensureDrawingLayer()
+                this._finalizePendingUndo()
 
-            const x = Math.min(startPt.x, currentPt.x)
-            const y = Math.min(startPt.y, currentPt.y)
-            const width = Math.abs(currentPt.x - startPt.x)
-            const height = Math.abs(currentPt.y - startPt.y)
+                const x = Math.min(startPt.x, currentPt.x)
+                const y = Math.min(startPt.y, currentPt.y)
+                const width = Math.abs(currentPt.x - startPt.x)
+                const height = Math.abs(currentPt.y - startPt.y)
 
-            const stroke = createShapeStroke({
-                type: this._shapeType,
-                color: this._color,
-                size: this._size,
-                opacity: this._opacity,
-                x, y, width, height,
-                filled: this._filled
-            })
+                const stroke = createShapeStroke({
+                    type: this._shapeType,
+                    color: this._color,
+                    size: this._size,
+                    opacity: this._opacity,
+                    x, y, width, height,
+                    filled: this._filled
+                })
 
-            targetLayer.strokes.push(stroke)
-            await this._rasterizeDrawingLayer(targetLayer)
-            await this._rebuild({ force: true })
-            this._markDirty()
-            this._pushUndoState()
+                targetLayer.strokes.push(stroke)
+                await this._rasterizeDrawingLayer(targetLayer)
+                await this._rebuild({ force: true })
+                this._markDirty()
+                this._pushUndoState()
+            }
+        } finally {
+            mutationToken?.release()
+            if (this._sharedMutationToken?.released) {
+                this._sharedMutationToken = null
+            }
+            // Only clear the preview if no new shape began during the awaits above.
+            if (this._state === State.IDLE) this._clearPreview()
         }
-
-        // Only clear the preview if no new shape began during the awaits above.
-        if (this._state === State.IDLE) this._clearPreview()
     }
 
     _drawPreview() {

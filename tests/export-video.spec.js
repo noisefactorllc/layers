@@ -1,5 +1,21 @@
 import { test, expect } from 'playwright/test'
 
+async function beginTinyZipExport(page) {
+    await page.fill('#exportWidth', '64')
+    await page.fill('#exportHeight', '64')
+    await page.fill('#exportDuration', '1')
+    await page.selectOption('#exportFramerate', '24')
+    await page.selectOption('#exportFormat', 'zip')
+    await page.click('#exportBeginBtn')
+    await page.waitForFunction(() => window.layersApp._exportVideoDialog.state === 'exporting')
+}
+
+async function cancelExport(page) {
+    await page.click('#exportProgressCancelBtn')
+    await page.waitForFunction(() => window.layersApp._exportVideoDialog.state === 'idle')
+    await expect(page.locator('#exportModal')).not.toBeVisible()
+}
+
 test.describe('Export Video Dialog', () => {
     test.beforeEach(async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
@@ -71,24 +87,39 @@ test.describe('Export Video Dialog', () => {
         await expect(page.locator('#exportModal')).not.toBeVisible()
     })
 
-    test('pauses and resumes renderer', async ({ page }) => {
-        // Verify renderer is running before dialog
+    test('keeps rendering during setup, then pauses and resumes around export', async ({ page }) => {
         const runningBefore = await page.evaluate(() => window.layersApp._renderer.isRunning)
         expect(runningBefore).toBe(true)
 
-        // Open dialog — renderer should pause
         await page.click('.menu-title:has-text("file")')
         await page.click('#exportVideoMenuItem')
-        await page.waitForTimeout(100)
+        await expect(page.locator('#exportModal')).toBeVisible()
+        expect(await page.evaluate(() => window.layersApp._renderer.isRunning)).toBe(true)
 
-        const runningDuring = await page.evaluate(() => window.layersApp._renderer.isRunning)
-        expect(runningDuring).toBe(false)
+        await beginTinyZipExport(page)
+        expect(await page.evaluate(() => ({
+            running: window.layersApp._renderer.isRunning,
+            lifecycleActive: window.layersApp._projectLifecycleActive,
+        }))).toEqual({ running: false, lifecycleActive: true })
 
-        // Close dialog — renderer should resume
-        await page.keyboard.press('Escape')
-        await page.waitForTimeout(100)
+        await cancelExport(page)
+        expect(await page.evaluate(() => ({
+            running: window.layersApp._renderer.isRunning,
+            lifecycleActive: window.layersApp._projectLifecycleActive,
+        }))).toEqual({ running: true, lifecycleActive: false })
+    })
 
-        const runningAfter = await page.evaluate(() => window.layersApp._renderer.isRunning)
-        expect(runningAfter).toBe(true)
+    test('cancelled export leaves an initially paused renderer paused', async ({ page }) => {
+        await page.evaluate(() => window.layersApp._renderer.stop())
+        await page.click('.menu-title:has-text("file")')
+        await page.click('#exportVideoMenuItem')
+        await beginTinyZipExport(page)
+
+        expect(await page.evaluate(() => window.layersApp._renderer.isRunning)).toBe(false)
+        await cancelExport(page)
+        expect(await page.evaluate(() => ({
+            running: window.layersApp._renderer.isRunning,
+            lifecycleActive: window.layersApp._projectLifecycleActive,
+        }))).toEqual({ running: false, lifecycleActive: false })
     })
 })

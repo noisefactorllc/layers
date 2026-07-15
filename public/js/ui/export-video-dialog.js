@@ -15,6 +15,8 @@ export class ExportVideoDialog {
         this.canvas = options.canvas
         this.getResolution = options.getResolution
         this.setResolution = options.setResolution
+        this.acquireMutation = options.acquireMutation || (() => ({ release() {} }))
+        this.getProjectGeneration = options.getProjectGeneration || (() => 0)
         this.onComplete = options.onComplete || (() => {})
         this.onCancel = options.onCancel || (() => {})
 
@@ -26,6 +28,8 @@ export class ExportVideoDialog {
         this.wasRunning = false
         this.pausedNormalizedTime = 0
         this.startTime = 0
+        this._projectGeneration = 0
+        this._pausedForExport = false
 
         this._dialog = null
         this._elements = {}
@@ -71,13 +75,8 @@ export class ExportVideoDialog {
     open() {
         if (!this._cacheElements()) return
 
-        this.wasRunning = this.renderer.isRunning
-        if (this.wasRunning) {
-            this.pausedNormalizedTime = this.renderer.getPausedNormalizedTime()
-            this.renderer.stop()
-        }
-
         this.state = 'dialog'
+        this._projectGeneration = this.getProjectGeneration()
 
         const res = this.getResolution()
         this._elements.widthInput.value = res.width
@@ -98,16 +97,32 @@ export class ExportVideoDialog {
         this._removeEventListeners()
         this._dialog.close()
 
-        if (this.wasRunning) {
-            this.renderer.restoreLoopFromNormalizedTime(this.pausedNormalizedTime)
-            this.renderer.start()
-        }
-
         this.state = 'idle'
+    }
+
+    _restoreRendererAfterExport() {
+        if (!this._pausedForExport) return
+        this.renderer.restoreLoopFromNormalizedTime(this.pausedNormalizedTime)
+        this.renderer.start()
+        this._pausedForExport = false
     }
 
     async beginExport() {
         if (this.state !== 'dialog') return
+        if (this._projectGeneration !== this.getProjectGeneration()) {
+            this.close()
+            this.onCancel()
+            return
+        }
+        const mutationToken = this.acquireMutation()
+        if (!mutationToken) return
+
+        this.wasRunning = this.renderer.isRunning
+        this._pausedForExport = this.wasRunning
+        if (this.wasRunning) {
+            this.pausedNormalizedTime = this.renderer.getPausedNormalizedTime()
+            this.renderer.stop()
+        }
 
         this.state = 'preparing'
         this.abortController = new AbortController()
@@ -148,6 +163,9 @@ export class ExportVideoDialog {
                 console.error('Export failed:', err)
                 this._handleExportError(err)
             }
+        } finally {
+            this._restoreRendererAfterExport()
+            mutationToken.release()
         }
     }
 

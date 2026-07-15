@@ -79,6 +79,14 @@ class ProjectManagerDialog {
     }
 
     /**
+     * Temporarily leave the browser top layer so an app-level confirmation
+     * can receive input. A failed or cancelled load reopens this dialog.
+     */
+    suspendForConfirmation() {
+        if (this._dialog?.open) this._dialog.close()
+    }
+
+    /**
      * Create the dialog element
      * @private
      */
@@ -313,6 +321,7 @@ class ProjectManagerDialog {
         } catch (err) {
             console.error('[ProjectManagerDialog] Load failed:', err)
             this._setMode('list')
+            if (!this._dialog.open) this._dialog.showModal()
         }
     }
 

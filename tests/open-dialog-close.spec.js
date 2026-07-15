@@ -111,4 +111,21 @@ test.describe('Open dialog close behavior', () => {
         await page.keyboard.press('Escape')
         await expect(backdrop).toBeHidden()
     })
+
+    test('Escape closes the required Canvas Size dialog before the replacement backdrop', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createSolidProject(page)
+
+        await openMenuItemWithConfirm(page, 'newMenuItem')
+        const backdrop = page.locator('.open-dialog-backdrop.visible')
+        await backdrop.locator('.media-option[data-type="solid"]').click()
+        const sizeDialog = page.locator('.canvas-size-dialog[open]')
+        await expect(sizeDialog).toBeVisible()
+
+        await page.keyboard.press('Escape')
+
+        await expect(sizeDialog).toBeHidden()
+        await expect(backdrop).toBeVisible()
+    })
 })

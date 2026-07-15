@@ -117,6 +117,76 @@ test.describe('LayersAgent.addLayer — media kind', () => {
         expect(layer.media.filename).toBe('tiny.png')
     })
 
+    test('decode failure returns RESOURCE_DECODE_FAILED without a ghost layer', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async (data) => {
+            const app = window.layersApp
+            const beforeIds = app._layers.map(layer => layer.id)
+            app._renderer.prepareMediaResource = async () => {
+                throw new Error('corrupt image')
+            }
+            const envelope = await window.LayersAgent.addLayer({
+                kind: 'media',
+                mediaType: 'image',
+                name: 'corrupt.png',
+                source: { kind: 'base64', data, mimeType: 'image/png' }
+            })
+            return {
+                envelope,
+                beforeIds,
+                afterIds: app._layers.map(layer => layer.id),
+            }
+        }, TINY_PNG_B64)
+
+        expect(result.envelope.ok).toBe(false)
+        expect(result.envelope.error.code).toBe('RESOURCE_DECODE_FAILED')
+        expect(result.afterIds).toEqual(result.beforeIds)
+    })
+
+    test('an online transition during source fetch blocks media without false success', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const originalFetch = window.fetch.bind(window)
+            let online = false
+            let fetchStarted = false
+            let releaseFetch
+            app._onlineAdapter = {
+                isOnline: () => online,
+                schedulePublish: () => {},
+            }
+            window.fetch = async (input, options) => {
+                if (input === 'https://layers.test/delayed-online.png') {
+                    fetchStarted = true
+                    await new Promise(resolve => { releaseFetch = resolve })
+                    return originalFetch('/img/og-image.png')
+                }
+                return originalFetch(input, options)
+            }
+            const beforeIds = app._layers.map(layer => layer.id)
+            const promise = window.LayersAgent.addLayer({
+                kind: 'media',
+                mediaType: 'image',
+                name: 'delayed-online.png',
+                source: { kind: 'url', value: 'https://layers.test/delayed-online.png' }
+            })
+            while (!fetchStarted) await new Promise(resolve => setTimeout(resolve, 0))
+            online = true
+            releaseFetch()
+            const envelope = await promise
+            window.fetch = originalFetch
+            return {
+                envelope,
+                beforeIds,
+                afterIds: app._layers.map(layer => layer.id),
+            }
+        })
+
+        expect(result.envelope.ok).toBe(false)
+        expect(result.envelope.error.code).toBe('CONFLICT_MEDIA_BLOCKED_ONLINE')
+        expect(result.afterIds).toEqual(result.beforeIds)
+    })
+
     test('addLayer media rejects missing source', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() =>

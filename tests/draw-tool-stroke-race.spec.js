@@ -1,8 +1,8 @@
 import { test, expect } from 'playwright/test'
 
 // Regression: brush/shape _onMouseUp cleared instance gesture state
-// (_currentPoints / _startPt / _targetLayer) AFTER awaiting the rasterize +
-// rebuild. If a new stroke began during that await window, the resolving
+// (_currentPoints / _startPt / _currentPt) AFTER awaiting the rasterize +
+// rebuild. If a new gesture began during that await window, the resolving
 // mouseup clobbered the new stroke's in-progress state, losing it and making
 // the next mousemove dereference undefined (TypeError). The handler must
 // capture its own state into locals and clear instance state before awaiting.
@@ -17,6 +17,23 @@ test('brush: a stroke started during the previous stroke\'s rebuild is not clobb
         let resolveRebuild
         const rebuild = () => new Promise(r => { resolveRebuild = r })
         const layer = { strokes: [] }
+        let owner = null
+        const acquireMutation = (existing) => {
+            if (owner && existing === owner && !owner.released) {
+                owner.references += 1
+                return owner
+            }
+            if (owner && !owner.released) return null
+            owner = {
+                released: false,
+                references: 1,
+                release() {
+                    this.references -= 1
+                    if (this.references === 0) this.released = true
+                }
+            }
+            return owner
+        }
 
         const overlay = document.createElement('canvas')
         overlay.width = 200; overlay.height = 200
@@ -29,7 +46,8 @@ test('brush: a stroke started during the previous stroke\'s rebuild is not clobb
             rebuild,
             pushUndoState: () => {},
             finalizePendingUndo: () => {},
-            markDirty: () => {}
+            markDirty: () => {},
+            acquireMutation
         })
         tool.activate()
         const fire = (type, x, y) => overlay.dispatchEvent(
@@ -76,6 +94,23 @@ test('shape: a shape started during the previous shape\'s rebuild is not clobber
         let resolveRebuild
         const rebuild = () => new Promise(r => { resolveRebuild = r })
         const layer = { strokes: [] }
+        let owner = null
+        const acquireMutation = (existing) => {
+            if (owner && existing === owner && !owner.released) {
+                owner.references += 1
+                return owner
+            }
+            if (owner && !owner.released) return null
+            owner = {
+                released: false,
+                references: 1,
+                release() {
+                    this.references -= 1
+                    if (this.references === 0) this.released = true
+                }
+            }
+            return owner
+        }
 
         const overlay = document.createElement('canvas')
         overlay.width = 200; overlay.height = 200
@@ -88,7 +123,8 @@ test('shape: a shape started during the previous shape\'s rebuild is not clobber
             rebuild,
             pushUndoState: () => {},
             finalizePendingUndo: () => {},
-            markDirty: () => {}
+            markDirty: () => {},
+            acquireMutation
         })
         tool.activate()
         const fire = (type, x, y) => overlay.dispatchEvent(

@@ -6,7 +6,14 @@
  */
 
 import { LayersRenderer } from './noisemaker/renderer.js'
-import { createMediaLayer, createEffectLayer, createChildEffect, createDrawingLayer, decodeMasks } from './layers/layer-model.js'
+import {
+    createMediaLayer,
+    createEffectLayer,
+    createChildEffect,
+    createDrawingLayer,
+    decodeMasks,
+    bumpLayerCounter,
+} from './layers/layer-model.js'
 import './layers/layer-stack.js'
 import { EffectParams } from './layers/effect-params.js'
 import { openDialog } from './ui/open-dialog.js'
@@ -84,6 +91,8 @@ class LayersApp {
         this._zoomMode = 'fit' // 'fit', '50', '100', '200'
         this._selectionManager = null
         this._copyOrigin = null
+        this._colorRangePicking = false
+        this._colorRangePickCleanup = null
         this._moveTool = null
         this._currentTool = 'selection' // 'selection' | 'move' | 'clone' | 'transform' | 'brush' | 'eraser' | 'shape' | 'fill' | 'eyedropper'
         this._previousTool = 'selection'
@@ -98,6 +107,8 @@ class LayersApp {
         this._reorderState = 'IDLE'  // IDLE | DRAGGING | PROCESSING | ROLLING_BACK
         this._reorderSnapshot = null  // { layers, dsl }
         this._reorderSource = null    // { layerId, index }
+        this._reorderMutationToken = null
+        this._reorderGeneration = null
 
         // Undo/redo
         this._undoManager = new UndoManager(50)
@@ -112,10 +123,19 @@ class LayersApp {
         // onlineCollaboration feature flag is enabled (default: on).
         this._onlineAdapter = null
 
-        // The sole media candidate currently being decoded. Keeping the
-        // candidate outside `_layers` makes replacement transactional until
-        // the renderer has validated it.
-        this._pendingMediaLoad = null
+        // Project replacements prepare outside the committed workspace. A
+        // monotonic generation makes older candidates stale, while the tail
+        // serializes the short renderer stage/commit section.
+        this._replacementGeneration = 0
+        this._projectMutationRevision = 0
+        this._projectLifecycleTail = Promise.resolve()
+        this._projectLifecycleOwner = null
+        this._projectLifecycleWaiters = 0
+        this._projectLifecycleActive = false
+        this._projectReplacementGate = null
+        this._projectReplacementActive = false
+        this._projectInstallTail = Promise.resolve()
+        this._projectInstallActive = false
     }
 
     /**
@@ -123,6 +143,7 @@ class LayersApp {
      * @private
      */
     _markDirty() {
+        this._projectMutationRevision += 1
         this._isDirty = true
     }
 
@@ -131,6 +152,7 @@ class LayersApp {
      * @private
      */
     _markClean() {
+        this._projectMutationRevision += 1
         this._isDirty = false
     }
 
@@ -429,6 +451,8 @@ class LayersApp {
                 }
                 return false
             },
+            acquireMutation: (existingToken) =>
+                this._tryAcquireProjectLifecycle(existingToken),
             destructive: true,
             toolClass: 'move-tool'
         })
@@ -446,6 +470,8 @@ class LayersApp {
             selectTopmostLayer: () => this._selectTopmostLayer(),
             duplicateLayer: () => this._duplicateActiveLayer(),
             onComplete: () => this._onCloneComplete(),
+            acquireMutation: (existingToken) =>
+                this._tryAcquireProjectLifecycle(existingToken),
             destructive: false,
             toolClass: 'clone-tool'
         })
@@ -470,7 +496,9 @@ class LayersApp {
                     return true
                 }
                 return false
-            }
+            },
+            acquireMutation: (existingToken) =>
+                this._tryAcquireProjectLifecycle(existingToken)
         })
 
         // Initialize brush tool
@@ -481,7 +509,9 @@ class LayersApp {
             rebuild: (opts) => this._rebuild(opts),
             pushUndoState: () => this._pushUndoState(),
             finalizePendingUndo: () => this._finalizePendingUndo(),
-            markDirty: () => this._markDirty()
+            markDirty: () => this._markDirty(),
+            acquireMutation: (existingToken) =>
+                this._tryAcquireProjectLifecycle(existingToken)
         })
 
         // Initialize eraser tool
@@ -492,7 +522,9 @@ class LayersApp {
             rebuild: (opts) => this._rebuild(opts),
             pushUndoState: () => this._pushUndoState(),
             finalizePendingUndo: () => this._finalizePendingUndo(),
-            markDirty: () => this._markDirty()
+            markDirty: () => this._markDirty(),
+            acquireMutation: (existingToken) =>
+                this._tryAcquireProjectLifecycle(existingToken)
         })
 
         // Initialize shape tool
@@ -503,13 +535,16 @@ class LayersApp {
             rebuild: (opts) => this._rebuild(opts),
             pushUndoState: () => this._pushUndoState(),
             finalizePendingUndo: () => this._finalizePendingUndo(),
-            markDirty: () => this._markDirty()
+            markDirty: () => this._markDirty(),
+            acquireMutation: (existingToken) =>
+                this._tryAcquireProjectLifecycle(existingToken)
         })
 
         // Initialize fill tool
         this._fillTool = new FillTool({
             overlay: this._selectionOverlay,
             canvas: this._canvas,
+            runMutation: (task) => this._runPointerMutation(task),
             addMediaLayerFromCanvas: (c, n) => this._addMediaLayerFromCanvas(c, n),
             pushUndoState: () => this._pushUndoState(),
             finalizePendingUndo: () => this._finalizePendingUndo(),
@@ -568,6 +603,8 @@ class LayersApp {
             canvas: this._canvas,
             getResolution: () => ({ width: this._canvas.width, height: this._canvas.height }),
             setResolution: (w, h) => this._resizeCanvas(w, h),
+            acquireMutation: () => this._tryAcquireProjectLifecycle(),
+            getProjectGeneration: () => this._replacementGeneration,
             onComplete: (format) => toast.success(`Exported as ${format.toUpperCase()}`),
             onCancel: () => {}
         })
@@ -577,6 +614,8 @@ class LayersApp {
             canvas: this._canvas,
             getResolution: () => ({ width: this._canvas.width, height: this._canvas.height }),
             setResolution: (w, h) => this._resizeCanvas(w, h),
+            acquireMutation: () => this._tryAcquireProjectLifecycle(),
+            getProjectGeneration: () => this._replacementGeneration,
             onComplete: (format) => toast.success(`Exported as ${format.toUpperCase()}`),
             onCancel: () => {}
         })
@@ -613,7 +652,7 @@ class LayersApp {
         this._hideLoadingScreen()
         if (!joinedFromUrl) {
             if (this._shouldAutoShowWelcome()) {
-                welcomeDialog.show({ fallThrough: true })
+                welcomeDialog.show({ fallThrough: true, entry: 'boot' })
             } else {
                 this._showOpenDialog()
             }
@@ -678,31 +717,66 @@ class LayersApp {
      * Show the open dialog to select initial base layer
      * @private
      */
-    _showOpenDialog({ replaceProject = false, leaveOnline = false } = {}) {
+    _showOpenDialog({
+        replaceProject = false,
+        leaveOnline = false,
+        replacementConsent = null,
+    } = {}) {
+        const continueReplacement = async (task) => {
+            if (replacementConsent) {
+                return this._continueProjectReplacement(replacementConsent, task)
+            }
+            await task({ leaveOnline })
+            return true
+        }
         openDialog.show({
             canClose: replaceProject,
             onOpen: async (file, mediaType) => {
-                await this._handleOpenMedia(file, mediaType, { replaceProject, leaveOnline })
+                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                    this._handleOpenMedia(file, mediaType, {
+                        leaveOnline: confirmedLeaveOnline,
+                    }))
             },
             onSolid: async (width, height) => {
-                if (replaceProject) this._commitProjectReplacement({ leaveOnline })
-                await this._handleCreateSolidBase(width, height)
+                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                    this._handleCreateSolidBase(width, height, {
+                        leaveOnline: confirmedLeaveOnline,
+                    }))
             },
             onGradient: async (width, height) => {
-                if (replaceProject) this._commitProjectReplacement({ leaveOnline })
-                await this._handleCreateGradientBase(width, height)
+                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                    this._handleCreateGradientBase(width, height, {
+                        leaveOnline: confirmedLeaveOnline,
+                    }))
             },
             onTransparent: async (width, height) => {
-                if (replaceProject) this._commitProjectReplacement({ leaveOnline })
-                await this._handleCreateTransparentBase(width, height)
+                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                    this._handleCreateTransparentBase(width, height, {
+                        leaveOnline: confirmedLeaveOnline,
+                    }))
             },
             onClipboard: async () => {
-                await this._handleNewFromClipboard({ replaceProject, leaveOnline })
+                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                    this._handleNewFromClipboard({ leaveOnline: confirmedLeaveOnline }))
             },
             onLoadProject: () => {
-                this._showLoadProjectDialog(true, { replaceProject, leaveOnline })
+                this._showLoadProjectDialog(true, { leaveOnline, replacementConsent })
             }
         })
+    }
+
+    /** @private */
+    _captureProjectReplacementState() {
+        return {
+            mutationRevision: this._projectMutationRevision,
+            online: Boolean(this._onlineAdapter?.isOnline()),
+        }
+    }
+
+    /** @private */
+    _projectReplacementStateMatches(state) {
+        return state?.mutationRevision === this._projectMutationRevision
+            && state.online === Boolean(this._onlineAdapter?.isOnline())
     }
 
     /**
@@ -713,10 +787,37 @@ class LayersApp {
      * @private
      */
     async _startProjectReplacement(startFlow) {
-        const leaveOnline = Boolean(this._onlineAdapter?.isOnline())
-        if (!await this._confirmLeaveOnlineSession()) return false
-        if (!await this._confirmUnsavedChanges()) return false
-        await startFlow({ leaveOnline })
+        while (true) {
+            const confirmedState = this._captureProjectReplacementState()
+            if (!await this._confirmLeaveOnlineSession()) return false
+            if (!await this._confirmUnsavedChanges()) return false
+            if (!this._projectReplacementStateMatches(confirmedState)) continue
+
+            const replacementConsent = {
+                ...confirmedState,
+                leaveOnline: confirmedState.online,
+            }
+            await startFlow({
+                leaveOnline: replacementConsent.leaveOnline,
+                replacementConsent,
+            })
+            return true
+        }
+    }
+
+    /**
+     * Revalidate an earlier replacement confirmation after an asynchronous
+     * chooser. If the project changed, run the guards again before continuing.
+     * @private
+     */
+    async _continueProjectReplacement(replacementConsent, startFlow) {
+        if (!this._projectReplacementStateMatches(replacementConsent)) {
+            return this._startProjectReplacement(startFlow)
+        }
+        await startFlow({
+            leaveOnline: replacementConsent.leaveOnline,
+            replacementConsent,
+        })
         return true
     }
 
@@ -740,23 +841,36 @@ class LayersApp {
      * full open dialog if the picker is dismissed without a file.
      * @private
      */
-    _openMediaFilePicker({ replaceProject = false, leaveOnline = false } = {}) {
+    _openMediaFilePicker({
+        replaceProject = false,
+        leaveOnline = false,
+        replacementConsent = null,
+    } = {}) {
         const input = document.createElement('input')
         input.type = 'file'
         input.accept = 'image/*,video/*'
         input.addEventListener('cancel', () => {
-            this._showOpenDialog({ replaceProject, leaveOnline })
+            this._showOpenDialog({ replaceProject, leaveOnline, replacementConsent })
         })
         input.addEventListener('change', async () => {
             const file = input.files?.[0]
             if (!file) {
-                this._showOpenDialog({ replaceProject, leaveOnline })
+                this._showOpenDialog({ replaceProject, leaveOnline, replacementConsent })
                 return
             }
             const mediaType = file.type.startsWith('video') ? 'video' : 'image'
-            const result = await this._handleOpenMedia(file, mediaType, { replaceProject, leaveOnline })
+            let result = null
+            const openFile = async ({ leaveOnline: confirmedLeaveOnline }) => {
+                result = await this._handleOpenMedia(file, mediaType, {
+                    leaveOnline: confirmedLeaveOnline,
+                })
+            }
+            const accepted = replacementConsent
+                ? await this._continueProjectReplacement(replacementConsent, openFile)
+                : (await openFile({ leaveOnline }), true)
+            if (!accepted) return
             if (result === 'failed') {
-                this._showOpenDialog({ replaceProject, leaveOnline })
+                this._showOpenDialog({ replaceProject, leaveOnline, replacementConsent })
             }
         })
         input.click()
@@ -770,59 +884,517 @@ class LayersApp {
      * @param {string} successMessage - Toast message on success
      * @private
      */
-    async _initializeBaseLayer(layer, width, height, successMessage) {
-        this._cancelPendingMediaLoad()
-        this._layers = [layer]
+    async _initializeBaseLayer(layer, width, height, successMessage,
+        { leaveOnline = false, mutationToken = null } = {}) {
+        const generation = ++this._replacementGeneration
+        return this._runProjectReplacement(mutationToken, async (token, replacementGate) => {
+            const outcome = await this._installPreparedProject({
+                layers: [layer],
+                width,
+                height,
+                projectId: null,
+                projectName: null,
+                dirty: true,
+                selectedLayerId: layer.id,
+                mediaTextures: new Map(),
+                maskTextures: new Map()
+            }, {
+                generation,
+                leaveOnline,
+                mutationToken: token,
+                replacementGate,
+            })
+
+            if (outcome.status === 'opened') {
+                openDialog.element.close()
+                toast.success(successMessage)
+            } else if (outcome.status === 'failed') {
+                console.error('[Layers] Failed to create base layer:', outcome.error)
+                toast.error('Failed to create project: ' + outcome.error.message)
+            }
+            return outcome.status
+        })
+    }
+
+    /**
+     * Acquire the shared project lifecycle mutex. Agent commands hold this
+     * across their complete handler, including network/decode waits.
+     * @returns {Promise<object>}
+     * @private
+     */
+    async _acquireProjectLifecycle(replacementGate = null) {
+        while (this._projectReplacementGate
+            && this._projectReplacementGate !== replacementGate) {
+            await this._projectReplacementGate.promise
+        }
+        const waitForTurn = this._projectLifecycleTail
+        let releaseTurn
+        const turn = new Promise(resolve => { releaseTurn = resolve })
+        this._projectLifecycleTail = waitForTurn.then(() => turn)
+        this._projectLifecycleWaiters += 1
+        await waitForTurn
+        this._projectLifecycleWaiters -= 1
+
+        return this._createProjectLifecycleToken(releaseTurn)
+    }
+
+    /** @private */
+    _createProjectLifecycleToken(releaseTurn) {
+        const token = {
+            app: this,
+            released: false,
+            references: 1,
+            retain: () => {
+                if (token.released || this._projectLifecycleOwner !== token) return false
+                token.references += 1
+                return true
+            },
+            release: () => {
+                if (token.released) return
+                token.references -= 1
+                if (token.references > 0) return
+                token.released = true
+                if (this._projectLifecycleOwner === token) {
+                    this._projectLifecycleOwner = null
+                    this._projectLifecycleActive = false
+                }
+                releaseTurn()
+            }
+        }
+        this._projectLifecycleOwner = token
+        this._projectLifecycleActive = true
+        return token
+    }
+
+    /**
+     * Acquire a synchronous lease for a pointer gesture, or reject the
+     * gesture when another lifecycle operation is active or queued.
+     * @returns {object|null}
+     * @private
+     */
+    _tryAcquireProjectLifecycle(existingToken = null) {
+        if (existingToken?.app === this && this._projectLifecycleOwner === existingToken
+            && !existingToken.released && !this._projectReplacementGate) {
+            return existingToken.retain() ? existingToken : null
+        }
+        if (this._projectReplacementGate || this._projectLifecycleOwner
+            || this._projectLifecycleWaiters > 0) {
+            return null
+        }
+        let releaseTurn
+        const turn = new Promise(resolve => { releaseTurn = resolve })
+        this._projectLifecycleTail = turn
+        return this._createProjectLifecycleToken(releaseTurn)
+    }
+
+    /**
+     * Run a mutation or replacement under the shared lifecycle mutex.
+     * A dispatcher-owned token makes nested app calls explicitly re-entrant.
+     * @template T
+     * @param {object|null} mutationToken
+     * @param {(token:object) => Promise<T>} task
+     * @returns {Promise<T>}
+     * @private
+     */
+    async _runProjectLifecycle(mutationToken, task, { replacementGate = null } = {}) {
+        if (mutationToken) {
+            if (mutationToken.app === this && !mutationToken.released
+                && this._projectLifecycleOwner === mutationToken) {
+                return task(mutationToken)
+            }
+            throw new Error('Invalid or expired project lifecycle token')
+        }
+        const token = await this._acquireProjectLifecycle(replacementGate)
+        try {
+            return await task(token)
+        } finally {
+            token.release()
+        }
+    }
+
+    /**
+     * Mark a lifecycle operation as a whole-project replacement so pointer
+     * mutations can be rejected instead of landing in the incoming project.
+     * @template T
+     * @param {object|null} mutationToken
+     * @param {(mutationToken:object|null, replacementGate:object) => Promise<T>} task
+     * @returns {Promise<T>}
+     * @private
+     */
+    _runProjectReplacement(mutationToken, task) {
+        this._cancelColorRangePick()
+        let resolveGate
+        const gate = {
+            promise: new Promise(resolve => { resolveGate = resolve }),
+            resolved: false,
+            resolve: () => {
+                if (gate.resolved) return
+                gate.resolved = true
+                resolveGate()
+            }
+        }
+        this._projectReplacementGate?.resolve()
+        this._projectReplacementGate = gate
+        this._projectReplacementActive = true
+
+        return Promise.resolve().then(() => task(mutationToken, gate)).finally(() => {
+            gate.resolve()
+            if (this._projectReplacementGate === gate) {
+                this._projectReplacementGate = null
+                this._projectReplacementActive = false
+            }
+        })
+    }
+
+    /**
+     * Queue a pointer-originated mutation unless a project replacement owns
+     * the lifecycle mutex. Agent mutations are queued rather than dropped.
+     * @param {() => Promise<unknown>} task
+     * @param {{generation?:number}} options
+     * @private
+     */
+    _runPointerMutation(task, { generation = this._replacementGeneration } = {}) {
+        if (this._projectReplacementActive || generation !== this._replacementGeneration) return
+        return this._runProjectLifecycle(null, (token) => {
+            if (generation !== this._replacementGeneration) return
+            return task(token)
+        })
+    }
+
+    /**
+     * Serialize candidate renderer stages without serializing their slower
+     * media/mask preparation.
+     * @param {Function} task
+     * @returns {Promise<object>}
+     * @private
+     */
+    _queueProjectInstall(task) {
+        const run = this._projectInstallTail.then(task, task)
+        this._projectInstallTail = run.catch(() => {})
+        return run
+    }
+
+    /**
+     * Dispose a candidate that never became renderer-owned.
+     * @param {object} candidate
+     * @private
+     */
+    _disposePreparedProject(candidate) {
+        this._renderer.disposeMediaResources(candidate.mediaTextures)
+        candidate.maskTextures.clear()
+    }
+
+    /**
+     * Normalize optional persisted fields, reject ambiguous IDs, and return
+     * the first safe local layer-counter value.
+     * @param {Array} layers
+     * @returns {number|null}
+     * @private
+     */
+    _validatePersistedLayers(layers) {
+        if (!Array.isArray(layers)) {
+            throw new Error('Saved project layers must be an array')
+        }
+
+        const seenIds = new Set()
+        let maxLayerNumber = -1
+        const registerId = (id) => {
+            if (typeof id !== 'string' || id.length === 0) {
+                throw new Error('Saved project contains a layer without an ID')
+            }
+            if (seenIds.has(id)) {
+                throw new Error(`Saved project contains duplicate layer ID "${id}"`)
+            }
+            seenIds.add(id)
+            const match = /^layer-(\d+)$/.exec(id)
+            if (match) {
+                const numericId = Number(match[1])
+                if (!Number.isSafeInteger(numericId)
+                    || !Number.isSafeInteger(numericId + 1)) {
+                    throw new Error(`Saved project contains an unsafe layer ID "${id}"`)
+                }
+                maxLayerNumber = Math.max(maxLayerNumber, numericId)
+            }
+        }
+        const normalizeParams = (owner) => {
+            if (owner.effectParams == null) owner.effectParams = {}
+            if (typeof owner.effectParams !== 'object' || Array.isArray(owner.effectParams)) {
+                throw new Error(`Saved layer "${owner.id}" has invalid effect parameters`)
+            }
+        }
+
+        for (const layer of layers) {
+            if (!layer || typeof layer !== 'object' || Array.isArray(layer)) {
+                throw new Error('Saved project contains an invalid layer')
+            }
+            registerId(layer.id)
+            normalizeParams(layer)
+            if (!Array.isArray(layer.children)) layer.children = []
+            for (const child of layer.children) {
+                if (!child || typeof child !== 'object' || Array.isArray(child)) {
+                    throw new Error(`Saved layer "${layer.id}" has an invalid child effect`)
+                }
+                registerId(child.id)
+                normalizeParams(child)
+            }
+            if (layer.sourceType === 'drawing' && !Array.isArray(layer.strokes)) {
+                layer.strokes = []
+            }
+        }
+
+        return maxLayerNumber >= 0 ? maxLayerNumber + 1 : null
+    }
+
+    /**
+     * Capture the app-owned portion of a project so a commit-side exception
+     * can restore it before the renderer stage is rolled back.
+     * @returns {object}
+     * @private
+     */
+    _captureProjectCommitState() {
+        return {
+            layers: this._layers,
+            selectedLayerId: this._layerStack?.selectedLayerId ?? null,
+            selectionPath: this._selectionManager?.selectionPath ?? null,
+            copyOrigin: this._copyOrigin,
+            projectId: this._currentProjectId,
+            projectName: this._currentProjectName,
+            dirty: this._isDirty,
+            undoStack: this._undoManager._stack,
+            undoIndex: this._undoManager._index,
+            undoWasPending: this._undoDebounceTimer !== null,
+            maskEditMode: this._maskEditMode,
+            maskEditLayerId: this._maskEditLayerId,
+        }
+    }
+
+    /** @private */
+    _restoreProjectCommitState(previous) {
+        this._layers = previous.layers
+        this._currentProjectId = previous.projectId
+        this._currentProjectName = previous.projectName
+        this._isDirty = previous.dirty
+        this._copyOrigin = previous.copyOrigin
+        this._undoManager._stack = previous.undoStack
+        this._undoManager._index = previous.undoIndex
+
+        if (previous.selectionPath) {
+            this._selectionManager?.setSelection(previous.selectionPath)
+        } else {
+            this._selectionManager?.clearSelection()
+        }
         this._updateLayerStack()
+        if (this._layerStack) this._layerStack.selectedLayerId = previous.selectedLayerId
+        this._updateUndoMenuState()
 
-        // Select the layer
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = layer.id
+        if (previous.maskEditMode && !this._maskEditMode) {
+            this._enterMaskEditMode(previous.maskEditLayerId)
         }
-
-        // Set canvas dimensions first
-        this._resizeCanvas(width, height)
-        // Wait for any pending microtasks (canvas observer uses queueMicrotask)
-        await new Promise(resolve => queueMicrotask(resolve))
-        // Compile pipeline at correct dimensions
-        await this._rebuild()
-        // Wait for next frame to ensure WebGL state is stable
-        await new Promise(resolve => requestAnimationFrame(resolve))
-        this._renderer.start()
-
-        this._currentProjectId = null
-        this._currentProjectName = null
-        this._markDirty()
-
-        this._undoManager.clear()
-        this._pushUndoState()
-
-        openDialog.element.close()
-        toast.success(successMessage)
-    }
-
-    /**
-     * Mark any in-flight media candidate as superseded. Its own continuation
-     * performs cleanup after the renderer's load promise settles.
-     * @param {object|null} preserve - operation allowed to keep committing
-     * @private
-     */
-    _cancelPendingMediaLoad(preserve = null) {
-        if (this._pendingMediaLoad && this._pendingMediaLoad !== preserve) {
-            this._pendingMediaLoad.cancelled = true
-            this._pendingMediaLoad = null
+        if (previous.undoWasPending && !this._undoDebounceTimer) {
+            this._pushUndoStateDebounced()
         }
     }
 
+    /** @private */
+    _replacementFailure(primary, restoreError = null) {
+        const error = primary instanceof Error ? primary : new Error(String(primary))
+        if (!restoreError) return error
+        return new Error(`${error.message}; failed to restore previous renderer: ${restoreError.message}`)
+    }
+
     /**
-     * Commit the destructive portion of a project replacement.
+     * Compile a detached project, then synchronously swap app state only if
+     * it is still the newest replacement generation.
+     * @param {object} candidate
+     * @param {{generation:number,leaveOnline?:boolean,mutationToken?:object,replacementGate?:object}} options
+     * @returns {Promise<{status:'opened'|'failed'|'cancelled',error?:Error}>}
      * @private
      */
-    _commitProjectReplacement({ leaveOnline = false, preserveMediaLoad = null } = {}) {
-        if (leaveOnline && this._onlineAdapter?.isOnline()) {
-            this._onlineAdapter.goOffline()
-        }
-        this._resetLayers({ preserveMediaLoad })
+    _installPreparedProject(candidate, {
+        generation,
+        leaveOnline = false,
+        mutationToken = null,
+        replacementGate = null,
+    }) {
+        return this._runProjectLifecycle(mutationToken,
+            () => this._queueProjectInstall(async () => {
+            this._projectInstallActive = true
+            const previousSize = { width: this._canvas.width, height: this._canvas.height }
+            let candidateOwned = true
+            let stage = null
+            let previousAppState = null
+
+            const restoreLiveCanvas = () => {
+                this._resizeCanvas(previousSize.width, previousSize.height)
+                if (!this._maskEditMode) return
+                const maskLayer = this._layers.find(
+                    layer => layer.id === this._maskEditLayerId)
+                if (maskLayer) this._renderMaskOverlay(maskLayer)
+            }
+
+            const rollback = async () => {
+                restoreLiveCanvas()
+                if (!stage) return null
+                try {
+                    const result = await stage.rollback()
+                    stage = null
+                    if (!result?.success) {
+                        this._renderer.stop()
+                        return new Error(result?.error || 'Unknown renderer restoration failure')
+                    }
+                    return null
+                } catch (err) {
+                    stage = null
+                    this._renderer.stop()
+                    return err instanceof Error ? err : new Error(String(err))
+                }
+            }
+
+            try {
+                if (generation !== this._replacementGeneration) {
+                    this._disposePreparedProject(candidate)
+                    candidateOwned = false
+                    return { status: 'cancelled' }
+                }
+
+                if (this._onlineAdapter?.isApplyingRemote?.()) {
+                    this._disposePreparedProject(candidate)
+                    candidateOwned = false
+                    return {
+                        status: 'failed',
+                        error: new Error('A remote project update is still being applied')
+                    }
+                }
+                if (this._onlineAdapter?.isOnline() && !leaveOnline) {
+                    this._disposePreparedProject(candidate)
+                    candidateOwned = false
+                    return {
+                        status: 'failed',
+                        error: new Error('An online session started before replacement could commit')
+                    }
+                }
+
+                this._resizeCanvas(candidate.width, candidate.height)
+                await new Promise(resolve => queueMicrotask(resolve))
+
+                try {
+                    stage = await this._renderer.stageLayerSet(candidate)
+                    candidateOwned = false
+                } catch (err) {
+                    restoreLiveCanvas()
+                    this._disposePreparedProject(candidate)
+                    candidateOwned = false
+                    return { status: 'failed', error: err }
+                }
+
+                if (!stage.success) {
+                    const primary = new Error(stage.error || 'Candidate render failed')
+                    const restoreError = await rollback()
+                    return {
+                        status: 'failed',
+                        error: this._replacementFailure(primary, restoreError)
+                    }
+                }
+
+                await new Promise(resolve => requestAnimationFrame(resolve))
+                if (generation !== this._replacementGeneration) {
+                    const restoreError = await rollback()
+                    if (restoreError) {
+                        return {
+                            status: 'failed',
+                            error: this._replacementFailure(
+                                new Error('Replacement was superseded'), restoreError)
+                        }
+                    }
+                    return { status: 'cancelled' }
+                }
+                if (this._onlineAdapter?.isApplyingRemote?.()) {
+                    const restoreError = await rollback()
+                    return {
+                        status: 'failed',
+                        error: this._replacementFailure(
+                            new Error('A remote project update is still being applied'),
+                            restoreError)
+                    }
+                }
+                if (this._onlineAdapter?.isOnline() && !leaveOnline) {
+                    const restoreError = await rollback()
+                    return {
+                        status: 'failed',
+                        error: this._replacementFailure(
+                            new Error('An online session started before replacement could commit'),
+                            restoreError)
+                    }
+                }
+
+                // Build the new baseline before touching app state. Malformed
+                // candidates fail here while the renderer can still roll back.
+                const undoBaseline = {
+                    layers: this._cloneLayers(candidate.layers),
+                    canvasWidth: candidate.width,
+                    canvasHeight: candidate.height
+                }
+                previousAppState = this._captureProjectCommitState()
+
+                try {
+                    if (this._undoDebounceTimer) {
+                        clearTimeout(this._undoDebounceTimer)
+                        this._undoDebounceTimer = null
+                    }
+
+                    this._layers = candidate.layers
+                    this._selectionManager?.clearSelection()
+                    this._copyOrigin = null
+                    this._currentProjectId = candidate.projectId
+                    this._currentProjectName = candidate.projectName
+                    this._updateLayerStack()
+                    if (this._layerStack) {
+                        this._layerStack.selectedLayerId = candidate.selectedLayerId
+                    }
+                    if (candidate.dirty) this._markDirty()
+                    else this._markClean()
+                    this._undoManager.clear()
+                    this._undoManager.pushState(undoBaseline)
+                    this._updateUndoMenuState()
+
+                    if (this._maskEditMode) {
+                        await this._exitMaskEditMode({ updateRenderer: false })
+                    }
+                    if (leaveOnline && this._onlineAdapter?.isOnline()) {
+                        this._onlineAdapter.goOffline()
+                    }
+
+                    stage.commit()
+                    stage = null
+                    if (candidate.nextLayerId != null) {
+                        bumpLayerCounter(candidate.nextLayerId)
+                    }
+                    try {
+                        this._renderer.start()
+                    } catch (err) {
+                        console.error('[Layers] Failed to start renderer after replacement:', err)
+                    }
+                    return { status: 'opened' }
+                } catch (err) {
+                    const restoreError = await rollback()
+                    this._restoreProjectCommitState(previousAppState)
+                    return {
+                        status: 'failed',
+                        error: this._replacementFailure(err, restoreError)
+                    }
+                }
+            } catch (err) {
+                const restoreError = await rollback()
+                if (previousAppState) this._restoreProjectCommitState(previousAppState)
+                if (candidateOwned) this._disposePreparedProject(candidate)
+                return {
+                    status: 'failed',
+                    error: this._replacementFailure(err, restoreError)
+                }
+            } finally {
+                this._projectInstallActive = false
+            }
+            }), { replacementGate })
     }
 
     /**
@@ -831,12 +1403,12 @@ class LayersApp {
      * @param {number} height - Canvas height
      * @private
      */
-    async _handleCreateSolidBase(width = 1024, height = 1024) {
+    async _handleCreateSolidBase(width = 1024, height = 1024, options = {}) {
         const layer = createEffectLayer('synth/solid')
         layer.name = 'Solid'
         layer.effectParams = { color: [0.2, 0.2, 0.2], alpha: 1 }
 
-        await this._initializeBaseLayer(layer, width, height, 'Created solid base layer')
+        return this._initializeBaseLayer(layer, width, height, 'Created solid base layer', options)
     }
 
     /**
@@ -845,11 +1417,11 @@ class LayersApp {
      * @param {number} height - Canvas height
      * @private
      */
-    async _handleCreateGradientBase(width = 1024, height = 1024) {
+    async _handleCreateGradientBase(width = 1024, height = 1024, options = {}) {
         const layer = createEffectLayer('synth/gradient')
         layer.name = 'Gradient'
 
-        await this._initializeBaseLayer(layer, width, height, 'Created gradient base layer')
+        return this._initializeBaseLayer(layer, width, height, 'Created gradient base layer', options)
     }
 
     /**
@@ -858,109 +1430,106 @@ class LayersApp {
      * @param {number} height - Canvas height
      * @private
      */
-    async _handleCreateTransparentBase(width = 1024, height = 1024) {
+    async _handleCreateTransparentBase(width = 1024, height = 1024, options = {}) {
         const layer = createEffectLayer('synth/solid')
         layer.name = 'Transparent'
         layer.effectParams = { color: [0, 0, 0], alpha: 0 }
 
-        await this._initializeBaseLayer(layer, width, height, 'Created transparent base layer')
+        return this._initializeBaseLayer(layer, width, height, 'Created transparent base layer', options)
     }
 
     /**
      * Handle opening a media file
      * @param {File} file - Media file
      * @param {string} mediaType - 'image' or 'video'
-     * @param {{replaceProject?:boolean, leaveOnline?:boolean}} options
+     * @param {{leaveOnline?:boolean, generation?:number, mutationToken?:object,
+     *   replacementGate?:object}} options
      * @returns {Promise<'opened'|'failed'|'cancelled'>}
      * @private
      */
-    async _handleOpenMedia(file, mediaType, { replaceProject = false, leaveOnline = false } = {}) {
+    async _handleOpenMedia(file, mediaType,
+        {
+            leaveOnline = false,
+            generation = null,
+            mutationToken = null,
+            replacementGate = null,
+        } = {}) {
         const layer = createMediaLayer(file, mediaType)
-        this._cancelPendingMediaLoad()
-        const operation = { cancelled: false, committed: false }
-        this._pendingMediaLoad = operation
+        const candidateGeneration = generation ?? ++this._replacementGeneration
+        const prepareAndInstall = async (token, activeReplacementGate) => {
+            let resource
+            try {
+                resource = await this._renderer.prepareMediaResource(file, mediaType)
+            } catch (err) {
+                if (candidateGeneration !== this._replacementGeneration) return 'cancelled'
+                console.error('[Layers] Failed to load media:', err)
+                toast.error('Failed to load media: ' + err.message)
+                return 'failed'
+            }
 
-        const isCurrent = () => !operation.cancelled && this._pendingMediaLoad === operation
-        const abandon = () => {
-            if (!operation.committed) this._renderer.unloadMedia(layer.id)
-            if (this._pendingMediaLoad === operation) this._pendingMediaLoad = null
+            if (candidateGeneration !== this._replacementGeneration) {
+                this._renderer.disposeMediaResource(resource)
+                return 'cancelled'
+            }
+            if (!resource || resource.width <= 0 || resource.height <= 0) {
+                this._renderer.disposeMediaResource(resource)
+                toast.error('Failed to load media: invalid dimensions')
+                return 'failed'
+            }
+
+            const outcome = await this._installPreparedProject({
+                layers: [layer],
+                width: resource.width,
+                height: resource.height,
+                projectId: null,
+                projectName: null,
+                dirty: true,
+                selectedLayerId: layer.id,
+                mediaTextures: new Map([[layer.id, resource]]),
+                maskTextures: new Map()
+            }, {
+                generation: candidateGeneration,
+                leaveOnline,
+                mutationToken: token,
+                replacementGate: activeReplacementGate,
+            })
+
+            if (outcome.status === 'opened') {
+                openDialog.element.close()
+                toast.success(`Opened ${file.name}`)
+            } else if (outcome.status === 'failed') {
+                console.error('[Layers] Failed to install media:', outcome.error)
+                toast.error('Failed to open media: ' + outcome.error.message)
+            }
+            return outcome.status
         }
-
-        // Load media into renderer
-        let dimensions = { width: 0, height: 0 }
-        try {
-            dimensions = await this._renderer.loadMedia(layer.id, file, mediaType)
-        } catch (err) {
-            const current = isCurrent()
-            abandon()
-            if (!current) return 'cancelled'
-            console.error('[Layers] Failed to load media:', err)
-            toast.error('Failed to load media: ' + err.message)
-            return 'failed'
+        if (replacementGate) {
+            return prepareAndInstall(mutationToken, replacementGate)
         }
-
-        if (!isCurrent()) {
-            abandon()
-            return 'cancelled'
-        }
-
-        if (replaceProject) {
-            this._commitProjectReplacement({ leaveOnline, preserveMediaLoad: operation })
-        }
-        this._layers = [layer]
-        operation.committed = true
-        this._updateLayerStack()
-
-        // Select the layer
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = layer.id
-        }
-
-        // Resize canvas to match base layer media dimensions
-        if (dimensions.width > 0 && dimensions.height > 0) {
-            this._resizeCanvas(dimensions.width, dimensions.height)
-        }
-
-        // Wait for any pending microtasks (canvas observer uses queueMicrotask)
-        await new Promise(resolve => queueMicrotask(resolve))
-        if (!isCurrent()) return 'cancelled'
-        // Compile pipeline at correct dimensions
-        await this._rebuild()
-        if (!isCurrent()) return 'cancelled'
-
-        // Wait for next frame to ensure WebGL state is stable
-        await new Promise(resolve => requestAnimationFrame(resolve))
-        if (!isCurrent()) return 'cancelled'
-        this._renderer.start()
-
-        // Reset project state and update filename
-        this._currentProjectId = null
-        this._currentProjectName = null
-        this._markDirty()
-
-        this._undoManager.clear()
-        this._pushUndoState()
-
-        // Close the open dialog
-        openDialog.element.close()
-        toast.success(`Opened ${file.name}`)
-        if (this._pendingMediaLoad === operation) this._pendingMediaLoad = null
-        return 'opened'
+        return this._runProjectReplacement(mutationToken, prepareAndInstall)
     }
 
     /**
      * Handle new project from clipboard image
      * @private
      */
-    async _handleNewFromClipboard({ replaceProject = false, leaveOnline = false } = {}) {
-        const result = await pasteFromClipboard()
-        if (!result) {
-            toast.error('No image found in clipboard')
-            return
-        }
+    async _handleNewFromClipboard({ leaveOnline = false, mutationToken = null } = {}) {
+        const generation = ++this._replacementGeneration
+        return this._runProjectReplacement(mutationToken, async (token, replacementGate) => {
+            const result = await pasteFromClipboard()
+            if (!result) {
+                toast.error('No image found in clipboard')
+                return
+            }
 
-        const file = new File([result.blob], 'Clipboard Image.png', { type: 'image/png' })
-        await this._handleOpenMedia(file, 'image', { replaceProject, leaveOnline })
+            const file = new File([result.blob], 'Clipboard Image.png', { type: 'image/png' })
+            return this._handleOpenMedia(file, 'image', {
+                leaveOnline,
+                generation,
+                mutationToken: token,
+                replacementGate,
+            })
+        })
     }
 
     /**
@@ -998,30 +1567,46 @@ class LayersApp {
      * @param {string} mediaType - 'image' or 'video'
      * @private
      */
-    async _handleAddMediaLayer(file, mediaType) {
-        if (this._onlineAdapter?.isOnline()) {
-            toast.warning('Media layers aren’t supported while a Layers session is online')
-            return
-        }
-        this._finalizePendingUndo()
-        const layer = createMediaLayer(file, mediaType)
-        this._layers.push(layer)
+    async _handleAddMediaLayer(file, mediaType, { mutationToken = null } = {}) {
+        return this._runProjectLifecycle(mutationToken, async () => {
+            if (this._onlineAdapter?.isOnline()) {
+                toast.warning('Media layers aren’t supported while a Layers session is online')
+                return { status: 'blocked-online' }
+            }
 
-        // Load media
-        await this._renderer.loadMedia(layer.id, file, mediaType)
+            const resource = await this._renderer.prepareMediaResource(file, mediaType)
+            if (!resource) throw new Error('Unsupported media resource')
+            if (this._onlineAdapter?.isOnline()) {
+                this._renderer.disposeMediaResource(resource)
+                toast.warning('Media layers aren’t supported while a Layers session is online')
+                return { status: 'blocked-online' }
+            }
 
-        // Update and rebuild
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
+            let layer
+            try {
+                this._finalizePendingUndo()
+                layer = createMediaLayer(file, mediaType)
+                this._layers.push(layer)
+                this._renderer.setMediaResource(layer.id, resource)
+            } catch (err) {
+                this._renderer.disposeMediaResource(resource)
+                throw err
+            }
 
-        // Select the new layer
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = layer.id
-        }
+            // Update and rebuild
+            this._updateLayerStack()
+            await this._rebuild()
+            this._markDirty()
+            this._pushUndoState()
 
-        toast.success(`Added layer: ${layer.name}`)
+            // Select the new layer
+            if (this._layerStack) {
+                this._layerStack.selectedLayerId = layer.id
+            }
+
+            toast.success(`Added layer: ${layer.name}`)
+            return { status: 'added', layerId: layer.id }
+        })
     }
 
     /**
@@ -1148,7 +1733,7 @@ class LayersApp {
         layer.maskVisible = false
 
         if (this._maskEditMode && this._maskEditLayerId === layerId) {
-            this._exitMaskEditMode()
+            await this._exitMaskEditMode()
         }
 
         this._renderer.removeMaskTexture(layerId)
@@ -1306,6 +1891,9 @@ class LayersApp {
     }
 
     _showMaskContextMenu(layerId, x, y) {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         const menu = document.getElementById('maskContextMenu')
         if (!menu) return
 
@@ -1338,20 +1926,25 @@ class LayersApp {
             if (!action) return
             this._closeContextMenus()
 
-            switch (action) {
-                case 'invert': await this._invertLayerMask(layerId); break
-                case 'feather': await this._featherLayerMask(layerId); break
-                case 'expand': await this._expandLayerMask(layerId); break
-                case 'contract': await this._contractLayerMask(layerId); break
-                case 'smooth': await this._smoothLayerMask(layerId); break
-                case 'disable': await this._toggleMaskEnabled(layerId); break
-                case 'selection-from-mask': this._selectionFromMask(layerId); break
-                case 'delete': await this._deleteLayerMask(layerId); break
-            }
+            await this._runPointerMutation(async () => {
+                switch (action) {
+                    case 'invert': await this._invertLayerMask(layerId); break
+                    case 'feather': await this._featherLayerMask(layerId); break
+                    case 'expand': await this._expandLayerMask(layerId); break
+                    case 'contract': await this._contractLayerMask(layerId); break
+                    case 'smooth': await this._smoothLayerMask(layerId); break
+                    case 'disable': await this._toggleMaskEnabled(layerId); break
+                    case 'selection-from-mask': this._selectionFromMask(layerId); break
+                    case 'delete': await this._deleteLayerMask(layerId); break
+                }
+            }, { generation })
         }
     }
 
     _showLayerContextMenu(layerId, hasMask, x, y) {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         const menu = document.getElementById('layerContextMenu')
         if (!menu) return
 
@@ -1382,10 +1975,12 @@ class LayersApp {
             if (!action) return
             this._closeContextMenus()
 
-            switch (action) {
-                case 'add-mask': await this._addLayerMask(layerId); break
-                case 'mask-from-selection': await this._maskFromSelection(layerId); break
-            }
+            await this._runPointerMutation(async () => {
+                switch (action) {
+                    case 'add-mask': await this._addLayerMask(layerId); break
+                    case 'mask-from-selection': await this._maskFromSelection(layerId); break
+                }
+            }, { generation })
         }
     }
 
@@ -1409,7 +2004,7 @@ class LayersApp {
         if (this._brushTool) {
             this._brushTool.onStrokeComplete = (stroke) => {
                 const isEraser = this._currentTool === 'eraser'
-                this._handleMaskStroke(stroke, isEraser)
+                return this._handleMaskStroke(stroke, isEraser)
             }
         }
 
@@ -1427,13 +2022,15 @@ class LayersApp {
     /**
      * Exit mask editing mode.
      */
-    _exitMaskEditMode() {
+    async _exitMaskEditMode({ updateRenderer = true } = {}) {
         if (!this._maskEditMode) return
 
         this._closeContextMenus()
 
-        const layer = this._layers.find(l => l.id === this._maskEditLayerId)
-        if (layer) {
+        const layer = updateRenderer
+            ? this._layers.find(l => l.id === this._maskEditLayerId)
+            : null
+        if (layer && updateRenderer) {
             layer.maskVisible = false
             // Apply mask: re-upload latest mask data so renderer composites with it
             if (layer.mask) {
@@ -1460,8 +2057,10 @@ class LayersApp {
         if (overlay) {
             overlay.classList.add('hidden')
         }
-        this._updateLayerStack()
-        this._rebuild({ force: true })
+        if (updateRenderer) {
+            this._updateLayerStack()
+            await this._rebuild({ force: true })
+        }
     }
 
     /**
@@ -1581,38 +2180,6 @@ class LayersApp {
     }
 
     /**
-     * Reset all layers (for new project)
-     * @private
-     */
-    _resetLayers({ preserveMediaLoad = null } = {}) {
-        this._cancelPendingMediaLoad(preserveMediaLoad)
-        if (this._undoDebounceTimer) {
-            clearTimeout(this._undoDebounceTimer)
-            this._undoDebounceTimer = null
-        }
-        this._layers.forEach(l => {
-            if (l.sourceType === 'media' || l.sourceType === 'drawing') {
-                this._renderer.unloadMedia(l.id)
-            }
-        })
-        // Clean up mask textures
-        for (const layer of this._layers) {
-            if (layer.mask) {
-                this._renderer.removeMaskTexture(layer.id)
-            }
-        }
-        if (this._maskEditMode) {
-            this._exitMaskEditMode()
-        }
-        this._selectionManager?.clearSelection()
-        this._copyOrigin = null
-        if (this._layerStack) this._layerStack.selectedLayerId = null
-        this._layers = []
-        this._undoManager.clear()
-        this._updateUndoMenuState()
-    }
-
-    /**
      * Handle deleting a layer
      * @param {string} layerId - Layer ID to delete
      * @param {string} [parentLayerId] - Parent layer ID if deleting a child effect
@@ -1657,7 +2224,7 @@ class LayersApp {
             this._renderer.removeMaskTexture(layer.id)
         }
         if (this._maskEditMode && this._maskEditLayerId === layer.id) {
-            this._exitMaskEditMode()
+            await this._exitMaskEditMode()
         }
 
         // Remove layer
@@ -1761,11 +2328,16 @@ class LayersApp {
         }
 
         // Capture snapshot
-        this._reorderSnapshot = {
+        const snapshot = {
             layers: JSON.parse(JSON.stringify(this._layers)),
             dsl: this._renderer._currentDsl
         }
+        const mutationToken = this._tryAcquireProjectLifecycle()
+        if (!mutationToken) return
+        this._reorderSnapshot = snapshot
         this._reorderSource = { layerId, index: sourceIndex }
+        this._reorderMutationToken = mutationToken
+        this._reorderGeneration = this._replacementGeneration
         this._reorderState = 'DRAGGING'
 
         // Update z-index on all layer items
@@ -1784,11 +2356,18 @@ class LayersApp {
         this._reorderSnapshot = null
         this._reorderSource = null
         this._reorderState = 'IDLE'
+        this._releaseReorderMutation()
 
         // Clear any drag-over indicators
         this._clearDragIndicators()
 
         console.debug('[Layers] FSM: DRAGGING → IDLE (cancelled)')
+    }
+
+    _releaseReorderMutation() {
+        this._reorderMutationToken?.release()
+        this._reorderMutationToken = null
+        this._reorderGeneration = null
     }
 
     /**
@@ -1873,6 +2452,11 @@ class LayersApp {
             console.warn('[Layers] Cannot process drop - not in DRAGGING state')
             return
         }
+        if (!this._reorderMutationToken
+            || this._reorderGeneration !== this._replacementGeneration) {
+            this._cancelDrag()
+            return
+        }
 
         const sourceId = this._reorderSource?.layerId
         if (!sourceId) {
@@ -1886,18 +2470,18 @@ class LayersApp {
         // Clear visual indicators
         this._clearDragIndicators()
 
-        // Calculate new order
-        const newLayers = this._calculateNewOrder(sourceId, targetId, dropPosition)
-        if (!newLayers) {
-            console.debug('[Layers] Invalid reorder - returning to IDLE')
-            this._reorderState = 'IDLE'
-            this._reorderSnapshot = null
-            this._reorderSource = null
-            return
-        }
-
-        // Generate and validate new DSL
         try {
+            // Calculate new order
+            const newLayers = this._calculateNewOrder(sourceId, targetId, dropPosition)
+            if (!newLayers) {
+                console.debug('[Layers] Invalid reorder - returning to IDLE')
+                this._reorderState = 'IDLE'
+                this._reorderSnapshot = null
+                this._reorderSource = null
+                return
+            }
+
+            // Generate and validate new DSL
             const newDsl = this._renderer.buildDslFromLayers(newLayers)
             const result = await this._renderer.tryCompile(newDsl)
 
@@ -1925,6 +2509,8 @@ class LayersApp {
             }
         } catch (err) {
             await this._rollback(err.message || String(err))
+        } finally {
+            this._releaseReorderMutation()
         }
     }
 
@@ -2000,7 +2586,12 @@ class LayersApp {
      * @private
      */
     async _rebuild(options = {}) {
-        const result = await this._renderer.setLayers(this._layers, options)
+        const layers = this._layers
+        const result = await this._renderer.setLayers(layers, {
+            ...options,
+            isCurrent: () => this._layers === layers,
+        })
+        if (result.stale) return result
         if (!result.success) {
             console.error('[Layers] Rebuild failed:', result.error)
             toast.error('Failed to render: ' + result.error)
@@ -2012,6 +2603,7 @@ class LayersApp {
         // cheap updateLayerParams() path bypasses _rebuild() and schedules
         // its own publish (see _handleLayerChange()).
         this._onlineAdapter?.schedulePublish()
+        return result
     }
 
     /**
@@ -2020,37 +2612,44 @@ class LayersApp {
      * @private
      */
     async _rasterizeDrawingLayer(layer) {
-        if (layer.sourceType !== 'drawing') return
+        const canvas = await this._createDrawingLayerCanvas(
+            layer, this._canvas.width, this._canvas.height)
+        if (!canvas) return
+        this._renderer.setMediaResource(
+            layer.id, this._renderer.prepareCanvasMediaResource(canvas))
+    }
+
+    /**
+     * Rasterize drawing strokes without registering a live renderer resource.
+     * @param {object} layer
+     * @param {number} width
+     * @param {number} height
+     * @returns {Promise<HTMLCanvasElement|null>}
+     * @private
+     */
+    async _createDrawingLayerCanvas(layer, width, height) {
+        if (layer.sourceType !== 'drawing') return null
         if (!layer.strokes || layer.strokes.length === 0) {
             layer.drawingCanvas = null
-            return
+            return null
         }
         if (!this._strokeRenderer) {
             const { StrokeRenderer } = await import('./drawing/stroke-renderer.js')
             this._strokeRenderer = new StrokeRenderer()
         }
         const offscreen = this._strokeRenderer.rasterize(
-            layer.strokes, this._canvas.width, this._canvas.height
+            layer.strokes, width, height
         )
 
         // Convert OffscreenCanvas to HTMLCanvasElement for WebGL texture compatibility
-        const w = this._canvas.width
-        const h = this._canvas.height
         const canvas = document.createElement('canvas')
-        canvas.width = w
-        canvas.height = h
+        canvas.width = width
+        canvas.height = height
         const ctx = canvas.getContext('2d')
         ctx.drawImage(offscreen, 0, 0)
 
         layer.drawingCanvas = canvas
-
-        // Register as texture in the renderer
-        this._renderer._mediaTextures.set(layer.id, {
-            type: 'image',
-            element: canvas,
-            width: w,
-            height: h
-        })
+        return canvas
     }
 
     /**
@@ -2420,6 +3019,18 @@ class LayersApp {
             if (restoreFocus) filterTitle?.focus()
         }
 
+        // Let Tab/Shift+Tab move normally, then close once focus is no longer
+        // inside the active dropdown/submenu popup. Moving back to the title
+        // also closes because the title is the control, not part of the popup.
+        filterMenu?.addEventListener('focusout', () => {
+            setTimeout(() => {
+                const focused = document.activeElement
+                const inDropdown = Boolean(focused && filterItems?.contains(focused))
+                const inSubmenu = Boolean(focused?.closest?.('#filterMenu > .submenu'))
+                if (!inDropdown && !inSubmenu) closeFilterMenu()
+            }, 0)
+        })
+
         filterTitle?.addEventListener('keydown', (e) => {
             if (e.key === ' ' || e.key === 'Enter') {
                 e.preventDefault()
@@ -2514,10 +3125,20 @@ class LayersApp {
         // existing new-canvas / open-media flows; closing without a choice falls
         // through to the open dialog so the user is never stranded.
         welcomeDialog.init({
-            onNewCanvas: () => this._startProjectReplacement(({ leaveOnline }) =>
-                this._showOpenDialog({ replaceProject: this._layers.length > 0 || leaveOnline, leaveOnline })),
-            onOpenFile: () => this._startProjectReplacement(({ leaveOnline }) =>
-                this._openMediaFilePicker({ replaceProject: this._layers.length > 0 || leaveOnline, leaveOnline })),
+            onNewCanvas: ({ entry }) => this._startProjectReplacement(({
+                leaveOnline, replacementConsent,
+            }) => this._showOpenDialog({
+                replaceProject: entry === 'menu' || leaveOnline,
+                leaveOnline,
+                replacementConsent,
+            })),
+            onOpenFile: ({ entry }) => this._startProjectReplacement(({
+                leaveOnline, replacementConsent,
+            }) => this._openMediaFilePicker({
+                replaceProject: entry === 'menu' || leaveOnline,
+                leaveOnline,
+                replacementConsent,
+            })),
             onDismiss: () => this._showOpenDialog(),
         })
         document.getElementById('welcomeMenuItem')?.addEventListener('click', () => {
@@ -2527,19 +3148,24 @@ class LayersApp {
         // File menu - New / Open (both show the same open dialog with reset)
         for (const id of ['newMenuItem', 'openMenuItem']) {
             document.getElementById(id)?.addEventListener('click', () =>
-                this._startProjectReplacement(({ leaveOnline }) =>
-                    this._showOpenDialog({ replaceProject: true, leaveOnline })))
+                this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
+                    this._showOpenDialog({
+                        replaceProject: true,
+                        leaveOnline,
+                        replacementConsent,
+                    })))
         }
 
         // File menu - New from Clipboard
         document.getElementById('newFromClipboardMenuItem')?.addEventListener('click', () =>
             this._startProjectReplacement(({ leaveOnline }) =>
-                this._handleNewFromClipboard({ replaceProject: true, leaveOnline })))
+                this._handleNewFromClipboard({ leaveOnline })))
 
         // File menu - Save Project (uses Save As if no project ID)
         document.getElementById('saveProjectMenuItem')?.addEventListener('click', () => {
             if (this._currentProjectId) {
-                this._quickSaveProject()
+                this._runPointerMutation(
+                    (mutationToken) => this._quickSaveProject(mutationToken))
             } else {
                 this._showSaveProjectDialog()
             }
@@ -2552,50 +3178,50 @@ class LayersApp {
 
         // File menu - Load Project
         document.getElementById('loadProjectMenuItem')?.addEventListener('click', () =>
-            this._startProjectReplacement(({ leaveOnline }) =>
-                this._showLoadProjectDialog(false, { replaceProject: true, leaveOnline })))
+            this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
+                this._showLoadProjectDialog(false, { leaveOnline, replacementConsent })))
 
         document.getElementById('savePngMenuItem')?.addEventListener('click', () => {
-            this._quickSavePng()
+            this._runPointerMutation(() => this._quickSavePng())
         })
 
         document.getElementById('saveJpgMenuItem')?.addEventListener('click', () => {
-            this._quickSaveJpg()
+            this._runPointerMutation(() => this._quickSaveJpg())
         })
 
         // File menu - Export Image
         document.getElementById('exportImageMenuItem')?.addEventListener('click', () => {
-            this._exportImageDialog.open()
+            this._runPointerMutation(() => this._exportImageDialog.open())
         })
 
         // File menu - Export Video
         document.getElementById('exportVideoMenuItem')?.addEventListener('click', () => {
-            this._exportVideoDialog.open()
+            this._runPointerMutation(async () => this._exportVideoDialog.open())
         })
 
         // Edit menu - Undo
         document.getElementById('undoMenuItem')?.addEventListener('click', () => {
-            this._undo()
+            this._runPointerMutation(() => this._undo())
         })
 
         // Edit menu - Redo
         document.getElementById('redoMenuItem')?.addEventListener('click', () => {
-            this._redo()
+            this._runPointerMutation(() => this._redo())
         })
 
         // Edit menu - Copy Image
         document.getElementById('copyImageMenuItem')?.addEventListener('click', async () => {
-            await this._handleCopyImage()
+            await this._runPointerMutation(() => this._handleCopyImage())
         })
 
         // Edit menu - Paste Image
         document.getElementById('pasteImageMenuItem')?.addEventListener('click', () => {
-            this._handlePaste()
+            this._runPointerMutation(() => this._handlePaste())
         })
 
         // Image menu - Crop to selection
         document.getElementById('cropToSelectionMenuItem')?.addEventListener('click', async () => {
-            await this._cropToSelection()
+            await this._runPointerMutation(() => this._cropToSelection())
         })
 
         // Image menu - Image size
@@ -2614,48 +3240,54 @@ class LayersApp {
                 const effectItem = e.target.closest('[data-effect]')
                 if (!effectItem) return
                 if (this._layers.length === 0) return
-                this._handleAddEffectLayer(effectItem.dataset.effect)
+                this._runPointerMutation(() =>
+                    this._handleAddEffectLayer(effectItem.dataset.effect))
             })
         }
 
         // Auto correction handlers
         document.getElementById('autoLevelsMenuItem')?.addEventListener('click', () => {
             if (this._layers.length === 0) return
-            this._handleAutoCorrection(autoLevels)
+            this._runPointerMutation(() => this._handleAutoCorrection(autoLevels))
         })
         document.getElementById('autoContrastMenuItem')?.addEventListener('click', () => {
             if (this._layers.length === 0) return
-            this._handleAutoCorrection(autoContrast)
+            this._runPointerMutation(() => this._handleAutoCorrection(autoContrast))
         })
         document.getElementById('autoWhiteBalanceMenuItem')?.addEventListener('click', () => {
             if (this._layers.length === 0) return
-            this._handleAutoCorrection(autoWhiteBalance)
+            this._runPointerMutation(() => this._handleAutoCorrection(autoWhiteBalance))
         })
 
         // Select menu - Select All
         document.getElementById('selectAllMenuItem')?.addEventListener('click', () => {
-            const { width, height } = this._canvas
-            this._selectionManager.setSelection({
-                type: 'rect', x: 0, y: 0, width, height
+            this._runPointerMutation(() => {
+                const { width, height } = this._canvas
+                this._selectionManager.setSelection({
+                    type: 'rect', x: 0, y: 0, width, height
+                })
             })
         })
 
         // Select menu - Select None
         document.getElementById('selectNoneMenuItem')?.addEventListener('click', () => {
-            this._selectionManager.clearSelection()
+            this._runPointerMutation(() => this._selectionManager.clearSelection())
         })
 
         // Select menu - Select Inverse
         document.getElementById('selectInverseMenuItem')?.addEventListener('click', () => {
-            const mask = this._selectionManager.rasterizeSelection()
-            if (!mask) return
-            const inverted = invertMask(mask)
-            this._selectionManager.setSelection({ type: 'mask', data: inverted })
+            this._runPointerMutation(() => {
+                const mask = this._selectionManager.rasterizeSelection()
+                if (!mask) return
+                const inverted = invertMask(mask)
+                this._selectionManager.setSelection({ type: 'mask', data: inverted })
+            })
         })
 
         // Select menu - Color Range
         document.getElementById('colorRangeMenuItem')?.addEventListener('click', () => {
-            this._startColorRangePick()
+            this._runPointerMutation((mutationToken) =>
+                this._startColorRangePick(mutationToken))
         })
 
         // Select menu - Modify operations
@@ -2703,7 +3335,7 @@ class LayersApp {
         // Text tool button (toolbar)
         document.getElementById('textToolBtn')?.addEventListener('click', () => {
             if (this._layers.length === 0) return
-            this._handleAddEffectLayer('filter/text')
+            this._runPointerMutation(() => this._handleAddEffectLayer('filter/text'))
         })
 
         // Add layer button
@@ -2815,7 +3447,13 @@ class LayersApp {
 
         // Play/pause button
         document.getElementById('playPauseBtn')?.addEventListener('click', () => {
-            this._togglePlayPause()
+            const mutationToken = this._tryAcquireProjectLifecycle()
+            if (!mutationToken) return
+            try {
+                this._togglePlayPause()
+            } finally {
+                mutationToken.release()
+            }
         })
 
         // Font install dialog trigger
@@ -2838,25 +3476,25 @@ class LayersApp {
             const selectedIds = this._layerStack?.selectedLayerIds || []
 
             if (selectedIds.length === 0) {
-                this._flattenImage()
+                this._runPointerMutation(() => this._flattenImage())
             } else if (selectedIds.length === 1) {
                 const layer = this._layers.find(l => l.id === selectedIds[0])
                 if (layer && layer.sourceType !== 'media') {
-                    this._rasterizeLayer(selectedIds[0])
+                    this._runPointerMutation(() => this._rasterizeLayer(selectedIds[0]))
                 }
             } else {
-                this._flattenLayers(selectedIds)
+                this._runPointerMutation(() => this._flattenLayers(selectedIds))
             }
         })
 
         document.getElementById('duplicateLayerMenuItem')?.addEventListener('click', () => {
-            this._duplicateActiveLayer()
+            this._runPointerMutation(() => this._duplicateActiveLayer())
         })
 
         document.getElementById('deleteLayerMenuItem')?.addEventListener('click', () => {
             const selected = this._layerStack?.getSelectedLayer()
             if (selected && this._layers.indexOf(selected) > 0) {
-                this._handleDeleteLayer(selected.id)
+                this._runPointerMutation(() => this._handleDeleteLayer(selected.id))
             }
         })
 
@@ -2865,21 +3503,25 @@ class LayersApp {
         })
 
         document.getElementById('flipHMenuItem')?.addEventListener('click', () => {
-            this._flipActiveLayer('horizontal')
+            this._runPointerMutation(() => this._flipActiveLayer('horizontal'))
         })
 
         document.getElementById('flipVMenuItem')?.addEventListener('click', () => {
-            this._flipActiveLayer('vertical')
+            this._runPointerMutation(() => this._flipActiveLayer('vertical'))
         })
 
         document.getElementById('addLayerMaskMenuItem')?.addEventListener('click', () => {
             const layer = this._getActiveLayer()
-            if (layer && !layer.mask) this._addLayerMask(layer.id)
+            if (layer && !layer.mask) {
+                this._runPointerMutation(() => this._addLayerMask(layer.id))
+            }
         })
 
         document.getElementById('deleteLayerMaskMenuItem')?.addEventListener('click', () => {
             const layer = this._getActiveLayer()
-            if (layer?.mask) this._deleteLayerMask(layer.id)
+            if (layer?.mask) {
+                this._runPointerMutation(() => this._deleteLayerMask(layer.id))
+            }
         })
     }
 
@@ -2891,11 +3533,12 @@ class LayersApp {
         if (!this._layerStack) return
 
         this._layerStack.addEventListener('layer-change', (e) => {
-            this._handleLayerChange(e.detail)
+            this._runPointerMutation(() => this._handleLayerChange(e.detail))
         })
 
         this._layerStack.addEventListener('layer-delete', (e) => {
-            this._handleDeleteLayer(e.detail.layerId, e.detail.parentLayerId)
+            this._runPointerMutation(() =>
+                this._handleDeleteLayer(e.detail.layerId, e.detail.parentLayerId))
         })
 
         // Layer reorder FSM events
@@ -2911,13 +3554,13 @@ class LayersApp {
         })
 
         this._layerStack.addEventListener('layer-drop', (e) => {
-            this._processDrop(e.detail.targetId, e.detail.dropPosition)
+            void this._processDrop(e.detail.targetId, e.detail.dropPosition)
         })
 
         this._layerStack.addEventListener('selection-change', () => {
             // When selecting a different layer, exit mask edit mode
             if (this._maskEditMode && this._getActiveLayer()?.id !== this._maskEditLayerId) {
-                this._exitMaskEditMode()
+                this._runPointerMutation(() => this._exitMaskEditMode())
             }
 
             this._updateLayerMenu()
@@ -2936,24 +3579,28 @@ class LayersApp {
         // Mask events from layer-item
         this._layerStack?.addEventListener('mask-edit', (e) => {
             const { layerId } = e.detail
-            if (this._maskEditMode && this._maskEditLayerId === layerId) {
-                this._exitMaskEditMode()
-            } else {
-                if (this._maskEditMode) this._exitMaskEditMode()
-                this._enterMaskEditMode(layerId)
-            }
+            this._runPointerMutation(async () => {
+                if (this._maskEditMode && this._maskEditLayerId === layerId) {
+                    await this._exitMaskEditMode()
+                } else {
+                    if (this._maskEditMode) await this._exitMaskEditMode()
+                    this._enterMaskEditMode(layerId)
+                }
+            })
         })
 
         this._layerStack?.addEventListener('mask-toggle-visible', (e) => {
-            const layer = this._layers.find(l => l.id === e.detail.layerId)
-            if (!layer?.mask) return
-            layer.maskVisible = !layer.maskVisible
-            if (layer.maskVisible) {
-                this._renderMaskOverlay(layer)
-            } else {
-                document.getElementById('maskOverlay')?.classList.add('hidden')
-            }
-            this._updateLayerStack()
+            this._runPointerMutation(() => {
+                const layer = this._layers.find(l => l.id === e.detail.layerId)
+                if (!layer?.mask) return
+                layer.maskVisible = !layer.maskVisible
+                if (layer.maskVisible) {
+                    this._renderMaskOverlay(layer)
+                } else {
+                    document.getElementById('maskOverlay')?.classList.add('hidden')
+                }
+                this._updateLayerStack()
+            })
         })
 
         this._layerStack?.addEventListener('mask-context-menu', (e) => {
@@ -3179,6 +3826,17 @@ class LayersApp {
      */
     _setupKeyboardShortcuts() {
         document.addEventListener('keydown', (e) => {
+            // A reorder drag owns the lifecycle lease it must release, so its
+            // cancellation shortcut has to run before the general mutation
+            // guard below.
+            if (e.key === 'Escape' && this._reorderState === 'DRAGGING') {
+                e.preventDefault()
+                this._cancelDrag()
+                return
+            }
+
+            if (this._projectLifecycleActive || this._projectReplacementActive) return
+
             // ESC - close context menus
             if (e.key === 'Escape' && this._contextMenuCloseHandler) {
                 this._closeContextMenus()
@@ -3187,14 +3845,7 @@ class LayersApp {
 
             // ESC - exit mask edit mode
             if (e.key === 'Escape' && this._maskEditMode) {
-                this._exitMaskEditMode()
-                return
-            }
-
-            // ESC - cancel drag operation
-            if (e.key === 'Escape' && this._reorderState === 'DRAGGING') {
-                e.preventDefault()
-                this._cancelDrag()
+                this._runPointerMutation(() => this._exitMaskEditMode())
                 return
             }
 
@@ -3208,7 +3859,7 @@ class LayersApp {
             // Cmd/Ctrl+Shift+Z - redo (check before undo since Shift+Z matches both)
             if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z') {
                 e.preventDefault()
-                this._redo()
+                this._runPointerMutation(() => this._redo())
                 return
             }
 
@@ -3237,7 +3888,7 @@ class LayersApp {
             // Cmd/Ctrl+Z - undo
             if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') {
                 e.preventDefault()
-                this._undo()
+                this._runPointerMutation(() => this._undo())
                 return
             }
 
@@ -3245,7 +3896,7 @@ class LayersApp {
             if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
                 if (this._selectionManager?.hasSelection()) {
                     e.preventDefault()
-                    this._handleCopy()
+                    this._runPointerMutation(() => this._handleCopy())
                     return
                 }
             }
@@ -3253,7 +3904,7 @@ class LayersApp {
             // Cmd+V - paste
             if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
                 e.preventDefault()
-                this._handlePaste()
+                this._runPointerMutation(() => this._handlePaste())
                 return
             }
 
@@ -3267,7 +3918,7 @@ class LayersApp {
                 const selected = this._layerStack?.getSelectedLayer()
                 if (selected && this._layers.indexOf(selected) > 0) {
                     e.preventDefault()
-                    this._handleDeleteLayer(selected.id)
+                    this._runPointerMutation(() => this._handleDeleteLayer(selected.id))
                 }
             }
 
@@ -3321,10 +3972,11 @@ class LayersApp {
             if (e.key === 'v' || e.key === 'V') {
                 const selected = this._layerStack?.getSelectedLayer()
                 if (selected) {
-                    this._finalizePendingUndo()
-                    selected.visible = !selected.visible
-                    this._updateLayerStack()
-                    this._rebuild().then(() => {
+                    this._runPointerMutation(async () => {
+                        this._finalizePendingUndo()
+                        selected.visible = !selected.visible
+                        this._updateLayerStack()
+                        await this._rebuild()
                         this._markDirty()
                         this._pushUndoState()
                     })
@@ -3354,13 +4006,18 @@ class LayersApp {
      * @private
      */
     _showAddLayerDialog() {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         addLayerDialog.show({
             effects: this._renderer.getLayerEffects(),
             onAddMedia: async (file, mediaType) => {
-                await this._handleAddMediaLayer(file, mediaType)
+                await this._runPointerMutation((mutationToken) =>
+                    this._handleAddMediaLayer(file, mediaType, { mutationToken }), { generation })
             },
             onAddEffect: async (effectId) => {
-                await this._handleAddEffectLayer(effectId)
+                await this._runPointerMutation(
+                    () => this._handleAddEffectLayer(effectId), { generation })
             }
         })
     }
@@ -3371,10 +4028,14 @@ class LayersApp {
      * @private
      */
     _showAddChildEffectDialog(parentLayerId) {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         addLayerDialog.showEffectOnly({
             effects: this._renderer.getLayerEffects(),
             onAddEffect: async (effectId) => {
-                await this._handleAddChildEffect(parentLayerId, effectId)
+                await this._runPointerMutation(() =>
+                    this._handleAddChildEffect(parentLayerId, effectId), { generation })
             }
         })
     }
@@ -4113,6 +4774,7 @@ class LayersApp {
      * @private
      */
     _setToolMode(tool) {
+        this._cancelColorRangePick()
         if (tool === 'eyedropper') this._previousTool = this._currentTool
         this._currentTool = tool
 
@@ -4330,11 +4992,17 @@ class LayersApp {
      * @private
      */
     _showSaveProjectDialog() {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         saveProjectDialog.show({
             projectId: this._currentProjectId,
             projectName: this._currentProjectName || 'untitled',
             onSave: async (projectId, projectName) => {
-                await this._saveProject(projectId, projectName)
+                await this._runPointerMutation(
+                    (mutationToken) => this._saveProject(
+                        projectId, projectName, { mutationToken }),
+                    { generation })
             }
         })
     }
@@ -4344,11 +5012,17 @@ class LayersApp {
      * @private
      */
     _showSaveProjectAsDialog() {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         saveProjectDialog.show({
             projectId: null,
             projectName: this._currentProjectName || 'untitled',
             onSave: async (projectId, projectName) => {
-                await this._saveProject(projectId, projectName)
+                await this._runPointerMutation(
+                    (mutationToken) => this._saveProject(
+                        projectId, projectName, { mutationToken }),
+                    { generation })
             }
         })
     }
@@ -4357,9 +5031,10 @@ class LayersApp {
      * Quick save project without dialog (for existing projects)
      * @private
      */
-    async _quickSaveProject() {
+    async _quickSaveProject(mutationToken = null) {
         try {
-            await this._saveProject(this._currentProjectId, this._currentProjectName)
+            await this._saveProject(
+                this._currentProjectId, this._currentProjectName, { mutationToken })
         } catch (err) {
             // Error already shown in _saveProject
         }
@@ -4370,11 +5045,36 @@ class LayersApp {
      * @param {boolean} isRequired - If true, dialog cannot be closed without selection
      * @private
      */
-    _showLoadProjectDialog(isRequired = false, { replaceProject = false, leaveOnline = false } = {}) {
+    _showLoadProjectDialog(isRequired = false, {
+        leaveOnline = false,
+        replacementConsent = null,
+    } = {}) {
         projectManagerDialog.show({
             isRequired,
             onLoad: async (projectId) => {
-                await this._loadProject(projectId, { replaceProject, leaveOnline })
+                let status = null
+                const loadSelectedProject = async ({ leaveOnline: confirmedLeaveOnline }) => {
+                    status = await this._loadProject(projectId, {
+                        leaveOnline: confirmedLeaveOnline,
+                    })
+                }
+                if (replacementConsent
+                    && !this._projectReplacementStateMatches(replacementConsent)) {
+                    projectManagerDialog.suspendForConfirmation()
+                }
+                const accepted = replacementConsent
+                    ? await this._continueProjectReplacement(
+                        replacementConsent, loadSelectedProject)
+                    : (await loadSelectedProject({ leaveOnline }), true)
+                if (!accepted) {
+                    throw new Error('Project load was cancelled')
+                }
+                if (status === 'not-found') {
+                    throw new Error('Project not found')
+                }
+                if (status !== 'opened') {
+                    throw new Error('Project load was cancelled by a newer replacement')
+                }
             },
             onCancel: isRequired ? () => {
                 // Open dialog is still visible behind, nothing to do
@@ -4388,25 +5088,27 @@ class LayersApp {
      * @param {string} projectName - Project name
      * @private
      */
-    async _saveProject(projectId, projectName) {
-        try {
-            const savedId = await saveProject({
-                name: projectName,
-                canvasWidth: this._canvas.width,
-                canvasHeight: this._canvas.height,
-                layers: this._layers
-            }, projectId)
+    async _saveProject(projectId, projectName, { mutationToken = null } = {}) {
+        return this._runProjectLifecycle(mutationToken, async () => {
+            try {
+                const savedId = await saveProject({
+                    name: projectName,
+                    canvasWidth: this._canvas.width,
+                    canvasHeight: this._canvas.height,
+                    layers: this._layers
+                }, projectId)
 
-            this._currentProjectId = savedId
-            this._currentProjectName = projectName
-            this._markClean()
+                this._currentProjectId = savedId
+                this._currentProjectName = projectName
+                this._markClean()
 
-            toast.success('Project saved')
-        } catch (err) {
-            console.error('[Layers] Failed to save project:', err)
-            toast.error('Failed to save project')
-            throw err
-        }
+                toast.success('Project saved')
+            } catch (err) {
+                console.error('[Layers] Failed to save project:', err)
+                toast.error('Failed to save project')
+                throw err
+            }
+        })
     }
 
     /**
@@ -4414,83 +5116,101 @@ class LayersApp {
      * @param {string} projectId - Project ID
      * @private
      */
-    async _loadProject(projectId, { replaceProject = true, leaveOnline = false } = {}) {
-        try {
-            const result = await loadProject(projectId)
+    async _loadProject(projectId, { leaveOnline = false, mutationToken = null } = {}) {
+        const generation = ++this._replacementGeneration
+        return this._runProjectReplacement(mutationToken, async (token, replacementGate) => {
+            let candidate = null
+            try {
+                const result = await loadProject(projectId)
             if (!result) {
                 toast.error('Project not found')
-                return
+                return 'not-found'
             }
+            if (generation !== this._replacementGeneration) return 'cancelled'
 
             const { project, mediaFiles } = result
-
-            // The dialog selection is the load operation's commit point.
-            if (replaceProject) this._commitProjectReplacement({ leaveOnline })
-            else this._resetLayers()
-
-            // Resize canvas
-            if (project.canvasWidth && project.canvasHeight) {
-                this._resizeCanvas(project.canvasWidth, project.canvasHeight)
+            const width = Number(project.canvasWidth)
+            const height = Number(project.canvasHeight)
+            if (!Number.isFinite(width) || width <= 0
+                || !Number.isFinite(height) || height <= 0) {
+                throw new Error('Saved project has invalid canvas dimensions')
             }
 
-            // Restore layers
-            this._layers = project.layers
+            const layers = structuredClone(project.layers || [])
+            const nextLayerId = this._validatePersistedLayers(layers)
+            await decodeMasks(layers)
+            if (generation !== this._replacementGeneration) return 'cancelled'
 
-            // Decode serialized masks back to ImageData
-            await decodeMasks(this._layers)
+            candidate = {
+                layers,
+                width,
+                height,
+                projectId: project.id,
+                projectName: project.name,
+                dirty: false,
+                selectedLayerId: layers.at(-1)?.id || null,
+                nextLayerId,
+                mediaTextures: new Map(),
+                maskTextures: new Map()
+            }
 
-            // Load media for each media layer
-            for (const layer of this._layers) {
+            // Prepare every fallible resource outside the committed renderer.
+            for (const layer of layers) {
                 if (layer.sourceType === 'media') {
                     const file = mediaFiles.get(layer.id)
-                    if (file) {
-                        layer.mediaFile = file
-                        await this._renderer.loadMedia(layer.id, file, layer.mediaType)
+                    if (!file) {
+                        throw new Error(`Saved media is missing for layer "${layer.name || layer.id}"`)
+                    }
+                    layer.mediaFile = file
+                    const resource = await this._renderer.prepareMediaResource(file, layer.mediaType)
+                    if (!resource) throw new Error(`Unsupported media for layer "${layer.name || layer.id}"`)
+                    candidate.mediaTextures.set(layer.id, resource)
+                    if (generation !== this._replacementGeneration) {
+                        this._disposePreparedProject(candidate)
+                        candidate = null
+                        return 'cancelled'
                     }
                 }
-            }
-
-            // Re-rasterize drawing layers from persisted strokes (their canvas
-            // is not serialized, so the GPU texture must be rebuilt on load)
-            for (const layer of this._layers) {
-                if (layer.sourceType === 'drawing' && layer.strokes?.length > 0) {
-                    await this._rasterizeDrawingLayer(layer)
+                if (layer.sourceType === 'drawing') {
+                    const canvas = await this._createDrawingLayerCanvas(layer, width, height)
+                    if (canvas) {
+                        candidate.mediaTextures.set(
+                            layer.id, this._renderer.prepareCanvasMediaResource(canvas))
+                    }
+                    if (generation !== this._replacementGeneration) {
+                        this._disposePreparedProject(candidate)
+                        candidate = null
+                        return 'cancelled'
+                    }
                 }
-            }
-
-            // Re-upload mask textures (the renderer starts with empty texture
-            // maps, so masks decoded above must be re-registered to render)
-            for (const layer of this._layers) {
                 if (layer.mask) {
-                    this._renderer.uploadMaskTexture(layer.id, layer.mask)
+                    candidate.maskTextures.set(
+                        layer.id, this._renderer.prepareMaskTexture(layer.mask))
                 }
             }
 
-            // Update state
-            this._currentProjectId = project.id
-            this._currentProjectName = project.name
-            // Update UI and rebuild
-            this._updateLayerStack()
-            this._selectTopmostLayer()
-            // Wait for any pending microtasks (canvas observer uses queueMicrotask)
-            await new Promise(resolve => queueMicrotask(resolve))
-            await this._rebuild()
-            // Wait for next frame to ensure WebGL state is stable
-            await new Promise(resolve => requestAnimationFrame(resolve))
-            this._renderer.start()
-            this._markClean()
-
-            this._undoManager.clear()
-            this._pushUndoState()
+            const outcome = await this._installPreparedProject(
+                candidate, {
+                    generation,
+                    leaveOnline,
+                    mutationToken: token,
+                    replacementGate,
+                })
+            candidate = null
+            if (outcome.status === 'failed') throw outcome.error
+            if (outcome.status === 'cancelled') return 'cancelled'
 
             // Close the open dialog (in case we came from there)
             openDialog.element.close()
             toast.success(`Loaded "${project.name}"`)
-        } catch (err) {
-            console.error('[Layers] Failed to load project:', err)
-            toast.error('Failed to load project')
-            throw err
-        }
+            return 'opened'
+            } catch (err) {
+                if (candidate) this._disposePreparedProject(candidate)
+                console.error('[Layers] Failed to load project:', err)
+                toast.error('Failed to load project')
+                throw err
+            }
+        })
     }
 
     /**
@@ -4520,8 +5240,11 @@ class LayersApp {
      * @private
      */
     async _modifySelection(dialogOptions, maskFn) {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         const r = await selectionParamDialog.show(dialogOptions)
-        if (r === null) return
+        if (r === null || generation !== this._replacementGeneration) return
         const mask = this._selectionManager.rasterizeSelection()
         if (!mask) return
         this._selectionManager.setSelection({ type: 'mask', data: maskFn(mask, r) })
@@ -4543,37 +5266,50 @@ class LayersApp {
         }
     }
 
-    _startColorRangePick() {
-        if (!this._canvas) return
+    _startColorRangePick(mutationToken = null) {
+        if (!this._canvas || this._colorRangePicking) return false
+        const pickToken = this._tryAcquireProjectLifecycle(mutationToken)
+        if (!pickToken) return false
+
+        const generation = this._replacementGeneration
+        const selectionWasEnabled = this._selectionManager.enabled
         this._colorRangePicking = true
         this._selectionOverlay.style.cursor = 'crosshair'
-
-        const handler = (e) => {
-            this._selectionOverlay.removeEventListener('click', handler)
-            this._colorRangePicking = false
-            this._selectionOverlay.style.cursor = ''
-            this._handleColorRangePick(e)
-        }
-
         this._selectionManager.enabled = false
 
-        this._selectionOverlay.addEventListener('click', handler)
+        const cleanup = () => {
+            if (this._colorRangePickCleanup !== cleanup) return
+            this._selectionOverlay.removeEventListener('click', handler)
+            document.removeEventListener('keydown', cancelHandler)
+            this._colorRangePicking = false
+            this._selectionOverlay.style.cursor = ''
+            this._selectionManager.enabled = selectionWasEnabled
+            this._colorRangePickCleanup = null
+            pickToken.release()
+        }
 
-        const cancelHandler = (e) => {
-            if (e.key === 'Escape') {
-                this._selectionOverlay.removeEventListener('click', handler)
-                document.removeEventListener('keydown', cancelHandler)
-                this._colorRangePicking = false
-                this._selectionOverlay.style.cursor = ''
-                this._selectionManager.enabled = true
+        const handler = (e) => {
+            try {
+                if (generation === this._replacementGeneration) {
+                    this._handleColorRangePick(e)
+                }
+            } finally {
+                cleanup()
             }
         }
-        document.addEventListener('keydown', cancelHandler)
 
-        this._selectionOverlay.addEventListener('click', () => {
-            document.removeEventListener('keydown', cancelHandler)
-            this._selectionManager.enabled = true
-        }, { once: true })
+        const cancelHandler = (e) => {
+            if (e.key === 'Escape') cleanup()
+        }
+
+        this._colorRangePickCleanup = cleanup
+        this._selectionOverlay.addEventListener('click', handler)
+        document.addEventListener('keydown', cancelHandler)
+        return true
+    }
+
+    _cancelColorRangePick() {
+        this._colorRangePickCleanup?.()
     }
 
     _handleColorRangePick(e) {
@@ -4693,11 +5429,15 @@ class LayersApp {
     }
 
     _showImageSizeDialog() {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         imageSizeDialog.show({
             width: this._canvas.width,
             height: this._canvas.height,
             onConfirm: async (width, height) => {
-                await this._resizeImage(width, height)
+                await this._runPointerMutation(
+                    () => this._resizeImage(width, height), { generation })
             }
         })
     }
@@ -4788,11 +5528,15 @@ class LayersApp {
     }
 
     _showCanvasSizeDialog() {
+        if (this._projectLifecycleActive || this._projectReplacementActive
+            || this._projectLifecycleWaiters > 0) return
+        const generation = this._replacementGeneration
         canvasResizeDialog.show({
             width: this._canvas.width,
             height: this._canvas.height,
             onConfirm: async (width, height, anchor) => {
-                await this._changeCanvasSize(width, height, anchor)
+                await this._runPointerMutation(() =>
+                    this._changeCanvasSize(width, height, anchor), { generation })
             }
         })
     }

@@ -35,6 +35,7 @@ class WelcomeDialog {
         this._deps = {}
         this._chose = false
         this._fallThrough = false
+        this._entry = 'menu'
     }
 
     /**
@@ -47,14 +48,15 @@ class WelcomeDialog {
 
     /**
      * Show the dialog.
-     * @param {{fallThrough?:boolean}} [opts] - when true, closing WITHOUT a tile
+     * @param {{fallThrough?:boolean,entry?:'boot'|'menu'}} [opts] - when true, closing WITHOUT a tile
      *   choice runs `onDismiss` (used only for the first-run entry point so the
      *   user still lands in the open dialog).
      */
-    show({ fallThrough = false } = {}) {
+    show({ fallThrough = false, entry = 'menu' } = {}) {
         if (!this._dialog) this._createDialog()
         this._chose = false
         this._fallThrough = fallThrough
+        this._entry = entry
         const checkbox = this._dialog.querySelector('#welcome-dontshow')
         if (checkbox) checkbox.checked = isWelcomeDismissed()
         this._dialog.showModal()
@@ -109,8 +111,8 @@ class WelcomeDialog {
                 this._chose = true
                 const action = btn.dataset.action
                 this.hide()
-                if (action === 'new') this._deps.onNewCanvas?.()
-                else if (action === 'open') this._deps.onOpenFile?.()
+                if (action === 'new') this._deps.onNewCanvas?.({ entry: this._entry })
+                else if (action === 'open') this._deps.onOpenFile?.({ entry: this._entry })
             })
         })
 

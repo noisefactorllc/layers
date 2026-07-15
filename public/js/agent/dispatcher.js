@@ -13,6 +13,10 @@ import { SCHEMAS, validate } from './schemas.js'
 import { buildSnapshot } from './snapshot.js'
 
 let _tail = Promise.resolve()
+const LIFECYCLE_EXEMPT_COMMANDS = new Set([
+    'getJob', 'waitForJob', 'cancelJob', 'exportVideo', '_sleep'
+])
+const CONCURRENT_COMMANDS = new Set(['getJob', 'waitForJob', 'cancelJob'])
 
 /**
  * Run a function under the serial queue. Each call awaits the previous one to
@@ -49,12 +53,13 @@ export function makeFailure(command, code, message, details = {}, state = null) 
  *
  * @param {object} agent - The LayersAgent object.
  * @param {string} name - Command name.
- * @param {(args: object, app: object) => Promise<{ result, warnings? }>} handler
- *   Async handler receiving validated args and the app instance.
+ * @param {(args: object, app: object, mutationToken?: object) => Promise<{ result, warnings? }>} handler
+ *   Async handler receiving validated args, the app, and its lifecycle token.
  *   Returns a plain object with result/warnings; the dispatcher wraps it.
  */
 export function registerCommand(agent, name, handler) {
-    agent[name] = (args = {}) => serialize(async () => {
+    agent[name] = (args = {}) => {
+        const execute = async () => {
         const schema = SCHEMAS[name]
         if (schema) {
             const v = validate(args, schema)
@@ -63,8 +68,12 @@ export function registerCommand(agent, name, handler) {
                 return makeFailure(name, v.code, v.message, v.details, snap)
             }
         }
+        let mutationToken = null
         try {
-            const out = await handler(args, agent._app)
+            if (!LIFECYCLE_EXEMPT_COMMANDS.has(name)) {
+                mutationToken = await agent._app?._acquireProjectLifecycle?.()
+            }
+            const out = await handler(args, agent._app, mutationToken)
             const snap = safeSnapshot(agent._app)
             return makeSuccess(name, out.result, snap, out.warnings || [])
         } catch (err) {
@@ -76,8 +85,12 @@ export function registerCommand(agent, name, handler) {
             }
             return makeFailure(name, 'INTERNAL_ERROR', err.message || String(err),
                 { stack: err.stack }, snap)
+        } finally {
+            mutationToken?.release?.()
         }
-    })
+        }
+        return CONCURRENT_COMMANDS.has(name) ? execute() : serialize(execute)
+    }
 }
 
 function safeSnapshot(app) {

@@ -173,4 +173,59 @@ test.describe('Select Menu', () => {
         )
         expect(hasSelection).toBe(true)
     })
+
+    test('Color Range click completes under and releases the lifecycle lease', async ({ page }) => {
+        await setupApp(page)
+        await openSelectMenu(page)
+        await page.click('#colorRangeMenuItem')
+        await expect.poll(() => page.evaluate(() => ({
+            picking: window.layersApp._colorRangePicking,
+            lifecycle: window.layersApp._projectLifecycleActive,
+        }))).toEqual({ picking: true, lifecycle: true })
+
+        await page.locator('#selectionOverlay').click({ position: { x: 20, y: 20 } })
+
+        await expect.poll(() => page.evaluate(() => ({
+            picking: window.layersApp._colorRangePicking,
+            lifecycle: window.layersApp._projectLifecycleActive,
+            hasSelection: window.layersApp._selectionManager.hasSelection(),
+        }))).toEqual({ picking: false, lifecycle: false, hasSelection: true })
+    })
+
+    test('Color Range Escape cancels and releases the lifecycle lease', async ({ page }) => {
+        await setupApp(page)
+        await openSelectMenu(page)
+        await page.click('#colorRangeMenuItem')
+        await expect.poll(() => page.evaluate(() =>
+            window.layersApp._projectLifecycleActive)).toBe(true)
+
+        await page.keyboard.press('Escape')
+
+        await expect.poll(() => page.evaluate(() => ({
+            picking: window.layersApp._colorRangePicking,
+            lifecycle: window.layersApp._projectLifecycleActive,
+        }))).toEqual({ picking: false, lifecycle: false })
+    })
+
+    test('switching tools cancels Color Range without re-enabling selection', async ({ page }) => {
+        await setupApp(page)
+        await openSelectMenu(page)
+        await page.click('#colorRangeMenuItem')
+        await expect.poll(() => page.evaluate(() =>
+            window.layersApp._projectLifecycleActive)).toBe(true)
+
+        await page.click('#brushToolBtn')
+
+        await expect.poll(() => page.evaluate(() => ({
+            tool: window.layersApp._currentTool,
+            picking: window.layersApp._colorRangePicking,
+            lifecycle: window.layersApp._projectLifecycleActive,
+            selectionEnabled: window.layersApp._selectionManager.enabled,
+        }))).toEqual({
+            tool: 'brush',
+            picking: false,
+            lifecycle: false,
+            selectionEnabled: false,
+        })
+    })
 })

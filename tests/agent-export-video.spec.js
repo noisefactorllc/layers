@@ -52,6 +52,140 @@ test.describe('agent: exportVideo', () => {
         expect(cancelCount).toBe(1)
     })
 
+    test('replacement waits for export cancellation and commits at its own resolution', async ({ page }) => {
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const started = await window.LayersAgent.exportVideo({
+                width: 64,
+                height: 64,
+                framerate: 30,
+                duration: 5,
+                loopCount: 1,
+                format: 'zip',
+                quality: 'low',
+            })
+            while (!app._projectLifecycleActive) {
+                await new Promise(resolve => setTimeout(resolve, 0))
+            }
+            let stageReached = false
+            const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
+            app._renderer.stageLayerSet = async (candidate) => {
+                stageReached = true
+                return stageLayerSet(candidate)
+            }
+            const replacementPromise = app._handleCreateGradientBase(333, 222)
+            await new Promise(resolve => setTimeout(resolve, 50))
+            const replacementWaitedForExport = !stageReached
+            await window.LayersAgent.cancelJob({ jobId: started.result.jobId })
+            const settled = await window.LayersAgent.waitForJob({
+                jobId: started.result.jobId,
+                timeoutMs: 5000,
+            })
+            const replacementStatus = await replacementPromise
+            return {
+                replacementWaitedForExport,
+                jobStatus: settled.result.status,
+                replacementStatus,
+                width: app._canvas.width,
+                height: app._canvas.height,
+                rendererRunning: app._renderer.isRunning,
+            }
+        })
+
+        expect(result).toEqual({
+            replacementWaitedForExport: true,
+            jobStatus: 'cancelled',
+            replacementStatus: 'opened',
+            width: 333,
+            height: 222,
+            rendererRunning: true,
+        })
+    })
+
+    test('play button cannot restart the renderer during an agent export', async ({ page }) => {
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const started = await window.LayersAgent.exportVideo({
+                width: 64,
+                height: 64,
+                framerate: 30,
+                duration: 5,
+                loopCount: 1,
+                format: 'zip',
+                quality: 'low',
+            })
+            while (!app._projectLifecycleActive || app._renderer.isRunning) {
+                await new Promise(resolve => setTimeout(resolve, 0))
+            }
+            document.getElementById('playPauseBtn').click()
+            await new Promise(resolve => setTimeout(resolve, 20))
+            const rendererStayedPaused = !app._renderer.isRunning
+            await window.LayersAgent.cancelJob({ jobId: started.result.jobId })
+            const settled = await window.LayersAgent.waitForJob({
+                jobId: started.result.jobId,
+                timeoutMs: 5000,
+            })
+            return { rendererStayedPaused, jobStatus: settled.result.status }
+        })
+
+        expect(result).toEqual({ rendererStayedPaused: true, jobStatus: 'cancelled' })
+    })
+
+    test('default export dimensions are resolved after a failed replacement rolls back', async ({ page }) => {
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const original = { width: app._canvas.width, height: app._canvas.height }
+            let stageLive = false
+            let releaseStage
+            app._renderer.stageLayerSet = async () => {
+                stageLive = true
+                await new Promise(resolve => { releaseStage = resolve })
+                return {
+                    success: false,
+                    error: 'candidate compile failed',
+                    commit() {},
+                    rollback: async () => ({ success: true }),
+                }
+            }
+            const replacementPromise = app._handleCreateGradientBase(333, 222)
+            while (!stageLive) await new Promise(resolve => setTimeout(resolve, 0))
+            const canvasDuringStage = { width: app._canvas.width, height: app._canvas.height }
+            const started = await window.LayersAgent.exportVideo({
+                framerate: 30,
+                duration: 0.1,
+                loopCount: 1,
+                format: 'zip',
+                quality: 'low',
+                captureOnly: true,
+            })
+            releaseStage()
+            const replacementStatus = await replacementPromise
+            const settled = await window.LayersAgent.waitForJob({
+                jobId: started.result.jobId,
+                timeoutMs: 30000,
+            })
+            if (settled.result.result?.exportId) {
+                await window.LayersAgent.releaseExport({
+                    exportId: settled.result.result.exportId,
+                })
+            }
+            return {
+                original,
+                canvasDuringStage,
+                replacementStatus,
+                jobStatus: settled.result.status,
+                exportWidth: settled.result.result?.width,
+                exportHeight: settled.result.result?.height,
+            }
+        })
+
+        expect(result.canvasDuringStage).toEqual({ width: 333, height: 222 })
+        expect(result.replacementStatus).toBe('failed')
+        expect(result.jobStatus).toBe('succeeded')
+        expect(result.exportWidth).toBe(result.original.width)
+        expect(result.exportHeight).toBe(result.original.height)
+    })
+
     test('rejects out-of-range arguments', async ({ page }) => {
         const r = await page.evaluate(() => window.LayersAgent.exportVideo({
             width: 64, height: 64, framerate: 30, duration: 1000, // out of range (max 300)

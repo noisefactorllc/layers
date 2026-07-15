@@ -11,6 +11,17 @@ const DEFAULT_EFFECT_PARAMS = {
     'synth/gradient': { type: 2 }
 }
 
+function allocateLayerIds(count = 1) {
+    if (!Number.isSafeInteger(count) || count < 1
+        || !Number.isSafeInteger(layerCounter)
+        || layerCounter > Number.MAX_SAFE_INTEGER - (count - 1)) {
+        throw new Error('Layer ID counter exceeded the safe integer range')
+    }
+    const first = layerCounter
+    layerCounter += count
+    return Array.from({ length: count }, (_, index) => `layer-${first + index}`)
+}
+
 /**
  * Convert camelCase to Human Case (Title Case with spaces)
  * @param {string} str - Input string in camelCase
@@ -29,7 +40,7 @@ function camelToHumanCase(str) {
  * @returns {object} Layer object
  */
 export function createLayer(options = {}) {
-    const id = options.id || `layer-${layerCounter++}`
+    const id = options.id || allocateLayerIds()[0]
 
     return {
         id,
@@ -125,7 +136,7 @@ export function createDrawingLayer(name) {
 export function createChildEffect(effectId, name, params = {}) {
     const effectName = effectId.split('/').pop()
     return {
-        id: `layer-${layerCounter++}`,
+        id: allocateLayerIds()[0],
         name: name || camelToHumanCase(effectName),
         effectId,
         effectParams: params,
@@ -139,9 +150,14 @@ export function createChildEffect(effectId, name, params = {}) {
  * @returns {object} Cloned layer
  */
 export function cloneLayer(layer) {
+    const children = (layer.children || []).map(child => ({
+        ...child,
+        effectParams: JSON.parse(JSON.stringify(child.effectParams))
+    }))
+    const ids = allocateLayerIds(1 + children.length)
     return {
         ...layer,
-        id: `layer-${layerCounter++}`,
+        id: ids[0],
         name: `${layer.name} copy`,
         effectParams: JSON.parse(JSON.stringify(layer.effectParams)),
         strokes: layer.strokes ? JSON.parse(JSON.stringify(layer.strokes)) : layer.strokes,
@@ -150,10 +166,9 @@ export function cloneLayer(layer) {
             new Uint8ClampedArray(layer.mask.data),
             layer.mask.width, layer.mask.height
         ) : null,
-        children: (layer.children || []).map(child => ({
+        children: children.map((child, index) => ({
             ...child,
-            id: `layer-${layerCounter++}`,
-            effectParams: JSON.parse(JSON.stringify(child.effectParams))
+            id: ids[index + 1]
         }))
     }
 }
@@ -237,7 +252,7 @@ export function resetLayerCounter() {
  * @param {number} minNext
  */
 export function bumpLayerCounter(minNext) {
-    if (Number.isFinite(minNext) && minNext > layerCounter) {
+    if (Number.isSafeInteger(minNext) && minNext > layerCounter) {
         layerCounter = minNext
     }
 }

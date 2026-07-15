@@ -31,6 +31,7 @@ class MoveTool {
         this._duplicateLayer = options.duplicateLayer
         this._onComplete = options.onComplete
         this._isLayerBlocked = options.isLayerBlocked
+        this._acquireMutation = options.acquireMutation
         this._destructive = options.destructive !== false
         this._toolClass = options.toolClass || 'move-tool'
 
@@ -40,10 +41,12 @@ class MoveTool {
         this._layerStartPos = null
         this._didCloneOperation = false
         this._pointerUpPending = false
+        this._mutationToken = null
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
         this._onMouseUp = this._onMouseUp.bind(this)
+        this._onCancel = this._onCancel.bind(this)
     }
 
     activate() {
@@ -57,6 +60,8 @@ class MoveTool {
 
         const handlers = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp]
         MOUSE_EVENTS.forEach((evt, i) => this._overlay.addEventListener(evt, handlers[i]))
+        this._overlay.addEventListener('pointercancel', this._onCancel)
+        window.addEventListener('blur', this._onCancel)
         this._overlay.classList.add(this._toolClass)
     }
 
@@ -66,7 +71,13 @@ class MoveTool {
 
         const handlers = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp]
         MOUSE_EVENTS.forEach((evt, i) => this._overlay.removeEventListener(evt, handlers[i]))
+        this._overlay.removeEventListener('pointercancel', this._onCancel)
+        window.removeEventListener('blur', this._onCancel)
         this._overlay.classList.remove(this._toolClass)
+        if (this._state === State.EXTRACTING) {
+            this._pointerUpPending = true
+            return
+        }
         this._reset()
     }
 
@@ -85,6 +96,8 @@ class MoveTool {
     }
 
     _reset() {
+        this._mutationToken?.release()
+        this._mutationToken = null
         this._state = State.IDLE
         this._dragStart = null
         this._layerStartPos = null
@@ -113,6 +126,11 @@ class MoveTool {
                 this._showNoLayerDialog?.()
                 return
             }
+            const token = this._acquireMutation
+                ? this._acquireMutation()
+                : { release() {} }
+            if (!token) return
+            this._mutationToken = token
             this._state = State.EXTRACTING
             this._doAsyncThenDrag(
                 () => this._extractSelection(this._destructive),
@@ -128,6 +146,11 @@ class MoveTool {
         }
 
         const coords = this._getCanvasCoords(e)
+        const token = this._acquireMutation
+            ? this._acquireMutation()
+            : { release() {} }
+        if (!token) return
+        this._mutationToken = token
 
         if (!this._destructive && this._duplicateLayer) {
             this._state = State.EXTRACTING
@@ -195,6 +218,14 @@ class MoveTool {
         if (didClone) {
             this._onComplete?.()
         }
+    }
+
+    _onCancel() {
+        if (this._state === State.EXTRACTING) {
+            this._pointerUpPending = true
+            return
+        }
+        if (this._state !== State.IDLE) this._reset()
     }
 }
 

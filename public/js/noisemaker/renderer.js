@@ -44,6 +44,10 @@ export class LayersRenderer {
         // has fire-and-forget rebuild call sites, so overlapping calls would
         // otherwise interleave their compile + post-compile steps.
         this._compileTail = Promise.resolve()
+        // A staged project swap retains the previous renderer state until the
+        // app synchronously commits or explicitly rolls it back. Ordinary
+        // setLayers() calls wait here so they cannot overwrite a staged map.
+        this._stageBarrier = Promise.resolve()
     }
 
     get canvas() {
@@ -280,8 +284,95 @@ export class LayersRenderer {
     }
 
     async setLayers(layers, options = {}) {
+        await this._stageBarrier
+        if (options.isCurrent && !options.isCurrent()) {
+            return { success: true, stale: true }
+        }
         this._layers = layers
-        return this.rebuild(options)
+        const { isCurrent, ...rebuildOptions } = options
+        return this.rebuild(rebuildOptions)
+    }
+
+    /**
+     * Temporarily install a complete, detached layer/resource set and compile
+     * it while retaining the previous renderer state. The caller must invoke
+     * exactly one of commit() or rollback() on the returned handle.
+     *
+     * @param {object} candidate
+     * @param {Array} candidate.layers
+     * @param {Map<string, object>} candidate.mediaTextures
+     * @param {Map<string, object>} candidate.maskTextures
+     * @returns {Promise<{success:boolean,error?:string,commit:Function,rollback:Function}>}
+     */
+    async stageLayerSet({ layers, mediaTextures, maskTextures }) {
+        const waitForTurn = this._stageBarrier
+        let releaseStage
+        const stageGate = new Promise(resolve => { releaseStage = resolve })
+        this._stageBarrier = waitForTurn.then(() => stageGate)
+        await waitForTurn
+
+        const previous = {
+            layers: this._layers,
+            mediaTextures: this._mediaTextures,
+            maskTextures: this._maskTextures,
+            textCanvases: this._textCanvases
+        }
+        const staged = {
+            layers,
+            mediaTextures,
+            maskTextures,
+            textCanvases: new Map()
+        }
+
+        this._layers = staged.layers
+        this._mediaTextures = staged.mediaTextures
+        this._maskTextures = staged.maskTextures
+        this._textCanvases = staged.textCanvases
+
+        let result
+        try {
+            result = await this._serializeCompileOp(
+                () => this._rebuildNow({ force: true, strictTextures: true }))
+        } catch (err) {
+            result = { success: false, error: err.message || String(err) }
+        }
+
+        let settled = false
+        const release = () => {
+            if (settled) return false
+            settled = true
+            releaseStage()
+            return true
+        }
+
+        return {
+            ...result,
+            commit: () => {
+                if (!release()) return { success: true }
+                this.disposeMediaResources(previous.mediaTextures)
+                previous.maskTextures.clear()
+                previous.textCanvases.clear()
+                return { success: true }
+            },
+            rollback: async () => {
+                if (settled) return { success: true }
+                this._layers = previous.layers
+                this._mediaTextures = previous.mediaTextures
+                this._maskTextures = previous.maskTextures
+                this._textCanvases = previous.textCanvases
+                let restoreResult
+                try {
+                    restoreResult = await this._serializeCompileOp(
+                        () => this._rebuildNow({ force: true, strictTextures: true }))
+                } finally {
+                    this.disposeMediaResources(staged.mediaTextures)
+                    staged.maskTextures.clear()
+                    staged.textCanvases.clear()
+                    release()
+                }
+                return restoreResult
+            }
+        }
     }
 
     /**
@@ -319,15 +410,10 @@ export class LayersRenderer {
      * @private
      */
     async _rebuildNow(options = {}) {
-        const { force = false } = options
+        const { force = false, strictTextures = false } = options
 
         if (!this._initialized) {
             await this.init()
-        }
-
-        if (this._layers.length === 0) {
-            this._currentDsl = ''
-            return { success: true }
         }
 
         let dsl = ''
@@ -350,10 +436,10 @@ export class LayersRenderer {
             this._normalizeColorUniforms()
 
             this._buildLayerStepMap()
-            this._uploadMediaTextures()
-            this._uploadMaskTextures()
-            this._uploadTextTextures()
-            this._applyAllLayerParams()
+            this._uploadMediaTextures({ strict: strictTextures })
+            this._uploadMaskTextures({ strict: strictTextures })
+            this._uploadTextTextures({ strict: strictTextures })
+            this._applyAllLayerParams({ strict: strictTextures })
 
             return { success: true }
         } catch (err) {
@@ -527,8 +613,9 @@ export class LayersRenderer {
      * @param {{scaleX: number, scaleY: number, rotation: number, flipH: boolean, flipV: boolean}} transform
      * @param {number} offsetX
      * @param {number} offsetY
+     * @param {{strict?: boolean}} options
      */
-    updateLayerTransform(layerId, transform, offsetX, offsetY) {
+    updateLayerTransform(layerId, transform, offsetX, offsetY, { strict = false } = {}) {
         const stepIndex = this._layerStepMap.get(layerId)
         if (stepIndex === undefined) return
 
@@ -552,6 +639,7 @@ export class LayersRenderer {
                     })
                 }
             } catch (err) {
+                if (strict) throw err
                 console.warn(`[LayersRenderer] Failed to restore texture for layer ${layerId}:`, err)
             }
             this.updateLayerOffset(layerId, offsetX, offsetY)
@@ -570,6 +658,7 @@ export class LayersRenderer {
                     [`step_${stepIndex}`]: { imageSize: [canvas.width, canvas.height], rotation }
                 })
             } catch (err) {
+                if (strict) throw err
                 console.warn(`[LayersRenderer] Failed to upload transformed texture for layer ${layerId}:`, err)
             }
         } else {
@@ -580,6 +669,7 @@ export class LayersRenderer {
                     [`step_${stepIndex}`]: { imageSize: [srcW, srcH], rotation }
                 })
             } catch (err) {
+                if (strict) throw err
                 console.warn(`[LayersRenderer] Failed to restore texture for layer ${layerId}:`, err)
             }
         }
@@ -625,7 +715,7 @@ export class LayersRenderer {
         }
     }
 
-    _applyAllLayerParams() {
+    _applyAllLayerParams({ strict = false } = {}) {
         for (let i = 0; i < this._layers.length; i++) {
             const layer = this._layers[i]
             const isBaseSolid = i === 0 && layer.effectId === 'synth/solid'
@@ -657,7 +747,7 @@ export class LayersRenderer {
                 if (hasTransform) {
                     this.updateLayerTransform(layer.id,
                         { scaleX: sx, scaleY: sy, rotation: rot, flipH: fh, flipV: fv },
-                        layer.offsetX || 0, layer.offsetY || 0)
+                        layer.offsetX || 0, layer.offsetY || 0, { strict })
                 } else {
                     this.updateLayerOffset(layer.id, layer.offsetX || 0, layer.offsetY || 0)
                 }
@@ -665,9 +755,14 @@ export class LayersRenderer {
         }
     }
 
-    _uploadMediaTextures() {
+    _uploadMediaTextures({ strict = false } = {}) {
+        const visibleMediaLayers = this._layers.filter(l =>
+            l.visible && (l.sourceType === 'media' || l.sourceType === 'drawing'))
         const allStepIndices = this._getMediaStepIndices()
         if (!allStepIndices) {
+            if (strict && visibleMediaLayers.length > 0) {
+                throw new Error('No pipeline graph available for media textures')
+            }
             console.warn('[LayersRenderer] No pipeline graph, cannot upload textures')
             return
         }
@@ -676,7 +771,9 @@ export class LayersRenderer {
         const maskStepIndices = this._getMaskMediaStepIndices()
         const stepIndices = allStepIndices.filter(idx => !maskStepIndices.has(idx))
 
-        const visibleMediaLayers = this._layers.filter(l => l.visible && (l.sourceType === 'media' || l.sourceType === 'drawing'))
+        if (strict && stepIndices.length < visibleMediaLayers.length) {
+            throw new Error('Pipeline is missing a media texture step')
+        }
         const stepParameterValues = {}
 
         for (let i = 0; i < visibleMediaLayers.length && i < stepIndices.length; i++) {
@@ -685,6 +782,12 @@ export class LayersRenderer {
             const media = this._mediaTextures.get(layer.id)
 
             if (!media) {
+                if (layer.sourceType === 'drawing' && (layer.strokes?.length || 0) === 0) {
+                    continue
+                }
+                if (strict) {
+                    throw new Error(`No media loaded for layer ${layer.id}`)
+                }
                 console.warn(`[LayersRenderer] No media loaded for layer ${layer.id}`)
                 continue
             }
@@ -699,6 +802,7 @@ export class LayersRenderer {
                     }
                 }
             } catch (err) {
+                if (strict) throw err
                 console.warn(`[LayersRenderer] Failed to upload texture ${textureId}:`, err)
             }
         }
@@ -714,19 +818,41 @@ export class LayersRenderer {
      * with the key `mask_${layerId}`.
      * @private
      */
-    _uploadMaskTextures() {
+    _uploadMaskTextures({ strict = false } = {}) {
+        const visibleMaskedLayers = this._layers.filter(layer =>
+            layer.visible && layer.mask && layer.maskEnabled !== false)
         const passes = this._renderer.pipeline?.graph?.passes
-        if (!passes) return
+        if (!passes) {
+            if (strict && visibleMaskedLayers.length > 0) {
+                throw new Error('No pipeline graph available for mask textures')
+            }
+            return
+        }
+
+        if (strict) {
+            for (const layer of visibleMaskedLayers) {
+                if (!this._maskTextures.has(layer.id)) {
+                    throw new Error(`No mask texture loaded for layer ${layer.id}`)
+                }
+            }
+        }
 
         for (const [layerId, maskData] of this._maskTextures) {
             const maskStepKey = `mask_${layerId}`
             const stepIndex = this._layerStepMap.get(maskStepKey)
-            if (stepIndex === undefined) continue
+            if (stepIndex === undefined) {
+                const layer = this._layers.find(item => item.id === layerId)
+                if (strict && layer?.visible && layer.maskEnabled !== false) {
+                    throw new Error(`Pipeline is missing the mask step for layer ${layerId}`)
+                }
+                continue
+            }
 
             const textureId = `imageTex_step_${stepIndex}`
             try {
                 this._renderer.updateTextureFromSource?.(textureId, maskData.element, { flipY: false })
             } catch (err) {
+                if (strict) throw err
                 console.warn(`[LayersRenderer] Failed to upload mask texture for ${layerId}:`, err)
             }
         }
@@ -749,7 +875,13 @@ export class LayersRenderer {
         return indices
     }
 
-    async loadMedia(layerId, file, mediaType) {
+    /**
+     * Decode media without registering it in the live renderer maps.
+     * @param {File} file
+     * @param {'image'|'video'} mediaType
+     * @returns {Promise<object|null>} prepared renderer resource
+     */
+    async prepareMediaResource(file, mediaType) {
         const url = URL.createObjectURL(file)
 
         if (mediaType === 'image') {
@@ -766,8 +898,7 @@ export class LayersRenderer {
             }
             const width = img.naturalWidth || img.width
             const height = img.naturalHeight || img.height
-            this._mediaTextures.set(layerId, { type: 'image', element: img, url, width, height })
-            return { width, height }
+            return { type: 'image', element: img, url, width, height }
         }
 
         if (mediaType === 'video') {
@@ -796,18 +927,93 @@ export class LayersRenderer {
             }
             const width = video.videoWidth
             const height = video.videoHeight
-            this._mediaTextures.set(layerId, { type: 'video', element: video, url, width, height })
 
             try {
                 await video.play()
             } catch (playError) {
                 console.warn('[LayersRenderer] Video autoplay blocked:', playError.message)
             }
-            return { width, height }
+            return { type: 'video', element: video, url, width, height }
         }
 
         URL.revokeObjectURL(url) // unknown media type — nothing stored, don't leak
-        return { width: 0, height: 0 }
+        return null
+    }
+
+    /**
+     * Wrap a rasterized canvas as a detached media resource.
+     * @param {HTMLCanvasElement} canvas
+     * @returns {object}
+     */
+    prepareCanvasMediaResource(canvas) {
+        return {
+            type: 'image',
+            element: canvas,
+            width: canvas.width,
+            height: canvas.height
+        }
+    }
+
+    /**
+     * Convert ImageData to the detached canvas resource used by mask uploads.
+     * @param {ImageData} maskData
+     * @returns {object}
+     */
+    prepareMaskTexture(maskData) {
+        const canvas = document.createElement('canvas')
+        canvas.width = maskData.width
+        canvas.height = maskData.height
+        const ctx = canvas.getContext('2d')
+        ctx.putImageData(maskData, 0, 0)
+        return {
+            element: canvas,
+            width: maskData.width,
+            height: maskData.height
+        }
+    }
+
+    /**
+     * Register a prepared resource, disposing any previous resource at the id.
+     * @param {string} layerId
+     * @param {object} resource
+     */
+    setMediaResource(layerId, resource) {
+        const previous = this._mediaTextures.get(layerId)
+        if (previous && previous !== resource) this.disposeMediaResource(previous)
+        this._mediaTextures.set(layerId, resource)
+    }
+
+    /**
+     * Release a detached or registered media resource.
+     * @param {object|null} media
+     */
+    disposeMediaResource(media) {
+        if (!media) return
+        try {
+            if (media.url) URL.revokeObjectURL(media.url)
+            if (media.type === 'video' && media.element) {
+                media.element.pause()
+                media.element.src = ''
+            }
+        } catch (err) {
+            console.warn('[LayersRenderer] Failed to dispose media resource:', err)
+        }
+    }
+
+    /**
+     * Release every resource owned by a map and empty it.
+     * @param {Map<string, object>} resources
+     */
+    disposeMediaResources(resources) {
+        for (const media of resources.values()) this.disposeMediaResource(media)
+        resources.clear()
+    }
+
+    async loadMedia(layerId, file, mediaType) {
+        const resource = await this.prepareMediaResource(file, mediaType)
+        if (!resource) return { width: 0, height: 0 }
+        this.setMediaResource(layerId, resource)
+        return { width: resource.width, height: resource.height }
     }
 
     getMediaInfo(layerId) {
@@ -817,14 +1023,7 @@ export class LayersRenderer {
     unloadMedia(layerId) {
         const media = this._mediaTextures.get(layerId)
         if (!media) return
-
-        if (media.url) {
-            URL.revokeObjectURL(media.url)
-        }
-        if (media.type === 'video' && media.element) {
-            media.element.pause()
-            media.element.src = ''
-        }
+        this.disposeMediaResource(media)
         this._mediaTextures.delete(layerId)
     }
 
@@ -834,17 +1033,7 @@ export class LayersRenderer {
      * @param {ImageData} maskData - Grayscale mask ImageData
      */
     uploadMaskTexture(layerId, maskData) {
-        const canvas = document.createElement('canvas')
-        canvas.width = maskData.width
-        canvas.height = maskData.height
-        const ctx = canvas.getContext('2d')
-        ctx.putImageData(maskData, 0, 0)
-
-        this._maskTextures.set(layerId, {
-            element: canvas,
-            width: maskData.width,
-            height: maskData.height
-        })
+        this._maskTextures.set(layerId, this.prepareMaskTexture(maskData))
     }
 
     /**
@@ -862,7 +1051,7 @@ export class LayersRenderer {
         return entry?.externalTexture === 'textTex'
     }
 
-    _uploadTextTextures() {
+    _uploadTextTextures({ strict = false } = {}) {
         // Prune canvases whose text layer no longer exists (deleted, flattened,
         // merged, or replaced). Runs on every rebuild, so this is the single
         // chokepoint that keeps _textCanvases from accumulating orphans. Keyed
@@ -879,8 +1068,17 @@ export class LayersRenderer {
             }
         }
 
+        const textLayers = this._layers.filter(l =>
+            l.visible && l.sourceType === 'effect' && this._isTextEffect(l.effectId)
+        )
+
         const passes = this._renderer.pipeline?.graph?.passes
-        if (!passes) return
+        if (!passes) {
+            if (strict && textLayers.length > 0) {
+                throw new Error('Pipeline is missing a text texture step')
+            }
+            return
+        }
 
         const textStepIndices = []
         for (const pass of passes) {
@@ -890,9 +1088,9 @@ export class LayersRenderer {
         }
         const uniqueStepIndices = [...new Set(textStepIndices)]
 
-        const textLayers = this._layers.filter(l =>
-            l.visible && l.sourceType === 'effect' && this._isTextEffect(l.effectId)
-        )
+        if (strict && uniqueStepIndices.length < textLayers.length) {
+            throw new Error('Pipeline is missing a text texture step')
+        }
 
         for (let i = 0; i < textLayers.length && i < uniqueStepIndices.length; i++) {
             const layer = textLayers[i]
@@ -907,13 +1105,16 @@ export class LayersRenderer {
                 })
             }
 
-            this._renderTextCanvas(layer.id, layer.effectParams || {})
+            this._renderTextCanvas(layer.id, layer.effectParams || {}, { strict })
         }
     }
 
-    _renderTextCanvas(layerId, params) {
+    _renderTextCanvas(layerId, params, { strict = false } = {}) {
         const state = this._textCanvases.get(layerId)
-        if (!state || !this._renderer.pipeline) return
+        if (!state || !this._renderer.pipeline) {
+            if (strict) throw new Error(`Text texture state is missing for layer "${layerId}"`)
+            return
+        }
 
         const { canvas } = state
         canvas.width = this.width
@@ -962,6 +1163,7 @@ export class LayersRenderer {
         try {
             this._renderer.updateTextureFromSource?.(`textTex_step_${state.stepIndex}`, canvas, { flipY: true })
         } catch (err) {
+            if (strict) throw err
             console.warn(`[LayersRenderer] Failed to upload text texture textTex_step_${state.stepIndex}:`, err)
         }
     }

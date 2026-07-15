@@ -390,11 +390,11 @@ function base64ToFile(data, mimeType, name) {
  * @throws INVALID_ARGS_ENUM — when source.kind isn't 'base64' or 'url'.
  * @throws RESOURCE_DECODE_FAILED — when fetching a source URL fails or returns non-2xx.
  */
-export async function addLayer(args, app) {
+export async function addLayer(args, app, mutationToken = null) {
     const { kind } = args
     if (kind === 'effect') return addEffectLayer(args, app)
     if (kind === 'drawing') return addDrawingLayer(args, app)
-    if (kind === 'media') return addMediaLayer(args, app)
+    if (kind === 'media') return addMediaLayer(args, app, mutationToken)
     if (kind === 'text') return addTextLayer(args, app)
     // Schema enum guarantees one of the four; this is unreachable.
     throw commandError('INVALID_ARGS_ENUM', `Unknown kind: ${kind}`, { field: 'kind', got: kind })
@@ -444,7 +444,7 @@ async function addDrawingLayer({ name }, app) {
     return { result: { layerId: layer.id } }
 }
 
-async function addMediaLayer({ source, mediaType, name }, app) {
+async function addMediaLayer({ source, mediaType, name }, app, mutationToken = null) {
     if (!source) {
         throw commandError('INVALID_ARGS_REQUIRED', 'source is required for kind=media',
             { field: 'source' })
@@ -461,8 +461,22 @@ async function addMediaLayer({ source, mediaType, name }, app) {
             'Media layers are not supported while a Layers collaboration session is online', {})
     }
     const file = await sourceToFile(source, name || 'media')
-    await app._handleAddMediaLayer(file, mediaType)
-    const layer = app._layers[app._layers.length - 1]
+    let outcome
+    try {
+        outcome = await app._handleAddMediaLayer(file, mediaType, { mutationToken })
+    } catch (err) {
+        throw commandError('RESOURCE_DECODE_FAILED',
+            `Failed to decode media: ${err.message || err}`,
+            { mediaType })
+    }
+    if (outcome?.status === 'blocked-online') {
+        throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
+            'Media layers are not supported while a Layers collaboration session is online', {})
+    }
+    const layer = app._layers.find(candidate => candidate.id === outcome?.layerId)
+    if (!layer) {
+        throw commandError('RESOURCE_DECODE_FAILED', 'Media layer was not added', { mediaType })
+    }
     if (name) layer.name = name
     return { result: { layerId: layer.id } }
 }
@@ -1245,8 +1259,9 @@ export async function exportImage(args, app) {
  * @throws INVALID_ARGS_REQUIRED|INVALID_ARGS_TYPE|INVALID_ARGS_ENUM|RESOURCE_DECODE_FAILED
  *         (forwarded from addMediaLayer)
  */
-export async function pasteImageFromBytes({ source, name }, app) {
-    return addMediaLayer({ source, mediaType: 'image', name: name || 'pasted' }, app)
+export async function pasteImageFromBytes({ source, name }, app, mutationToken = null) {
+    return addMediaLayer(
+        { source, mediaType: 'image', name: name || 'pasted' }, app, mutationToken)
 }
 
 /**
@@ -1976,70 +1991,90 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
 }
 
 /**
- * If a Seance session is online, take it offline first. Used by commands
- * that wholesale-replace `_layers`/canvas (new/open project) — the human
- * File-menu path for the same actions confirms this with the user first
- * (_confirmLeaveOnlineSession), but an agent can't answer a confirm dialog,
- * so this does it unconditionally and reports it via the envelope's
- * `warnings` array instead of blocking or silently corrupting the session.
+ * Capture whether an agent replacement must take an online session offline.
+ * The actual disconnect is deferred to the atomic commit so a failed
+ * candidate leaves the current shared session intact.
  * @param {object} app
  * @returns {Array<{code: string, message: string}>} warnings (empty array
  *   when the session was already offline)
  */
-function offlineIfOnline(app) {
-    if (!app._onlineAdapter?.isOnline()) return []
-    app._onlineAdapter.goOffline()
-    return [{
-        code: 'SESSION_TAKEN_OFFLINE',
-        message: 'A Seance session was online; taken offline first (this command replaces the whole composition, which a shared session can’t represent)'
-    }]
+function onlineReplacementState(app) {
+    const leaveOnline = Boolean(app._onlineAdapter?.isOnline())
+    return {
+        leaveOnline,
+        warnings: leaveOnline ? [{
+            code: 'SESSION_TAKEN_OFFLINE',
+            message: 'A Seance session was online; taken offline when the replacement committed (a shared session can’t represent a whole-composition replacement)'
+        }] : []
+    }
 }
 
 /**
  * Reset state and start a new project at the given canvas size. Discards
  * unsaved changes silently (agents must save first if they care). If a
- * Seance session is online, it's taken offline first — see
- * offlineIfOnline() — and the envelope's `warnings` array reports it.
+ * Seance session is online, a successful commit takes it offline and the
+ * envelope's `warnings` array reports it.
  *
  * @param {{width: number, height: number, name?: string}} args
  * @returns {Promise<{result: {width: number, height: number}, warnings?: Array<{code: string, message: string}>}>}
  */
-export async function newProject({ width, height, name }, app) {
-    const warnings = offlineIfOnline(app)
-    app._finalizePendingUndo?.()
-    app._selectionManager?.clearSelection?.()
-    app._resetLayers()
-    app._renderer?.stop?.()
-    app._resizeCanvas(width, height)
-    await app._rebuild?.()
-    await new Promise(resolve => requestAnimationFrame(resolve))
-    app._renderer?.start?.()
-    app._currentProjectId = null
-    app._currentProjectName = name || null
-    app._markClean?.()
-    app._updateLayerStack?.()
-    app._pushUndoState?.()
+export async function newProject({ width, height, name }, app, mutationToken = null) {
+    const { leaveOnline, warnings } = onlineReplacementState(app)
+    const generation = ++app._replacementGeneration
+    const outcome = await app._runProjectReplacement(
+        mutationToken,
+        (token, replacementGate) => app._installPreparedProject({
+            layers: [],
+            width,
+            height,
+            projectId: null,
+            projectName: name || null,
+            dirty: false,
+            selectedLayerId: null,
+            mediaTextures: new Map(),
+            maskTextures: new Map(),
+        }, {
+            generation,
+            leaveOnline,
+            mutationToken: token,
+            replacementGate,
+        }))
+    if (outcome.status !== 'opened') {
+        throw commandError('CONFLICT_PROJECT_REPLACEMENT',
+            outcome.error?.message || 'New project was cancelled by another replacement',
+            { status: outcome.status })
+    }
     return { result: { width, height }, warnings }
 }
 
 /**
  * Load a previously-saved project by id. If a Seance session is online,
- * it's taken offline first — see offlineIfOnline() — and the envelope's
- * `warnings` array reports it.
+ * a successful commit takes it offline and the envelope's `warnings` array
+ * reports it.
  *
  * @param {{projectId: string}} args
  * @returns {Promise<{result: {projectId: string}, warnings?: Array<{code: string, message: string}>}>}
  * @throws NOT_FOUND_PROJECT — when no project has that id.
  */
-export async function openProject({ projectId }, app) {
+export async function openProject({ projectId }, app, mutationToken = null) {
     const stored = await getProjectStorage(projectId).catch(() => null)
     if (!stored) {
         throw commandError('NOT_FOUND_PROJECT',
             `Project not found: ${projectId}`,
             { projectId })
     }
-    const warnings = offlineIfOnline(app)
-    await app._loadProject(projectId)
+    const { leaveOnline, warnings } = onlineReplacementState(app)
+    const status = await app._loadProject(projectId, { leaveOnline, mutationToken })
+    if (status === 'not-found') {
+        throw commandError('NOT_FOUND_PROJECT',
+            `Project not found: ${projectId}`,
+            { projectId })
+    }
+    if (status !== 'opened') {
+        throw commandError('CONFLICT_PROJECT_REPLACEMENT',
+            `Project load was cancelled: ${projectId}`,
+            { projectId, status })
+    }
     return { result: { projectId }, warnings }
 }
 
@@ -2052,7 +2087,7 @@ export async function openProject({ projectId }, app) {
  * @returns {Promise<{result: {projectId: string}}>}
  * @throws INVALID_ARGS_REQUIRED — when `name` is omitted and there's no current project.
  */
-export async function saveProject({ name }, app) {
+export async function saveProject({ name }, app, mutationToken = null) {
     // The schema enforces `name: { type: 'string', minLength: 1 }` (when
     // supplied), so a missing/empty/non-string `name` is rejected by the
     // dispatcher before we get here. The only remaining business rule is
@@ -2064,7 +2099,7 @@ export async function saveProject({ name }, app) {
             'name is required when there is no current project to update',
             { field: 'name' })
     }
-    await app._saveProject(app._currentProjectId, useName)
+    await app._saveProject(app._currentProjectId, useName, { mutationToken })
     return { result: { projectId: app._currentProjectId } }
 }
 
@@ -2076,10 +2111,10 @@ export async function saveProject({ name }, app) {
  * @returns {Promise<{result: {projectId: string}}>}
  * @throws INVALID_ARGS_REQUIRED — when `name` is empty or missing.
  */
-export async function saveProjectAs({ name }, app) {
+export async function saveProjectAs({ name }, app, mutationToken = null) {
     // The schema marks `name` required with minLength:1 — the dispatcher
     // rejects empty/missing/non-string values before reaching this handler.
-    await app._saveProject(null, name)
+    await app._saveProject(null, name, { mutationToken })
     return { result: { projectId: app._currentProjectId } }
 }
 
@@ -2464,16 +2499,14 @@ export async function exportVideo(args, app) {
             { jobId: existing.id })
     }
 
-    const w = args?.width ?? app._canvas.width
-    const h = args?.height ?? app._canvas.height
     const captureOnly = !!args?.captureOnly
     // Pre-compute the export filename so we can pass it into files.js when
     // captureOnly is set — keeps the MCP sidecar's filename in sync with the
     // recentExports entry below.
     const filename = timestampedFilename(args?.filename, args?.format || 'mp4')
     const settings = {
-        width: Math.max(2, Math.floor(w / 2) * 2),
-        height: Math.max(2, Math.floor(h / 2) * 2),
+        width: args?.width ?? null,
+        height: args?.height ?? null,
         framerate: args?.framerate ?? 30,
         duration: args?.duration ?? 15,
         loopCount: args?.loopCount ?? 1,
@@ -2499,15 +2532,25 @@ export async function exportVideo(args, app) {
     let jobId
     try {
         const { id } = jobsRegistry.createJob(JOB_KINDS.EXPORT_VIDEO, async (api) => {
-            const result = await runVideoExport({
-                settings,
-                canvas: app._canvas,
-                renderer: app._renderer,
-                files: app._files,
-                getResolution: () => ({ width: app._canvas.width, height: app._canvas.height }),
-                setResolution: (w, h) => app._resizeCanvas(w, h),
-                abortSignal: api.abortSignal,
-                onProgress: (current, total, phase) => api.reportProgress(phase, current, total)
+            const result = await app._runProjectLifecycle(null, () => {
+                const exportSettings = {
+                    ...settings,
+                    width: Math.max(2, Math.floor(
+                        (settings.width ?? app._canvas.width) / 2) * 2),
+                    height: Math.max(2, Math.floor(
+                        (settings.height ?? app._canvas.height) / 2) * 2),
+                }
+                return runVideoExport({
+                    settings: exportSettings,
+                    canvas: app._canvas,
+                    renderer: app._renderer,
+                    files: app._files,
+                    getResolution: () => ({ width: app._canvas.width, height: app._canvas.height }),
+                    setResolution: (w, h) => app._resizeCanvas(w, h),
+                    abortSignal: api.abortSignal,
+                    onProgress: (current, total, phase) =>
+                        api.reportProgress(phase, current, total)
+                })
             })
 
             // Recorded only on success — cancelled jobs leave partial bytes

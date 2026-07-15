@@ -78,7 +78,7 @@ class OpenDialog {
     }
 
     get element() {
-        return { close: () => this._backdrop.classList.remove('visible') }
+        return { close: () => this._backdrop?.classList.remove('visible') }
     }
 
     _createModal() {
@@ -218,9 +218,12 @@ class OpenDialog {
         // ESC key to close
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && this._backdrop.classList.contains('visible')) {
+                if (document.querySelector('dialog[open]')) return
+                e.preventDefault()
+                e.stopImmediatePropagation()
                 this._close()
             }
-        })
+        }, { capture: true })
     }
 
     _handleTypeSelect(type) {

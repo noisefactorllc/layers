@@ -227,41 +227,42 @@
 
                 <!-- Filter Menu -->
                 <div class="menu" id="filterMenu">
-                    <button class="menu-title" type="button" aria-haspopup="menu"
-                        aria-expanded="false">filter</button>
-                    <div class="menu-items hide" role="menu">
-                        <button class="has-submenu" type="button" role="menuitem" tabindex="-1"
-                            data-submenu="blur" aria-haspopup="menu" aria-expanded="false">blur</button>
-                        <button class="has-submenu" type="button" role="menuitem" tabindex="-1"
-                            data-submenu="sharpen" aria-haspopup="menu" aria-expanded="false">sharpen</button>
-                        <button class="has-submenu" type="button" role="menuitem" tabindex="-1"
-                            data-submenu="pixelate" aria-haspopup="menu" aria-expanded="false">pixelate</button>
-                        <button class="has-submenu" type="button" role="menuitem" tabindex="-1"
-                            data-submenu="stylize" aria-haspopup="menu" aria-expanded="false">stylize</button>
-                        <button class="has-submenu" type="button" role="menuitem" tabindex="-1"
-                            data-submenu="sketch" aria-haspopup="menu" aria-expanded="false">sketch</button>
-                        <button class="has-submenu" type="button" role="menuitem" tabindex="-1"
-                            data-submenu="brush-strokes" aria-haspopup="menu" aria-expanded="false">brush strokes</button>
-                        <button class="has-submenu" type="button" role="menuitem" tabindex="-1"
-                            data-submenu="artistic" aria-haspopup="menu" aria-expanded="false">artistic</button>
-                        <button class="has-submenu" type="button" role="menuitem" tabindex="-1"
-                            data-submenu="texture" aria-haspopup="menu" aria-expanded="false">texture</button>
+                    <button class="menu-title" id="filterMenuTitle" type="button" aria-haspopup="menu"
+                        aria-controls="filterMenuItems" aria-expanded="false">filter</button>
+                    <div class="menu-items hide" id="filterMenuItems" role="menu"
+                        aria-labelledby="filterMenuTitle">
+                        <button class="has-submenu" id="filterBlurTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="blur" aria-haspopup="menu" aria-controls="filterBlurMenu" aria-expanded="false">blur</button>
+                        <button class="has-submenu" id="filterSharpenTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="sharpen" aria-haspopup="menu" aria-controls="filterSharpenMenu" aria-expanded="false">sharpen</button>
+                        <button class="has-submenu" id="filterPixelateTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="pixelate" aria-haspopup="menu" aria-controls="filterPixelateMenu" aria-expanded="false">pixelate</button>
+                        <button class="has-submenu" id="filterStylizeTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="stylize" aria-haspopup="menu" aria-controls="filterStylizeMenu" aria-expanded="false">stylize</button>
+                        <button class="has-submenu" id="filterSketchTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="sketch" aria-haspopup="menu" aria-controls="filterSketchMenu" aria-expanded="false">sketch</button>
+                        <button class="has-submenu" id="filterBrushStrokesTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="brush-strokes" aria-haspopup="menu" aria-controls="filterBrushStrokesMenu" aria-expanded="false">brush strokes</button>
+                        <button class="has-submenu" id="filterArtisticTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="artistic" aria-haspopup="menu" aria-controls="filterArtisticMenu" aria-expanded="false">artistic</button>
+                        <button class="has-submenu" id="filterTextureTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="texture" aria-haspopup="menu" aria-controls="filterTextureMenu" aria-expanded="false">texture</button>
                     </div>
-                    <div class="submenu hide" role="menu" data-submenu-id="blur">
+                    <div class="submenu hide" id="filterBlurMenu" role="menu" aria-labelledby="filterBlurTrigger" data-submenu-id="blur">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/blur">blur</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/motionBlur">motion blur</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/zoomBlur">zoom blur</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/spinBlur">spin blur</button>
                     </div>
-                    <div class="submenu hide" role="menu" data-submenu-id="sharpen">
+                    <div class="submenu hide" id="filterSharpenMenu" role="menu" aria-labelledby="filterSharpenTrigger" data-submenu-id="sharpen">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/sharpen">sharpen</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/unsharpMask">unsharp mask</button>
                     </div>
-                    <div class="submenu hide" role="menu" data-submenu-id="pixelate">
+                    <div class="submenu hide" id="filterPixelateMenu" role="menu" aria-labelledby="filterPixelateTrigger" data-submenu-id="pixelate">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/halftone">halftone</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/dither">dither</button>
                     </div>
-                    <div class="submenu hide" role="menu" data-submenu-id="stylize">
+                    <div class="submenu hide" id="filterStylizeMenu" role="menu" aria-labelledby="filterStylizeTrigger" data-submenu-id="stylize">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/bloom">bloom</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/vignette">vignette</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/edge">edge detect</button>
@@ -270,20 +271,20 @@
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/oilPaint">oil paint</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/wind">wind</button>
                     </div>
-                    <div class="submenu hide" role="menu" data-submenu-id="sketch">
+                    <div class="submenu hide" id="filterSketchMenu" role="menu" aria-labelledby="filterSketchTrigger" data-submenu-id="sketch">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/chrome">chrome</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/photocopy">photocopy</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/stamp">stamp</button>
                     </div>
-                    <div class="submenu hide" role="menu" data-submenu-id="brush-strokes">
+                    <div class="submenu hide" id="filterBrushStrokesMenu" role="menu" aria-labelledby="filterBrushStrokesTrigger" data-submenu-id="brush-strokes">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/hatch">hatch</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/strokes">strokes</button>
                     </div>
-                    <div class="submenu hide" role="menu" data-submenu-id="artistic">
+                    <div class="submenu hide" id="filterArtisticMenu" role="menu" aria-labelledby="filterArtisticTrigger" data-submenu-id="artistic">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/watercolor">watercolor</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/plasticWrap">plastic wrap</button>
                     </div>
-                    <div class="submenu hide" role="menu" data-submenu-id="texture">
+                    <div class="submenu hide" id="filterTextureMenu" role="menu" aria-labelledby="filterTextureTrigger" data-submenu-id="texture">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/grain">grain</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/craquelure">craquelure</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/mosaicTiles">mosaic tiles</button>

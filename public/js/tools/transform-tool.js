@@ -54,6 +54,7 @@ class TransformTool {
         this._showNoLayerDialog = options.showNoLayerDialog
         this._selectTopmostLayer = options.selectTopmostLayer
         this._isLayerBlocked = options.isLayerBlocked
+        this._acquireMutation = options.acquireMutation
 
         this._active = false
         this._state = State.IDLE
@@ -61,11 +62,13 @@ class TransformTool {
         this._dragStart = null
         this._startBounds = null
         this._startTransform = null
+        this._mutationToken = null
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
         this._onMouseUp = this._onMouseUp.bind(this)
         this._onKeyDown = this._onKeyDown.bind(this)
+        this._onCancel = this._onCancel.bind(this)
     }
 
     activate() {
@@ -80,6 +83,8 @@ class TransformTool {
         const handlers = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp]
         MOUSE_EVENTS.forEach((evt, i) => this._overlay.addEventListener(evt, handlers[i]))
         document.addEventListener('keydown', this._onKeyDown)
+        this._overlay.addEventListener('pointercancel', this._onCancel)
+        window.addEventListener('blur', this._onCancel)
         this._overlay.classList.add('transform-tool')
         this._drawOverlay()
     }
@@ -91,6 +96,8 @@ class TransformTool {
         const handlers = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp]
         MOUSE_EVENTS.forEach((evt, i) => this._overlay.removeEventListener(evt, handlers[i]))
         document.removeEventListener('keydown', this._onKeyDown)
+        this._overlay.removeEventListener('pointercancel', this._onCancel)
+        window.removeEventListener('blur', this._onCancel)
         this._overlay.classList.remove('transform-tool')
         this._clearOverlay()
         this._reset()
@@ -111,6 +118,8 @@ class TransformTool {
     }
 
     _reset() {
+        this._mutationToken?.release()
+        this._mutationToken = null
         this._state = State.IDLE
         this._activeHandle = Handle.NONE
         this._dragStart = null
@@ -217,6 +226,11 @@ class TransformTool {
         const handle = this._hitTest(coords)
 
         if (handle === Handle.NONE) return
+        const token = this._acquireMutation
+            ? this._acquireMutation()
+            : { release() {} }
+        if (!token) return
+        this._mutationToken = token
 
         this._state = State.DRAGGING
         this._activeHandle = handle
@@ -245,11 +259,13 @@ class TransformTool {
 
     _onMouseUp() {
         if (this._state !== State.DRAGGING) return
-        this._state = State.IDLE
-        this._activeHandle = Handle.NONE
-        this._dragStart = null
-        this._startBounds = null
-        this._startTransform = null
+        this._reset()
+        this._drawOverlay()
+    }
+
+    _onCancel() {
+        if (this._state !== State.DRAGGING) return
+        this._reset()
         this._drawOverlay()
     }
 

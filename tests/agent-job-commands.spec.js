@@ -57,6 +57,41 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
         expect(r.result.timedOut).toBe(true)
     })
 
+    test('waitForJob does not hold the project lifecycle while it waits', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            let releaseJob
+            const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async () => {
+                await new Promise(resolve => { releaseJob = resolve })
+                return { ok: 1 }
+            })
+            while (!releaseJob) await new Promise(resolve => setTimeout(resolve, 0))
+            const waitPromise = window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 2000 })
+            let replacementSettled = false
+            const replacementPromise = app._handleCreateGradientBase(333, 222)
+                .then(status => { replacementSettled = true; return status })
+            await new Promise(resolve => setTimeout(resolve, 250))
+            const replacementCompletedWhileJobPending = replacementSettled
+            releaseJob()
+            const [waitEnvelope, replacementStatus] = await Promise.all([
+                waitPromise,
+                replacementPromise,
+            ])
+            return {
+                replacementCompletedWhileJobPending,
+                replacementStatus,
+                jobStatus: waitEnvelope.result.status,
+            }
+        })
+
+        expect(result).toEqual({
+            replacementCompletedWhileJobPending: true,
+            replacementStatus: 'opened',
+            jobStatus: 'succeeded',
+        })
+    })
+
     test('cancelJob transitions to cancelled', async ({ page }) => {
         await bootApp(page)
         const final = await page.evaluate(async () => {
@@ -70,5 +105,27 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
             return settled.result
         })
         expect(final.status).toBe('cancelled')
+    })
+
+    test('cancelJob can interrupt a concurrent waitForJob command', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async (api) => {
+                while (!api.abortSignal.aborted) {
+                    await new Promise(resolve => setTimeout(resolve, 5))
+                }
+                api.checkAbort()
+            })
+            const waitPromise = window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 2000 })
+            await new Promise(resolve => setTimeout(resolve, 25))
+            const cancelEnvelope = await window.LayersAgent.cancelJob({ jobId: id })
+            const waitEnvelope = await waitPromise
+            return { cancelEnvelope, waitEnvelope }
+        })
+
+        expect(result.cancelEnvelope.ok).toBe(true)
+        expect(result.waitEnvelope.ok).toBe(true)
+        expect(result.waitEnvelope.result.status).toBe('cancelled')
+        expect(result.waitEnvelope.result.timedOut).not.toBe(true)
     })
 })
