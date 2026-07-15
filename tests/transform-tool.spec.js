@@ -29,6 +29,7 @@ test.describe('Transform tool', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
+        await addColorLayer(page, 'red')
 
         const transformBtn = await page.$('#transformToolBtn')
         expect(transformBtn).not.toBeNull()
@@ -45,6 +46,7 @@ test.describe('Transform tool', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
+        await addColorLayer(page, 'red')
 
         await page.keyboard.press('t')
 
@@ -58,6 +60,7 @@ test.describe('Transform tool', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
+        await addColorLayer(page, 'red')
 
         // Activate transform tool
         await page.click('#transformToolBtn')
@@ -82,6 +85,170 @@ test.describe('Transform tool', () => {
             return !document.getElementById('transformToolBtn').classList.contains('active')
         })
         expect(isTransformDeactivated).toBe(true)
+    })
+
+    test('Escape during a drag restores the starting transform and history', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+        await addColorLayer(page, 'red')
+
+        const result = await page.evaluate(() => {
+            const app = window.layersApp
+            const layer = app._getActiveLayer()
+            const state = () => ({
+                offsetX: layer.offsetX,
+                offsetY: layer.offsetY,
+                scaleX: layer.scaleX,
+                scaleY: layer.scaleY,
+                rotation: layer.rotation,
+                dirty: app._isDirty,
+                mutationRevision: app._projectMutationRevision,
+                undoStackLength: app._undoManager._stack.length,
+                undoIndex: app._undoManager._index,
+                pendingUndo: Boolean(app._undoDebounceTimer),
+            })
+            const fireMouse = (type, x, y) => {
+                const overlay = app._selectionOverlay
+                const rect = overlay.getBoundingClientRect()
+                overlay.dispatchEvent(new MouseEvent(type, {
+                    clientX: rect.left + x * rect.width / overlay.width,
+                    clientY: rect.top + y * rect.height / overlay.height,
+                    bubbles: true,
+                    button: 0,
+                }))
+            }
+            app._setToolMode('transform')
+            const before = state()
+            fireMouse('mousedown', 512, 512)
+            fireMouse('mousemove', 562, 537)
+            const during = state()
+            document.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Escape', bubbles: true,
+            }))
+            return {
+                before,
+                during,
+                after: state(),
+                lifecycleReleased: !app._projectLifecycleActive,
+                tool: app._currentTool,
+            }
+        })
+
+        expect(result.during.offsetX).not.toBe(result.before.offsetX)
+        expect(result.after).toEqual(result.before)
+        expect(result.lifecycleReleased).toBe(true)
+        expect(result.tool).toBe('selection')
+    })
+
+    test('effect layers cannot enter transform mode or record invisible transforms', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+
+        const before = await page.evaluate(() => {
+            const app = window.layersApp
+            const layer = app._getActiveLayer()
+            return {
+                tool: app._currentTool,
+                offsetX: layer.offsetX,
+                scaleX: layer.scaleX,
+                rotation: layer.rotation,
+            }
+        })
+        await page.click('#transformToolBtn')
+        const after = await page.evaluate(() => {
+            const app = window.layersApp
+            const layer = app._getActiveLayer()
+            app._applyLayerTransform({ offsetX: 25, scaleX: 2, rotation: 30 })
+            return {
+                tool: app._currentTool,
+                offsetX: layer.offsetX,
+                scaleX: layer.scaleX,
+                rotation: layer.rotation,
+                transformActive: document.getElementById('transformToolBtn')
+                    .classList.contains('active'),
+            }
+        })
+
+        expect(after).toEqual({ ...before, transformActive: false })
+    })
+
+    test('drawing layers apply transform-tool changes to their live raster', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+        const layerId = await page.evaluate(async () => {
+            await window.LayersAgent.ready
+            const painted = await window.LayersAgent.paintStroke({
+                points: [[10, 10], [50, 50], [100, 100]],
+                size: 5,
+                color: '#ff0000',
+            })
+            return painted.result.layerId
+        })
+        await page.click('#transformToolBtn')
+
+        const result = await page.evaluate((layerId) => {
+            const app = window.layersApp
+            const media = app._renderer.getMediaInfo(layerId)
+            app._applyLayerTransform({ scaleX: 0.5, scaleY: 0.5 })
+            return {
+                tool: app._currentTool,
+                sourceSize: [media.width, media.height],
+                transformedSize: media.transformCanvas
+                    ? [media.transformCanvas.width, media.transformCanvas.height]
+                    : null,
+            }
+        }, layerId)
+
+        expect(result.tool).toBe('transform')
+        expect(result.transformedSize).toEqual([
+            Math.ceil(result.sourceSize[0] * 0.5),
+            Math.ceil(result.sourceSize[1] * 0.5),
+        ])
+    })
+
+    test('transform tool rejects oversized rasters before allocation or history changes', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+        await addColorLayer(page, 'red', 1024)
+
+        const result = await page.evaluate(() => {
+            const app = window.layersApp
+            const layer = app._getActiveLayer()
+            const before = {
+                scaleX: layer.scaleX,
+                scaleY: layer.scaleY,
+                undoLength: app._undoManager._stack.length,
+                undoIndex: app._undoManager._index,
+                dirty: app._isDirty,
+            }
+            let drawCalls = 0
+            app._renderer._drawTransformedMediaFrame = () => {
+                drawCalls++
+                const canvas = document.createElement('canvas')
+                canvas.width = 1
+                canvas.height = 1
+                return canvas
+            }
+            app._applyLayerTransform({ scaleX: 100, scaleY: 100 })
+            return {
+                drawCalls,
+                before,
+                after: {
+                    scaleX: layer.scaleX,
+                    scaleY: layer.scaleY,
+                    undoLength: app._undoManager._stack.length,
+                    undoIndex: app._undoManager._index,
+                    dirty: app._isDirty,
+                },
+            }
+        })
+
+        expect(result.drawCalls).toBe(0)
+        expect(result.after).toEqual(result.before)
     })
 
     test('backward compatibility: layers without transform fields use defaults', async ({ page }) => {

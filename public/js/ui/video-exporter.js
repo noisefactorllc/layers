@@ -38,10 +38,9 @@ async function runVideoExportInner(opts) {
 
     const totalFrames = Math.ceil(settings.framerate * settings.duration * settings.loopCount)
     const wasRunning = renderer.isRunning
-    let pausedNormalizedTime = 0
+    const pausedNormalizedTime = renderer.getPausedNormalizedTime()
 
     if (wasRunning) {
-        pausedNormalizedTime = renderer.getPausedNormalizedTime()
         renderer.stop()
     }
 
@@ -54,8 +53,8 @@ async function runVideoExportInner(opts) {
 
     try {
         if (settings.width !== originalRes.width || settings.height !== originalRes.height) {
-            setResolution(settings.width, settings.height)
             wasResized = true
+            setResolution(settings.width, settings.height)
             await waitFrame()
         }
 
@@ -185,13 +184,24 @@ async function runVideoExportInner(opts) {
         }
         throw err
     } finally {
+        let restoreError = null
+        const attemptRestore = (restore) => {
+            try {
+                restore()
+            } catch (err) {
+                if (!restoreError) restoreError = err
+            }
+        }
         if (wasResized) {
-            setResolution(originalRes.width, originalRes.height)
+            attemptRestore(() => setResolution(originalRes.width, originalRes.height))
         }
         if (wasRunning) {
-            renderer.restoreLoopFromNormalizedTime(pausedNormalizedTime)
-            renderer.start()
+            attemptRestore(() => renderer.restoreLoopFromNormalizedTime(pausedNormalizedTime))
+            attemptRestore(() => renderer.start())
+        } else if (wasResized) {
+            attemptRestore(() => renderer.render(pausedNormalizedTime))
         }
+        if (restoreError) throw restoreError
     }
 }
 

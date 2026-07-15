@@ -60,18 +60,18 @@ export function makeFailure(command, code, message, details = {}, state = null) 
 export function registerCommand(agent, name, handler) {
     agent[name] = (args = {}) => {
         const execute = async () => {
-        const schema = SCHEMAS[name]
-        if (schema) {
-            const v = validate(args, schema)
-            if (!v.ok) {
-                const snap = safeSnapshot(agent._app)
-                return makeFailure(name, v.code, v.message, v.details, snap)
-            }
-        }
         let mutationToken = null
         try {
             if (!LIFECYCLE_EXEMPT_COMMANDS.has(name)) {
                 mutationToken = await agent._app?._acquireProjectLifecycle?.()
+            }
+            const schema = SCHEMAS[name]
+            if (schema) {
+                const v = validate(args, schema)
+                if (!v.ok) {
+                    const snap = safeSnapshot(agent._app)
+                    return makeFailure(name, v.code, v.message, v.details, snap)
+                }
             }
             const out = await handler(args, agent._app, mutationToken)
             const snap = safeSnapshot(agent._app)

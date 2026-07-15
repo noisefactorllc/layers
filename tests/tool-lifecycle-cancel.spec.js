@@ -55,18 +55,12 @@ test('window blur releases every active pointer-tool lifecycle lease', async ({ 
         const tools = [
             new BrushTool({
                 overlay,
-                ensureDrawingLayer: () => drawingLayer,
-                rasterizeDrawingLayer: async () => {},
-                rebuild: async () => {},
-                pushUndoState() {}, finalizePendingUndo() {}, markDirty() {},
+                commitStroke: async () => {},
                 acquireMutation,
             }),
             new ShapeTool({
                 overlay,
-                ensureDrawingLayer: () => drawingLayer,
-                rasterizeDrawingLayer: async () => {},
-                rebuild: async () => {},
-                pushUndoState() {}, finalizePendingUndo() {}, markDirty() {},
+                commitStroke: async () => {},
                 acquireMutation,
             }),
             new EraserTool({
@@ -114,6 +108,50 @@ test('window blur releases every active pointer-tool lifecycle lease', async ({ 
     })))
 })
 
+test('move pointer cancellation restores the starting position and history', async ({ page }) => {
+    await bootSolid(page)
+
+    const result = await page.evaluate(() => {
+        const app = window.layersApp
+        const layer = app._getActiveLayer()
+        const state = () => ({
+            offsetX: layer.offsetX,
+            offsetY: layer.offsetY,
+            dirty: app._isDirty,
+            mutationRevision: app._projectMutationRevision,
+            undoStackLength: app._undoManager._stack.length,
+            undoIndex: app._undoManager._index,
+            pendingUndo: Boolean(app._undoDebounceTimer),
+        })
+        const fireMouse = (type, x, y) => {
+            const overlay = app._selectionOverlay
+            const rect = overlay.getBoundingClientRect()
+            overlay.dispatchEvent(new MouseEvent(type, {
+                clientX: rect.left + x * rect.width / overlay.width,
+                clientY: rect.top + y * rect.height / overlay.height,
+                bubbles: true,
+                button: 0,
+            }))
+        }
+        app._setToolMode('move')
+        const before = state()
+        fireMouse('mousedown', 100, 100)
+        fireMouse('mousemove', 160, 140)
+        const during = state()
+        app._selectionOverlay.dispatchEvent(new Event('pointercancel', { bubbles: true }))
+        return {
+            before,
+            during,
+            after: state(),
+            lifecycleReleased: !app._projectLifecycleActive,
+        }
+    })
+
+    expect(result.during.offsetX).not.toBe(result.before.offsetX)
+    expect(result.after).toEqual(result.before)
+    expect(result.lifecycleReleased).toBe(true)
+})
+
 for (const tool of ['brush', 'shape']) {
     test(`${tool} blur before commit leaves the project unchanged`, async ({ page }) => {
         await bootSolid(page)
@@ -137,5 +175,118 @@ for (const tool of ['brush', 'shape']) {
 
         expect(lifecycle).toEqual({ acquired: true, released: true })
         expect(await drawingGestureState(page)).toEqual(before)
+    })
+
+    test(`${tool} ignores a duplicate down and releases lifecycle on up and cancel`, async ({ page }) => {
+        await bootSolid(page)
+
+        await page.evaluate((toolName) => {
+            const app = window.layersApp
+            app._setToolMode(toolName)
+            const overlay = app._selectionOverlay
+            const fireMouse = (type, x, y) => {
+                const rect = overlay.getBoundingClientRect()
+                overlay.dispatchEvent(new MouseEvent(type, {
+                    clientX: rect.left + x * rect.width / overlay.width,
+                    clientY: rect.top + y * rect.height / overlay.height,
+                    bubbles: true,
+                    button: 0,
+                }))
+            }
+            fireMouse('mousedown', 50, 50)
+            fireMouse('mousemove', 80, 80)
+            fireMouse('mousedown', 120, 120)
+            fireMouse('mousemove', 170, 150)
+            fireMouse('mouseup', 170, 150)
+        }, tool)
+
+        await page.waitForFunction(() => {
+            const app = window.layersApp
+            const strokeCount = app._layers
+                .filter(layer => layer.sourceType === 'drawing')
+                .reduce((count, layer) => count + layer.strokes.length, 0)
+            return strokeCount === 1 && !app._projectLifecycleActive
+        })
+
+        const afterUp = await page.evaluate((toolName) => {
+            const app = window.layersApp
+            const instance = toolName === 'brush' ? app._brushTool : app._shapeTool
+            return {
+                strokeCount: app._layers
+                    .filter(layer => layer.sourceType === 'drawing')
+                    .reduce((count, layer) => count + layer.strokes.length, 0),
+                lifecycleReleased: !app._projectLifecycleActive,
+                isDrawing: instance.isDrawing ?? instance._state === 'drawing',
+            }
+        }, tool)
+
+        const afterCancel = await page.evaluate(async (toolName) => {
+            const app = window.layersApp
+            const overlay = app._selectionOverlay
+            const instance = toolName === 'brush' ? app._brushTool : app._shapeTool
+            const fireMouse = (type, x, y) => {
+                const rect = overlay.getBoundingClientRect()
+                overlay.dispatchEvent(new MouseEvent(type, {
+                    clientX: rect.left + x * rect.width / overlay.width,
+                    clientY: rect.top + y * rect.height / overlay.height,
+                    bubbles: true,
+                    button: 0,
+                }))
+            }
+            fireMouse('mousedown', 30, 30)
+            fireMouse('mousemove', 60, 60)
+            fireMouse('mousedown', 100, 100)
+            overlay.dispatchEvent(new Event('pointercancel', { bubbles: true }))
+            await new Promise(resolve => setTimeout(resolve, 0))
+            return {
+                strokeCount: app._layers
+                    .filter(layer => layer.sourceType === 'drawing')
+                    .reduce((count, layer) => count + layer.strokes.length, 0),
+                lifecycleReleased: !app._projectLifecycleActive,
+                isDrawing: instance.isDrawing ?? instance._state === 'drawing',
+            }
+        }, tool)
+
+        const afterDeactivate = await page.evaluate((toolName) => {
+            const app = window.layersApp
+            const overlay = app._selectionOverlay
+            const instance = toolName === 'brush' ? app._brushTool : app._shapeTool
+            const fireMouse = (type, x, y) => {
+                const rect = overlay.getBoundingClientRect()
+                overlay.dispatchEvent(new MouseEvent(type, {
+                    clientX: rect.left + x * rect.width / overlay.width,
+                    clientY: rect.top + y * rect.height / overlay.height,
+                    bubbles: true,
+                    button: 0,
+                }))
+            }
+            fireMouse('mousedown', 40, 40)
+            fireMouse('mousemove', 70, 70)
+            fireMouse('mousedown', 110, 110)
+            app._setToolMode('selection')
+            return {
+                strokeCount: app._layers
+                    .filter(layer => layer.sourceType === 'drawing')
+                    .reduce((count, layer) => count + layer.strokes.length, 0),
+                lifecycleReleased: !app._projectLifecycleActive,
+                isDrawing: instance.isDrawing ?? instance._state === 'drawing',
+            }
+        }, tool)
+
+        expect(afterUp).toEqual({
+            strokeCount: 1,
+            lifecycleReleased: true,
+            isDrawing: false,
+        })
+        expect(afterCancel).toEqual({
+            strokeCount: 1,
+            lifecycleReleased: true,
+            isDrawing: false,
+        })
+        expect(afterDeactivate).toEqual({
+            strokeCount: 1,
+            lifecycleReleased: true,
+            isDrawing: false,
+        })
     })
 }

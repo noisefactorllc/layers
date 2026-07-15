@@ -31,11 +31,11 @@ test.describe('setLayerEffectParams', () => {
     test('replace mode discards prior params', async ({ page }) => {
         await bootApp(page)
         const id = await page.evaluate(() => window.layersApp._layers[0].id)
-        // First set extra param
+        // First set a second declared param.
         await page.evaluate((layerId) =>
             window.LayersAgent.setLayerEffectParams({
                 layerId,
-                params: { color: [0, 1, 0], extra: 'kept' }
+                params: { color: [0, 1, 0], alpha: 0.5 }
             }), id)
         // Now replace with a single color
         const env = await page.evaluate((layerId) =>

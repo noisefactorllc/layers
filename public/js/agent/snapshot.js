@@ -12,17 +12,25 @@ import { getRecentExports } from './exports-state.js'
 import { listJobs } from './jobs.js'
 
 export function buildSnapshot(app) {
+    const override = app?._projectSnapshotCanvasOverride
+    const part = (key, build) => override && Object.hasOwn(override, key)
+        ? safeClone(override[key])
+        : build(app)
     return {
         apiVersion: API_VERSION,
         schemaVersion: SCHEMA_VERSION,
-        project: buildProject(app),
-        canvas: buildCanvas(app),
-        view: buildView(app),
+        project: part('project', buildProject),
+        canvas: part('canvas', buildCanvas),
+        view: part('view', buildView),
         foreground: buildForeground(app),
-        selection: buildSelection(app),
-        layers: buildLayers(app),
-        selectedLayerIds: app?._layerStack?.selectedLayerIds?.slice() || [],
-        activeLayerId: app?._layerStack?.selectedLayerId || null,
+        selection: part('selection', buildSelection),
+        layers: part('layers', buildLayers),
+        selectedLayerIds: override && Object.hasOwn(override, 'selectedLayerIds')
+            ? override.selectedLayerIds.slice()
+            : app?._layerStack?.selectedLayerIds?.slice() || [],
+        activeLayerId: override && Object.hasOwn(override, 'activeLayerId')
+            ? override.activeLayerId
+            : app?._layerStack?.selectedLayerId || null,
         // Each job entry carries two timestamps:
         //   - job.updatedAt       — last state change (progress OR settle)
         //   - job.progress.updatedAt — last progress-event time only (null
@@ -36,6 +44,29 @@ export function buildSnapshot(app) {
         recentExports: getRecentExports(),
         settings: buildSettings(app)
     }
+}
+
+export function captureProjectSnapshotOverride(app, { canvasOnly = false } = {}) {
+    const current = app?._projectSnapshotCanvasOverride
+    const capture = (key, build) => current && Object.hasOwn(current, key)
+        ? safeClone(current[key])
+        : build(app)
+    const captured = {
+        canvas: capture('canvas', buildCanvas),
+        view: capture('view', buildView),
+    }
+    if (canvasOnly) return captured
+    captured.project = capture('project', buildProject)
+    captured.selection = capture('selection', buildSelection)
+    captured.layers = capture('layers', buildLayers)
+    captured.selectedLayerIds = current
+        && Object.hasOwn(current, 'selectedLayerIds')
+        ? current.selectedLayerIds.slice()
+        : app?._layerStack?.selectedLayerIds?.slice() || []
+    captured.activeLayerId = current && Object.hasOwn(current, 'activeLayerId')
+        ? current.activeLayerId
+        : app?._layerStack?.selectedLayerId || null
+    return captured
 }
 
 function buildProject(app) {

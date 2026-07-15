@@ -1,5 +1,17 @@
 import { test, expect } from 'playwright/test'
 
+async function bootBase(page, type = 'solid') {
+    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await page.click(`.media-option[data-type="${type}"]`)
+    await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    await page.click('.canvas-size-dialog .action-btn.primary')
+    await page.waitForSelector('.open-dialog-backdrop.visible', {
+        state: 'hidden', timeout: 5000,
+    })
+}
+
 test.describe('Layer menu - rasterize layer', () => {
     test('rasterize converts effect layer to media layer', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
@@ -120,6 +132,101 @@ test.describe('Layer menu - rasterize layer', () => {
         // And should be transparent
         expect(pixels.tl[3]).toBe(0)
         expect(pixels.br[3]).toBe(0)
+    })
+
+    for (const sourceType of ['effect', 'drawing']) {
+        test(`rasterizing a hidden ${sourceType} layer preserves its source pixels`, async ({ page }) => {
+            await bootBase(page, sourceType === 'drawing' ? 'transparent' : 'solid')
+
+            const result = await page.evaluate(async (sourceType) => {
+                const app = window.layersApp
+                let layer
+                let sample = [20, 20]
+                if (sourceType === 'drawing') {
+                    await window.LayersAgent.ready
+                    const drawn = await window.LayersAgent.drawShape({
+                        shape: 'rect',
+                        x: 5,
+                        y: 5,
+                        width: 40,
+                        height: 40,
+                        color: '#ff0000',
+                        size: 1,
+                        filled: true,
+                    })
+                    layer = app._layers.find(candidate =>
+                        candidate.id === drawn.result.layerId)
+                } else {
+                    layer = app._layers[0]
+                    layer.effectParams = { color: [1, 0, 0], alpha: 1 }
+                    sample = [app._canvas.width / 2, app._canvas.height / 2]
+                }
+                layer.visible = false
+                const outcome = await app._rasterizeLayer(layer.id)
+                const rasterized = app._layers.find(candidate =>
+                    candidate.name === `${layer.name} (rasterized)`)
+                const bitmap = await createImageBitmap(rasterized.mediaFile)
+                const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+                canvas.getContext('2d').drawImage(bitmap, 0, 0)
+                const pixel = [...canvas.getContext('2d').getImageData(
+                    sample[0], sample[1], 1, 1).data]
+                bitmap.close()
+                return {
+                    status: outcome.status,
+                    visible: rasterized.visible,
+                    pixel,
+                }
+            }, sourceType)
+
+            expect(result.status).toBe('committed')
+            expect(result.visible).toBe(false)
+            expect(result.pixel[3]).toBeGreaterThan(200)
+        })
+    }
+
+    test('rasterizing preserves non-neutral opacity and blend appearance', async ({ page }) => {
+        await bootBase(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const base = app._layers[0]
+            base.effectParams = { color: [0.9, 0.8, 0.7], alpha: 1 }
+            await app._handleAddEffectLayer('synth/solid')
+            const top = app._layers.at(-1)
+            top.effectParams = { color: [0.2, 0.7, 0.4], alpha: 1 }
+            top.opacity = 55
+            top.blendMode = 'multiply'
+            await app._rebuild({ force: true })
+            app._renderer.render(0)
+            const x = Math.floor(app._canvas.width / 2)
+            const y = Math.floor(app._canvas.height / 2)
+            const readPixel = () => {
+                const sample = new OffscreenCanvas(1, 1)
+                const context = sample.getContext('2d')
+                context.drawImage(app._canvas, x, y, 1, 1, 0, 0, 1, 1)
+                return [...context.getImageData(0, 0, 1, 1).data]
+            }
+            const before = readPixel()
+
+            const outcome = await app._rasterizeLayer(top.id)
+            app._renderer.render(0)
+            const after = readPixel()
+            const rasterized = app._layers.at(-1)
+            return {
+                status: outcome.status,
+                before,
+                after,
+                opacity: rasterized.opacity,
+                blendMode: rasterized.blendMode,
+            }
+        })
+
+        expect(result.status).toBe('committed')
+        expect(result.opacity).toBe(55)
+        expect(result.blendMode).toBe('multiply')
+        for (let i = 0; i < 4; i++) {
+            expect(Math.abs(result.after[i] - result.before[i])).toBeLessThanOrEqual(3)
+        }
     })
 
     test('rasterize is disabled for media layers', async ({ page }) => {

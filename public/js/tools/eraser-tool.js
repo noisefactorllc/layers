@@ -16,11 +16,9 @@ export class EraserTool {
     constructor(options) {
         this._overlay = options.overlay
         this._getActiveLayer = options.getActiveLayer
-        this._rasterizeDrawingLayer = options.rasterizeDrawingLayer
-        this._rebuild = options.rebuild
+        this._commitStrokeDeletion = options.commitStrokeDeletion
         this._pushUndoState = options.pushUndoState
         this._finalizePendingUndo = options.finalizePendingUndo
-        this._markDirty = options.markDirty
         this._acquireMutation = options.acquireMutation
 
         this._active = false
@@ -133,11 +131,12 @@ export class EraserTool {
         const hit = this._hitTest(layer.strokes, pt)
 
         if (hit && !this._deletedInDrag.has(hit.id)) {
+            const result = await this._commitStrokeDeletion(layer, hit.id)
+            if (result.status !== 'committed') {
+                console.error('[EraserTool] Failed to erase stroke:', result.error)
+                return
+            }
             this._deletedInDrag.add(hit.id)
-            layer.strokes = layer.strokes.filter(s => s.id !== hit.id)
-            await this._rasterizeDrawingLayer(layer)
-            await this._rebuild({ force: true })
-            this._markDirty()
         }
     }
 

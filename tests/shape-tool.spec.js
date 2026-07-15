@@ -78,4 +78,40 @@ test.describe('Shape tool', () => {
 
         expect(type).toBe('ellipse')
     })
+
+    test('reports a failed stroke commit outcome', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+        await page.click('#shapeToolBtn')
+
+        await page.evaluate(() => {
+            const app = window.layersApp
+            window.__shapeCommitErrors = []
+            window.__shapeOriginalConsoleError = console.error
+            console.error = (...args) => {
+                window.__shapeCommitErrors.push(args.map(String).join(' '))
+            }
+            app._shapeTool._commitStroke = async () => ({
+                status: 'failed',
+                error: new Error('injected shape commit failure'),
+            })
+        })
+
+        const overlay = await page.$('#selectionOverlay')
+        const box = await overlay.boundingBox()
+        await page.mouse.move(box.x + 100, box.y + 100)
+        await page.mouse.down()
+        await page.mouse.move(box.x + 220, box.y + 180)
+        await page.mouse.up()
+        await page.waitForTimeout(100)
+
+        const errors = await page.evaluate(() => {
+            console.error = window.__shapeOriginalConsoleError
+            return window.__shapeCommitErrors
+        })
+        expect(errors.some(message => message.includes(
+            '[ShapeTool] Failed to commit stroke: Error: injected shape commit failure')))
+            .toBe(true)
+    })
 })

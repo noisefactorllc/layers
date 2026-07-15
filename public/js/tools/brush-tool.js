@@ -15,12 +15,7 @@ const MIN_DISTANCE = 2  // minimum pixels between sampled points
 export class BrushTool {
     constructor(options) {
         this._overlay = options.overlay
-        this._ensureDrawingLayer = options.ensureDrawingLayer
-        this._rasterizeDrawingLayer = options.rasterizeDrawingLayer
-        this._rebuild = options.rebuild
-        this._pushUndoState = options.pushUndoState
-        this._finalizePendingUndo = options.finalizePendingUndo
-        this._markDirty = options.markDirty
+        this._commitStroke = options.commitStroke
         this._acquireMutation = options.acquireMutation
 
         /** @type {((stroke: object) => void)|null} */
@@ -94,6 +89,7 @@ export class BrushTool {
 
     _onMouseDown(e) {
         if (e.button !== 0) return
+        if (this._state !== State.IDLE) return
         const token = this._acquireMutation
             ? this._acquireMutation(this._sharedMutationToken)
             : { release() {} }
@@ -153,16 +149,14 @@ export class BrushTool {
                 })
 
                 // If an external handler is set (e.g. mask edit mode), route the stroke there
+                let result
                 if (this.onStrokeComplete) {
-                    await this.onStrokeComplete(stroke)
+                    result = await this.onStrokeComplete(stroke)
                 } else {
-                    const targetLayer = this._ensureDrawingLayer()
-                    this._finalizePendingUndo()
-                    targetLayer.strokes.push(stroke)
-                    await this._rasterizeDrawingLayer(targetLayer)
-                    await this._rebuild({ force: true })
-                    this._markDirty()
-                    this._pushUndoState()
+                    result = await this._commitStroke(stroke)
+                }
+                if (result?.status === 'failed') {
+                    console.error('[BrushTool] Failed to commit stroke:', result.error)
                 }
             }
         } finally {

@@ -48,4 +48,47 @@ test.describe('undo / redo', () => {
         const env = await page.evaluate(() => window.LayersAgent.getState())
         expect(env.state.project.canUndo).toBe(true)
     })
+
+    test('job polling hides undo history changes while restore preparation can fail', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            await window.LayersAgent.addLayer({
+                kind: 'effect', effectId: 'synth/gradient',
+            })
+            const readState = async () => {
+                const { state } = await window.LayersAgent.getJob({ jobId: 'missing-job' })
+                return {
+                    project: state.project,
+                    canvas: state.canvas,
+                    selection: state.selection,
+                    layers: state.layers,
+                    selectedLayerIds: state.selectedLayerIds,
+                    activeLayerId: state.activeLayerId,
+                }
+            }
+            const before = await readState()
+            let enteredPrepare
+            let releasePrepare
+            const entered = new Promise(resolve => { enteredPrepare = resolve })
+            const release = new Promise(resolve => { releasePrepare = resolve })
+            app._prepareLayerSetCandidate = async () => {
+                enteredPrepare()
+                await release
+                throw new Error('injected undo preparation failure')
+            }
+
+            const undo = window.LayersAgent.undo()
+            await entered
+            const during = await readState()
+            releasePrepare()
+            const envelope = await undo
+            const after = await readState()
+            return { before, during, envelope, after }
+        })
+
+        expect(result.envelope.ok).toBe(false)
+        expect(result.during).toEqual(result.before)
+        expect(result.after).toEqual(result.before)
+    })
 })

@@ -13,6 +13,41 @@ async function bootApp(page) {
     }
 }
 
+async function prepareHiddenSplitDrawing(page) {
+    return page.evaluate(async () => {
+        const app = window.layersApp
+        const width = app._canvas.width
+        const height = app._canvas.height
+        const added = await window.LayersAgent.addLayer({ kind: 'drawing' })
+        const layerId = added.result.layerId
+        await window.LayersAgent.drawShape({
+            layerId,
+            shape: 'rect',
+            x: 0,
+            y: 0,
+            width: width / 2,
+            height,
+            color: '#ff0000',
+            size: 1,
+            filled: true,
+        })
+        await window.LayersAgent.drawShape({
+            layerId,
+            shape: 'rect',
+            x: width / 2,
+            y: 0,
+            width: width / 2,
+            height,
+            color: '#0000ff',
+            size: 1,
+            filled: true,
+        })
+        await window.LayersAgent.setLayerProps({ layerId, props: { visible: false } })
+        app._renderCurrentFrame()
+        return { layerId, width, height }
+    })
+}
+
 test.describe('paintStroke', () => {
     test('paints a stroke onto a new drawing layer (auto-created)', async ({ page }) => {
         await bootApp(page)
@@ -30,6 +65,83 @@ test.describe('paintStroke', () => {
         const drawingLayer = env.state.layers.find(l => l.id === env.result.layerId)
         expect(drawingLayer.sourceType).toBe('drawing')
         expect(drawingLayer.drawing.strokeCount).toBe(1)
+    })
+
+    test('job polling hides a stroke that fails during rasterization', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const added = await window.LayersAgent.addLayer({ kind: 'drawing' })
+            const layerId = added.result.layerId
+            const readState = async () => {
+                const { state } = await window.LayersAgent.getJob({ jobId: 'missing-job' })
+                return {
+                    project: state.project,
+                    canvas: state.canvas,
+                    selection: state.selection,
+                    layers: state.layers,
+                    selectedLayerIds: state.selectedLayerIds,
+                    activeLayerId: state.activeLayerId,
+                }
+            }
+            const before = await readState()
+            let enteredRasterize
+            let releaseRasterize
+            const entered = new Promise(resolve => { enteredRasterize = resolve })
+            const release = new Promise(resolve => { releaseRasterize = resolve })
+            app._rasterizeDrawingLayer = async () => {
+                enteredRasterize()
+                await release
+                throw new Error('injected drawing rasterization failure')
+            }
+
+            const mutation = window.LayersAgent.paintStroke({
+                layerId,
+                points: [[10, 10], [50, 50]],
+                size: 5,
+                color: '#ff0000',
+            })
+            await entered
+            const during = await readState()
+            releaseRasterize()
+            const envelope = await mutation
+            const after = await readState()
+            return { before, during, envelope, after }
+        })
+
+        expect(result.envelope.ok).toBe(false)
+        expect(result.during).toEqual(result.before)
+        expect(result.after).toEqual(result.before)
+    })
+
+    test('one undo removes an auto-created drawing layer and its stroke', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const before = {
+                layerIds: app._layers.map(layer => layer.id),
+                undoLength: app._undoManager._stack.length,
+                undoIndex: app._undoManager._index,
+            }
+            const painted = await window.LayersAgent.paintStroke({
+                points: [[10, 10], [50, 50]],
+                size: 5,
+                color: '#ff0000',
+            })
+            const afterPaint = {
+                undoLength: app._undoManager._stack.length,
+                undoIndex: app._undoManager._index,
+            }
+            const undone = await window.LayersAgent.undo()
+            return { before, afterPaint, painted, undone }
+        })
+
+        expect(result.painted.ok).toBe(true)
+        expect(result.afterPaint.undoLength).toBe(result.before.undoLength + 1)
+        expect(result.afterPaint.undoIndex).toBe(result.before.undoIndex + 1)
+        expect(result.undone.ok).toBe(true)
+        expect(result.undone.state.layers.map(layer => layer.id)).toEqual(
+            result.before.layerIds)
     })
 
     test('paintStroke onto an existing drawing layer', async ({ page }) => {
@@ -95,6 +207,20 @@ test.describe('paintStroke', () => {
             }))
         expect(env.ok).toBe(false)
         expect(env.error.code).toBe('INVALID_ARGS_TYPE')
+    })
+
+    test('rejects non-finite object points without creating a layer', async ({ page }) => {
+        await bootApp(page)
+        const before = await page.evaluate(() => window.layersApp._layers.length)
+        const env = await page.evaluate(() =>
+            window.LayersAgent.paintStroke({
+                points: [{ x: 0, y: 0 }, { x: Infinity, y: 10 }],
+                size: 5,
+                color: '#000000',
+            }))
+        expect(env.ok).toBe(false)
+        expect(env.error.code).toBe('INVALID_ARGS_TYPE')
+        expect(await page.evaluate(() => window.layersApp._layers.length)).toBe(before)
     })
 
     test('NOT_FOUND_LAYER for missing id', async ({ page }) => {
@@ -250,6 +376,8 @@ test.describe('eraseStroke', () => {
 
         const layerSnap = env.state.layers.find(l => l.id === layerId)
         expect(layerSnap.drawing.strokeCount).toBe(0)
+        expect(await page.evaluate((id) =>
+            window.layersApp._renderer.getMediaInfo(id), layerId)).toBeNull()
     })
 
     test('reports strokeCount drop in snapshot', async ({ page }) => {
@@ -339,6 +467,8 @@ test.describe('clearDrawingLayer', () => {
 
         const layerSnap = env.state.layers.find(l => l.id === layerId)
         expect(layerSnap.drawing.strokeCount).toBe(0)
+        expect(await page.evaluate((id) =>
+            window.layersApp._renderer.getMediaInfo(id), layerId)).toBeNull()
     })
 
     test('clearedCount is 0 when layer was already empty', async ({ page }) => {
@@ -387,6 +517,89 @@ test.describe('fillRegion', () => {
         expect(after).toBe(before + 1)
         const layer = env.state.layers.find(l => l.id === env.result.layerId)
         expect(layer.sourceType).toBe('media')
+    })
+
+    test('fills a split layer made visible by the immediately preceding command', async ({ page }) => {
+        await bootApp(page)
+        const setup = await prepareHiddenSplitDrawing(page)
+        const result = await page.evaluate(async ({ layerId, width, height }) => {
+            const app = window.layersApp
+            const preceding = await window.LayersAgent.setLayerProps({
+                layerId,
+                props: { visible: true },
+            })
+            const renderCurrentFrame = app._renderCurrentFrame
+            let freshFrameCalls = 0
+            app._renderCurrentFrame = (...args) => {
+                freshFrameCalls += 1
+                return renderCurrentFrame.apply(app, args)
+            }
+            let fill
+            try {
+                fill = await window.LayersAgent.fillRegion({
+                    x: Math.floor(width / 4),
+                    y: Math.floor(height / 2),
+                    color: '#00ff00',
+                    tolerance: 0,
+                })
+            } finally {
+                app._renderCurrentFrame = renderCurrentFrame
+            }
+            const media = app._renderer.getMediaInfo(fill.result.layerId)
+            const sample = document.createElement('canvas')
+            sample.width = width
+            sample.height = height
+            const ctx = sample.getContext('2d')
+            ctx.drawImage(media.element, 0, 0)
+            const pixelAt = (x, y) =>
+                [...ctx.getImageData(x, y, 1, 1).data]
+            return {
+                preceding,
+                fill,
+                freshFrameCalls,
+                leftPixel: pixelAt(Math.floor(width / 4), Math.floor(height / 2)),
+                rightPixel: pixelAt(Math.floor(3 * width / 4), Math.floor(height / 2)),
+            }
+        }, setup)
+
+        expect(result.preceding.ok).toBe(true)
+        expect(result.fill.ok).toBe(true)
+        expect(result.freshFrameCalls).toBe(1)
+        expect(result.leftPixel).toEqual([0, 255, 0, 255])
+        expect(result.rightPixel).toEqual([0, 0, 0, 0])
+    })
+
+    test('blocked online fill returns conflict without mutating layers, dirty state, or undo history', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            app._markClean()
+            app._onlineAdapter = {
+                isOnline: () => true,
+                schedulePublish: () => {},
+            }
+            app._undoDebounceTimer = setTimeout(() => app._pushUndoState(), 60_000)
+            const state = () => ({
+                layerIds: app._layers.map(layer => layer.id),
+                dirty: app._isDirty,
+                mutationRevision: app._projectMutationRevision,
+                undoStackLength: app._undoManager._stack.length,
+                undoIndex: app._undoManager._index,
+                pendingUndo: Boolean(app._undoDebounceTimer),
+            })
+            const before = state()
+            const envelope = await window.LayersAgent.fillRegion({
+                x: 100, y: 100,
+                color: '#ff0000',
+                tolerance: 32
+            })
+            return { before, after: state(), envelope }
+        })
+
+        expect(result.envelope.ok).toBe(false)
+        expect(result.envelope.error.code).toBe('CONFLICT_MEDIA_BLOCKED_ONLINE')
+        expect(result.before.dirty).toBe(false)
+        expect(result.after).toEqual(result.before)
     })
 
     test('rejects out-of-canvas point', async ({ page }) => {

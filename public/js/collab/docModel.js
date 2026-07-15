@@ -32,6 +32,27 @@ export const META_NODE_ID = 'meta'
 // 65,536-char node text cap.
 export const CHUNK_BUDGET = 48000
 
+export const MAX_REMOTE_CANVAS_DIMENSION = 8192
+export const MAX_REMOTE_NODES = 4096
+export const MAX_REMOTE_LAYERS = 1024
+export const MAX_REMOTE_NODE_ID_CHARS = 1024
+export const MAX_REMOTE_NODE_TEXT_CHARS = 65536
+export const MAX_REMOTE_TOTAL_TEXT_CHARS =
+    MAX_REMOTE_LAYERS * MAX_REMOTE_NODE_TEXT_CHARS
+export const MAX_REMOTE_MASK_CHUNKS = 1024
+export const MAX_REMOTE_MASK_CHARS = MAX_REMOTE_MASK_CHUNKS * CHUNK_BUDGET
+export const MAX_REMOTE_RASTER_PIXELS =
+    MAX_REMOTE_CANVAS_DIMENSION * MAX_REMOTE_CANVAS_DIMENSION
+export const MAX_REMOTE_MASK_PIXELS = MAX_REMOTE_RASTER_PIXELS
+
+const REMOTE_SOURCE_TYPES = new Set(['media', 'effect', 'drawing'])
+const REMOTE_MEDIA_TYPES = new Set(['image', 'video'])
+const REMOTE_BLEND_MODES = new Set([
+    'mix', 'multiply', 'screen', 'overlay', 'softLight', 'hardLight',
+    'darken', 'lighten', 'dodge', 'burn', 'add', 'subtract', 'difference',
+    'exclusion', 'negation', 'phoenix',
+])
+
 const LAYER_PROP_KEYS = [
     'name', 'visible', 'opacity', 'blendMode', 'locked',
     'offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 'flipH', 'flipV',
@@ -380,12 +401,557 @@ export function diffNodeModels(prev, next) {
 }
 
 // ---------------------------------------------------------------------
-// isLayersSession — reader validation per §5: interpretable iff a `meta`
-// node exists with v===1 and a well-formed shape.
+// Remote resource validation and session recognition
 // ---------------------------------------------------------------------
 
+function remoteBoundsError(message) {
+    return new Error(`Remote composition rejected: ${message}`)
+}
+
+function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function optionalBoolean(value, field) {
+    if (value != null && typeof value !== 'boolean') {
+        throw remoteBoundsError(`${field} must be boolean`)
+    }
+}
+
+function optionalFiniteNumber(value, field, { min = -Number.MAX_SAFE_INTEGER,
+    max = Number.MAX_SAFE_INTEGER } = {}) {
+    if (value == null) return
+    if (!Number.isFinite(value) || value < min || value > max) {
+        throw remoteBoundsError(`${field} must be a finite number from ${min} to ${max}`)
+    }
+}
+
+function assertRemoteLayerFields(parsed) {
+    if (!isPlainObject(parsed) || parsed.v !== NODE_VERSION) {
+        throw remoteBoundsError('layer node text is invalid')
+    }
+    const sourceType = parsed.sourceType ?? 'effect'
+    if (!REMOTE_SOURCE_TYPES.has(sourceType)) {
+        throw remoteBoundsError('layer sourceType is invalid')
+    }
+    if (parsed.name != null && typeof parsed.name !== 'string') {
+        throw remoteBoundsError('layer name must be a string')
+    }
+    optionalBoolean(parsed.visible, 'layer visible')
+    optionalBoolean(parsed.locked, 'layer locked')
+    optionalBoolean(parsed.flipH, 'layer flipH')
+    optionalBoolean(parsed.flipV, 'layer flipV')
+    optionalBoolean(parsed.maskEnabled, 'layer maskEnabled')
+    optionalBoolean(parsed.maskVisible, 'layer maskVisible')
+    optionalFiniteNumber(parsed.opacity, 'layer opacity', { min: 0, max: 100 })
+    optionalFiniteNumber(parsed.offsetX, 'layer offsetX')
+    optionalFiniteNumber(parsed.offsetY, 'layer offsetY')
+    optionalFiniteNumber(parsed.rotation, 'layer rotation')
+    if (parsed.blendMode != null && !REMOTE_BLEND_MODES.has(parsed.blendMode)) {
+        throw remoteBoundsError('layer blendMode is invalid')
+    }
+    if (sourceType === 'media') {
+        if (parsed.mediaType != null && !REMOTE_MEDIA_TYPES.has(parsed.mediaType)) {
+            throw remoteBoundsError('media layer mediaType is invalid')
+        }
+    } else if (parsed.mediaType != null) {
+        throw remoteBoundsError('non-media layer cannot declare mediaType')
+    }
+    if (parsed.effectParams != null && !isPlainObject(parsed.effectParams)) {
+        throw remoteBoundsError('layer effectParams must be an object')
+    }
+}
+
+function assertRemoteChildFields(parsed) {
+    if (!isPlainObject(parsed) || parsed.v !== NODE_VERSION) {
+        throw remoteBoundsError('child node text is invalid')
+    }
+    if (parsed.name != null && typeof parsed.name !== 'string') {
+        throw remoteBoundsError('child name must be a string')
+    }
+    optionalBoolean(parsed.visible, 'child visible')
+    if (parsed.effectParams != null && !isPlainObject(parsed.effectParams)) {
+        throw remoteBoundsError('child effectParams must be an object')
+    }
+}
+
+function readPngDimensions(data) {
+    const prefix = 'data:image/png;base64,'
+    if (typeof data !== 'string' || !data.startsWith(prefix)) {
+        throw remoteBoundsError('mask PNG header is invalid')
+    }
+
+    const encodedHeader = data.slice(prefix.length, prefix.length + 32)
+    if (encodedHeader.length < 32) {
+        throw remoteBoundsError('mask PNG header is incomplete')
+    }
+
+    let binary
+    try {
+        binary = atob(encodedHeader)
+    } catch {
+        throw remoteBoundsError('mask PNG header is invalid')
+    }
+    if (binary.length < 24) {
+        throw remoteBoundsError('mask PNG header is incomplete')
+    }
+
+    const expected = [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]
+    for (let i = 0; i < expected.length; i++) {
+        if (binary.charCodeAt(i) !== expected[i]) {
+            throw remoteBoundsError('mask PNG header is invalid')
+        }
+    }
+
+    const uint32 = (offset) => (
+        binary.charCodeAt(offset) * 0x1000000
+        + binary.charCodeAt(offset + 1) * 0x10000
+        + binary.charCodeAt(offset + 2) * 0x100
+        + binary.charCodeAt(offset + 3)
+    )
+    return { width: uint32(16), height: uint32(20) }
+}
+
+/**
+ * Reject a remote node model whose bounded wire representation could cause
+ * excessive parsing, concatenation, decode, or image allocation. This runs
+ * before applyNodesToComposition() so none of those costs reach live state.
+ * @param {Array} nodes
+ */
+export function assertRemoteNodeModelWithinBounds(nodes, options = {}) {
+    const isTextEffect = options.isTextEffect || (effectId => effectId === 'filter/text')
+    if (!Array.isArray(nodes) || nodes.length > MAX_REMOTE_NODES) {
+        throw remoteBoundsError(`node count exceeds ${MAX_REMOTE_NODES}`)
+    }
+
+    let totalTextChars = 0
+    let layerCount = 0
+    let maskChunkCount = 0
+    let totalMaskChars = 0
+    const layerNodes = []
+    const maskChunksByParent = new Map()
+    const strokeParentsWithContent = new Set()
+    const nodeIds = new Set()
+    const nodesById = new Map()
+    const normalizedLocalIds = new Set()
+    const nestedSuffix = (node, marker) => {
+        if (!/^L[^.]+$/.test(node.parentId || '')) return null
+        const prefix = `${node.parentId}.${marker}`
+        if (!node.id.startsWith(prefix)) return null
+        const suffix = node.id.slice(prefix.length)
+        return suffix && !suffix.includes('.') ? suffix : null
+    }
+    const rememberLocalId = (id) => {
+        if (normalizedLocalIds.has(id)) {
+            throw remoteBoundsError(`duplicate normalized local id: ${id}`)
+        }
+        normalizedLocalIds.add(id)
+    }
+
+    for (const node of nodes) {
+        if (!node || typeof node !== 'object' || typeof node.text !== 'string') {
+            throw remoteBoundsError('node text must be a string')
+        }
+        if (typeof node.id !== 'string' || node.id.length < 1
+            || node.id.length > MAX_REMOTE_NODE_ID_CHARS) {
+            throw remoteBoundsError(
+                `node id must be a non-empty string of at most ${MAX_REMOTE_NODE_ID_CHARS} characters`)
+        }
+        if (node.parentId !== null
+            && (typeof node.parentId !== 'string' || node.parentId.length < 1
+                || node.parentId.length > MAX_REMOTE_NODE_ID_CHARS)) {
+            throw remoteBoundsError(
+                `parent id must be null or a non-empty string of at most ${MAX_REMOTE_NODE_ID_CHARS} characters`)
+        }
+        if (node.text.length > MAX_REMOTE_NODE_TEXT_CHARS) {
+            throw remoteBoundsError(`node text exceeds ${MAX_REMOTE_NODE_TEXT_CHARS} characters`)
+        }
+        totalTextChars += node.text.length
+        if (totalTextChars > MAX_REMOTE_TOTAL_TEXT_CHARS) {
+            throw remoteBoundsError(
+                `document text exceeds ${MAX_REMOTE_TOTAL_TEXT_CHARS} characters`)
+        }
+        if (nodeIds.has(node.id)) {
+            throw remoteBoundsError(`duplicate node id: ${node.id}`)
+        }
+        nodeIds.add(node.id)
+        nodesById.set(node.id, node)
+        if (node.kind === 'layers-meta') {
+            if (node.id !== META_NODE_ID || node.parentId !== null) {
+                throw remoteBoundsError('layers-meta wire id or parent is invalid')
+            }
+        } else if (node.kind === 'layers-layer') {
+            if (!/^L[^.]+$/.test(node.id) || node.parentId !== null) {
+                throw remoteBoundsError('layers-layer wire id or parent is invalid')
+            }
+            rememberLocalId(node.id.slice(1))
+        } else if (node.kind === 'layers-child') {
+            const suffix = nestedSuffix(node, 'C')
+            if (!suffix) {
+                throw remoteBoundsError('layers-child wire id or parent is invalid')
+            }
+            rememberLocalId(suffix)
+            assertRemoteChildFields(safeParse(node.text))
+        } else if (node.kind === 'layers-strokes' || node.kind === 'layers-mask') {
+            const marker = node.kind === 'layers-strokes' ? 'S' : 'M'
+            const suffix = nestedSuffix(node, marker)
+            if (!suffix || !/^(0|[1-9]\d*)$/.test(suffix)) {
+                throw remoteBoundsError(`${node.kind} wire id or parent is invalid`)
+            }
+        }
+        if (node.kind === 'layers-layer') {
+            layerCount++
+            layerNodes.push(node)
+        } else if (node.kind === 'layers-mask') {
+            maskChunkCount++
+            const parsed = safeParse(node.text)
+            if (!parsed || parsed.v !== NODE_VERSION || typeof parsed.data !== 'string') continue
+            totalMaskChars += parsed.data.length
+            if (totalMaskChars > MAX_REMOTE_MASK_CHARS) {
+                throw remoteBoundsError(
+                    `mask data exceeds ${MAX_REMOTE_MASK_CHARS} characters`)
+            }
+            if (!Number.isSafeInteger(parsed.i) || parsed.i < 0) continue
+            let chunks = maskChunksByParent.get(node.parentId)
+            if (!chunks) {
+                chunks = new Map()
+                maskChunksByParent.set(node.parentId, chunks)
+            }
+            chunks.set(parsed.i, parsed.data)
+        } else if (node.kind === 'layers-strokes') {
+            const parsed = safeParse(node.text)
+            if (parsed?.v === NODE_VERSION && Array.isArray(parsed.strokes)
+                && parsed.strokes.length > 0) {
+                strokeParentsWithContent.add(node.parentId)
+            }
+        }
+    }
+
+    if (layerCount > MAX_REMOTE_LAYERS) {
+        throw remoteBoundsError(`layer count exceeds ${MAX_REMOTE_LAYERS}`)
+    }
+    if (maskChunkCount > MAX_REMOTE_MASK_CHUNKS) {
+        throw remoteBoundsError(`mask chunk count exceeds ${MAX_REMOTE_MASK_CHUNKS}`)
+    }
+    for (const node of nodes) {
+        if (node.kind !== 'layers-child' && node.kind !== 'layers-strokes'
+            && node.kind !== 'layers-mask') continue
+        if (nodesById.get(node.parentId)?.kind !== 'layers-layer') {
+            throw remoteBoundsError(`${node.kind} parent layer is missing`)
+        }
+    }
+
+    const meta = nodes.find(node =>
+        node.id === META_NODE_ID && node.kind === 'layers-meta')
+    const metaParsed = meta ? safeParse(meta.text) : null
+    if (!metaParsed || metaParsed.v !== NODE_VERSION
+        || !metaParsed.canvas || !Array.isArray(metaParsed.order)) return
+
+    const { w: canvasWidth, h: canvasHeight } = metaParsed.canvas
+    if (!Number.isSafeInteger(canvasWidth) || !Number.isSafeInteger(canvasHeight)
+        || canvasWidth < 1 || canvasHeight < 1
+        || canvasWidth > MAX_REMOTE_CANVAS_DIMENSION
+        || canvasHeight > MAX_REMOTE_CANVAS_DIMENSION) {
+        throw remoteBoundsError(
+            `canvas dimensions must be safe integers from 1 to ${MAX_REMOTE_CANVAS_DIMENSION}`)
+    }
+
+    let totalRasterPixels = 0
+    let totalMaskPixels = 0
+    const canvasPixels = canvasWidth * canvasHeight
+    const addRasterPixels = (pixels) => {
+        if (pixels > MAX_REMOTE_RASTER_PIXELS - totalRasterPixels) {
+            throw remoteBoundsError(
+                `document raster pixels exceed ${MAX_REMOTE_RASTER_PIXELS}`)
+        }
+        totalRasterPixels += pixels
+    }
+    for (const node of layerNodes) {
+        const parsed = safeParse(node.text)
+        assertRemoteLayerFields(parsed)
+
+        const sourceType = parsed.sourceType ?? 'effect'
+        const scaleX = parsed.scaleX ?? 1
+        const scaleY = parsed.scaleY ?? 1
+        if (!Number.isFinite(scaleX) || scaleX === 0
+            || Math.abs(scaleX) > Number.MAX_SAFE_INTEGER
+            || !Number.isFinite(scaleY) || scaleY === 0
+            || Math.abs(scaleY) > Number.MAX_SAFE_INTEGER) {
+            throw remoteBoundsError(
+                'layer scale must contain finite nonzero safe-range numbers')
+        }
+        const flipH = parsed.flipH ?? false
+        const flipV = parsed.flipV ?? false
+
+        if (parsed.strokesMeta) {
+            const count = parsed.strokesMeta.n
+            if (!Number.isSafeInteger(count) || count < 1 || count > MAX_REMOTE_NODES) {
+                throw remoteBoundsError('stroke metadata chunk count is invalid')
+            }
+        }
+        const hasDrawingRaster = sourceType === 'drawing'
+            && (parsed.strokesMeta || strokeParentsWithContent.has(node.id))
+        if (sourceType === 'media') {
+            addRasterPixels(1)
+        }
+        if (hasDrawingRaster) {
+            addRasterPixels(canvasPixels)
+        }
+        const hasRasterSource = sourceType === 'media' || hasDrawingRaster
+        const needsCpuTransform = scaleX !== 1 || scaleY !== 1 || flipH || flipV
+        if (parsed.visible !== false && hasRasterSource && needsCpuTransform) {
+            const sourceWidth = sourceType === 'media' ? 1 : canvasWidth
+            const sourceHeight = sourceType === 'media' ? 1 : canvasHeight
+            const width = Math.ceil(sourceWidth * Math.abs(scaleX))
+            const height = Math.ceil(sourceHeight * Math.abs(scaleY))
+            if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
+                || width < 1 || height < 1
+                || width > MAX_REMOTE_CANVAS_DIMENSION
+                || height > MAX_REMOTE_CANVAS_DIMENSION) {
+                throw remoteBoundsError(
+                    `transformed raster dimensions must be from 1 to ${MAX_REMOTE_CANVAS_DIMENSION}`)
+            }
+            addRasterPixels(width * height)
+        }
+        if (parsed.visible !== false && sourceType === 'effect'
+            && isTextEffect(parsed.effectId)) {
+            addRasterPixels(canvasPixels)
+        }
+        if (!parsed.maskMeta) continue
+
+        const count = parsed.maskMeta.n
+        if (!Number.isSafeInteger(count) || count < 1
+            || count > MAX_REMOTE_MASK_CHUNKS) {
+            throw remoteBoundsError('mask metadata chunk count is invalid')
+        }
+
+        const firstChunk = maskChunksByParent.get(node.id)?.get(0)
+        if (firstChunk === undefined) continue
+        const { width, height } = readPngDimensions(firstChunk)
+        if (width < 1 || height < 1
+            || width > MAX_REMOTE_CANVAS_DIMENSION
+            || height > MAX_REMOTE_CANVAS_DIMENSION) {
+            throw remoteBoundsError(
+                `mask dimensions must be from 1 to ${MAX_REMOTE_CANVAS_DIMENSION}`)
+        }
+        if (width > canvasWidth || height > canvasHeight) {
+            throw remoteBoundsError('mask dimensions exceed the canvas dimensions')
+        }
+        const pixels = width * height
+        if (pixels > MAX_REMOTE_MASK_PIXELS - totalMaskPixels) {
+            throw remoteBoundsError(
+                `document mask pixels exceed ${MAX_REMOTE_MASK_PIXELS}`)
+        }
+        totalMaskPixels += pixels
+        addRasterPixels(pixels)
+    }
+}
+
+function assertRemoteParamRange(value, spec, field) {
+    if (typeof value !== 'number') return
+    if (spec.min !== undefined && value < spec.min) {
+        throw remoteBoundsError(`${field} is below its declared minimum`)
+    }
+    if (spec.max !== undefined && value > spec.max) {
+        throw remoteBoundsError(`${field} exceeds its declared maximum`)
+    }
+}
+
+function assertRemoteParamChoice(value, spec, field, effectId, canonicalName) {
+    if (!isPlainObject(spec.choices)) return
+    if (effectId === 'filter/text' && canonicalName === 'font') return
+    if (!Object.values(spec.choices).some(choice => Object.is(choice, value))) {
+        throw remoteBoundsError(`${field} is not a declared choice`)
+    }
+}
+
+function assertRemoteEffectParamValue(value, spec, field, effectId,
+    getDeclaredDslIdentifierValues) {
+    const fail = (expected) => {
+        throw remoteBoundsError(`${field} for ${effectId} must be ${expected}`)
+    }
+    switch (spec.type) {
+        case 'float':
+            if (!Number.isFinite(value)) fail('a finite number')
+            assertRemoteParamRange(value, spec, field)
+            return
+        case 'int':
+            if (!Number.isSafeInteger(value)) fail('a safe integer')
+            assertRemoteParamRange(value, spec, field)
+            return
+        case 'boolean':
+            if (typeof value !== 'boolean') fail('boolean')
+            return
+        case 'string':
+            if (typeof value !== 'string') fail('a string')
+            if (value.includes('"""')) fail('a string without triple quotes')
+            return
+        case 'member':
+            if (typeof value !== 'string'
+                || !/^[_A-Za-z][_A-Za-z0-9]*\.[_A-Za-z][_A-Za-z0-9]*$/.test(value)
+                || !getDeclaredDslIdentifierValues(spec).includes(value)) {
+                fail('a declared enum member')
+            }
+            return
+        case 'volume':
+            if (typeof value !== 'string'
+                || !getDeclaredDslIdentifierValues(spec).includes(value)) {
+                fail('a declared volume identifier')
+            }
+            return
+        case 'geometry':
+            if (typeof value !== 'string'
+                || !getDeclaredDslIdentifierValues(spec).includes(value)) {
+                fail('a declared geometry identifier')
+            }
+            return
+        case 'surface':
+            fail('omitted because surface inputs are not remotely configurable')
+            return
+        case 'color':
+            if (typeof value === 'string') {
+                if (!/^#[\da-f]{6}$/i.test(value)) {
+                    fail('a 6-digit hexadecimal color')
+                }
+                if (effectId === 'synth/solid') {
+                    fail('an RGB numeric array')
+                }
+                return
+            }
+            if (!Array.isArray(value) || value.length !== 3
+                || value.some(component => !Number.isFinite(component)
+                    || component < 0 || component > 1)) {
+                fail('an RGB array with finite components from 0 to 1')
+            }
+            return
+        case 'vec2':
+        case 'vec3':
+        case 'vec4': { // eslint-disable-line no-case-declarations
+            const length = Number(spec.type.slice(3))
+            if (!Array.isArray(value) || value.length !== length
+                || value.some(component => !Number.isFinite(component))) {
+                fail(`a ${spec.type} finite numeric array`)
+            }
+            for (const component of value) assertRemoteParamRange(component, spec, field)
+            return
+        }
+        default:
+            if (typeof value === 'number') {
+                if (!Number.isFinite(value)) fail('a finite scalar')
+                assertRemoteParamRange(value, spec, field)
+                return
+            }
+            if (typeof value === 'boolean') return
+            if (typeof value === 'string') {
+                if (value.includes('"""')) fail('a string without triple quotes')
+                return
+            }
+            if (Array.isArray(value) && value.length >= 2 && value.length <= 4
+                && value.every(component => Number.isFinite(component))) return
+            fail('a DSL-safe scalar or finite vector')
+    }
+}
+
+/**
+ * Validate remote fields that are interpolated into renderer DSL or applied
+ * as uniforms. Effect definitions are resolved before candidate preparation,
+ * so undeclared identifiers and malformed values never reach compilation.
+ * @param {Array} nodes
+ * @param {{manifest:object,getEffectDefinition:Function,layerEffectIds?:Set<string>,
+ *   childEffectIds?:Set<string>,getDeclaredDslIdentifierValues?:Function}} options
+ */
+export async function assertRemoteNodeSemantics(nodes, options = {}) {
+    const manifest = options.manifest || {}
+    const getEffectDefinition = options.getEffectDefinition
+    const layerEffectIds = options.layerEffectIds || null
+    const childEffectIds = options.childEffectIds || null
+    const getDeclaredDslIdentifierValues =
+        options.getDeclaredDslIdentifierValues || (() => [])
+    const definitions = new Map()
+    const effectIdPattern = /^[_A-Za-z][_A-Za-z0-9-]*\/[_A-Za-z][_A-Za-z0-9-]*$/
+    const paramNamePattern = /^[_A-Za-z][_A-Za-z0-9]*$/
+
+    const definitionFor = async (effectId) => {
+        if (definitions.has(effectId)) return definitions.get(effectId)
+        const definition = typeof getEffectDefinition === 'function'
+            ? await getEffectDefinition(effectId)
+            : null
+        definitions.set(effectId, definition)
+        return definition
+    }
+    const validateEffect = async (parsed, field, { child = false } = {}) => {
+        const effectId = parsed.effectId
+        if (typeof effectId !== 'string' || !effectIdPattern.test(effectId)
+            || !Object.hasOwn(manifest, effectId)) {
+            throw remoteBoundsError(`${field} effectId is not declared`)
+        }
+        if (child && childEffectIds && !childEffectIds.has(effectId)) {
+            throw remoteBoundsError(`${field} effectId is not allowed as a child effect`)
+        }
+        if (!child && layerEffectIds && !layerEffectIds.has(effectId)) {
+            throw remoteBoundsError(`${field} effectId is not allowed as a layer effect`)
+        }
+        const definition = await definitionFor(effectId)
+        if (!definition || !isPlainObject(definition.globals)) {
+            throw remoteBoundsError(`${field} effect definition is unavailable`)
+        }
+        const globals = definition.globals
+        const aliases = isPlainObject(definition.paramAliases)
+            ? definition.paramAliases
+            : {}
+        const params = parsed.effectParams ?? {}
+        if (!isPlainObject(params)) {
+            throw remoteBoundsError(`${field} effectParams must be an object`)
+        }
+        for (const [key, value] of Object.entries(params)) {
+            if (!paramNamePattern.test(key)) {
+                throw remoteBoundsError(`${field} parameter key is not a safe identifier`)
+            }
+            const canonicalKey = Object.hasOwn(aliases, key) ? aliases[key] : key
+            const spec = Object.hasOwn(globals, canonicalKey)
+                ? globals[canonicalKey]
+                : null
+            if (!paramNamePattern.test(canonicalKey) || !isPlainObject(spec)
+                || spec.internal || spec.ui?.hidden) {
+                throw remoteBoundsError(`${field} parameter ${key} is not declared`)
+            }
+            assertRemoteEffectParamValue(value, spec, `${field} parameter ${key}`, effectId,
+                getDeclaredDslIdentifierValues)
+            assertRemoteParamChoice(
+                value, spec, `${field} parameter ${key}`, effectId, canonicalKey)
+        }
+    }
+
+    for (const node of nodes || []) {
+        if (node?.kind === 'layers-layer') {
+            const parsed = safeParse(node.text)
+            assertRemoteLayerFields(parsed)
+            const sourceType = parsed.sourceType ?? 'effect'
+            if (sourceType === 'effect') {
+                await validateEffect(parsed, `layer ${node.id}`)
+            } else {
+                if (parsed.effectId != null) {
+                    throw remoteBoundsError(`layer ${node.id} cannot declare effectId`)
+                }
+                if (parsed.effectParams != null
+                    && Object.keys(parsed.effectParams).length > 0) {
+                    throw remoteBoundsError(`layer ${node.id} cannot declare effect parameters`)
+                }
+            }
+        } else if (node?.kind === 'layers-child') {
+            const parsed = safeParse(node.text)
+            assertRemoteChildFields(parsed)
+            await validateEffect(parsed, `child ${node.id}`, { child: true })
+        }
+    }
+}
+
+// isLayersSession — reader validation per §5: interpretable iff a `meta`
+// node exists with v===1 and a well-formed shape.
+
 export function isLayersSession(nodes) {
-    const meta = (nodes || []).find(n => n.id === META_NODE_ID && n.kind === 'layers-meta')
+    const meta = (nodes || []).find(n =>
+        n?.id === META_NODE_ID && n.kind === 'layers-meta')
     if (!meta) return false
     const parsed = safeParse(meta.text)
     if (!parsed || parsed.v !== NODE_VERSION) return false

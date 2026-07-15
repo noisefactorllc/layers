@@ -14,6 +14,10 @@
  * @module agent/schemas
  */
 
+import { getBlendModeIds } from '../layers/blend-modes.js'
+
+const BLEND_MODE_IDS = getBlendModeIds()
+
 function fail(code, message, details) {
     return { ok: false, code, message, details }
 }
@@ -111,7 +115,7 @@ function _validate(value, schema, path) {
     }
 
     if (type === 'number' || type === 'integer') {
-        if (typeof value !== 'number' || Number.isNaN(value)) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
             return fail('INVALID_ARGS_TYPE',
                 `${path}: expected ${type}, got ${typeName(value)}`,
                 { field: path, expected: type, got: typeName(value) })
@@ -332,7 +336,7 @@ export const SCHEMAS = {
                     name: { type: 'string' },
                     visible: { type: 'boolean' },
                     opacity: { type: 'number', min: 0, max: 100 },
-                    blendMode: { type: 'string' },
+                    blendMode: { type: 'string', enum: BLEND_MODE_IDS },
                     locked: { type: 'boolean' }
                 }
             }

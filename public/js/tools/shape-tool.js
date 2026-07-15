@@ -14,12 +14,7 @@ const MOUSE_EVENTS = ['mousedown', 'mousemove', 'mouseup', 'mouseleave']
 export class ShapeTool {
     constructor(options) {
         this._overlay = options.overlay
-        this._ensureDrawingLayer = options.ensureDrawingLayer
-        this._rasterizeDrawingLayer = options.rasterizeDrawingLayer
-        this._rebuild = options.rebuild
-        this._pushUndoState = options.pushUndoState
-        this._finalizePendingUndo = options.finalizePendingUndo
-        this._markDirty = options.markDirty
+        this._commitStroke = options.commitStroke
         this._acquireMutation = options.acquireMutation
 
         this._color = '#000000'
@@ -93,6 +88,7 @@ export class ShapeTool {
 
     _onMouseDown(e) {
         if (e.button !== 0) return
+        if (this._state !== State.IDLE) return
         const token = this._acquireMutation
             ? this._acquireMutation(this._sharedMutationToken)
             : { release() {} }
@@ -147,9 +143,6 @@ export class ShapeTool {
 
         try {
             if (startPt && currentPt) {
-                const targetLayer = this._ensureDrawingLayer()
-                this._finalizePendingUndo()
-
                 const x = Math.min(startPt.x, currentPt.x)
                 const y = Math.min(startPt.y, currentPt.y)
                 const width = Math.abs(currentPt.x - startPt.x)
@@ -164,11 +157,10 @@ export class ShapeTool {
                     filled: this._filled
                 })
 
-                targetLayer.strokes.push(stroke)
-                await this._rasterizeDrawingLayer(targetLayer)
-                await this._rebuild({ force: true })
-                this._markDirty()
-                this._pushUndoState()
+                const result = await this._commitStroke(stroke)
+                if (result?.status === 'failed') {
+                    console.error('[ShapeTool] Failed to commit stroke:', result.error)
+                }
             }
         } finally {
             mutationToken?.release()

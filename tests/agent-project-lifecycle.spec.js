@@ -87,6 +87,36 @@ test.describe('saveProject / openProject / deleteProject', () => {
         expect(found).toBeDefined()
     })
 
+    test('saveProjectAs stays successful when its success toast throws', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const { toast } = await import('/js/ui/toast.js')
+            const { getProject } = await import('/js/utils/project-storage.js')
+            toast.success = () => { throw new Error('injected save toast failure') }
+            const envelope = await window.LayersAgent.saveProjectAs({
+                name: 'durable-save',
+            })
+            const stored = app._currentProjectId
+                ? await getProject(app._currentProjectId)
+                : null
+            return {
+                envelope,
+                projectId: app._currentProjectId,
+                projectName: app._currentProjectName,
+                dirty: app._isDirty,
+                storedName: stored?.name || null,
+            }
+        })
+
+        expect(result.envelope.ok).toBe(true)
+        expect(result.envelope.result.projectId).toBe(result.projectId)
+        expect(result.projectId).toBeTruthy()
+        expect(result.projectName).toBe('durable-save')
+        expect(result.dirty).toBe(false)
+        expect(result.storedName).toBe('durable-save')
+    })
+
     test('openProject loads a saved project', async ({ page }) => {
         await bootApp(page)
         const saved = await page.evaluate(() =>

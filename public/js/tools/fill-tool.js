@@ -17,9 +17,6 @@ export class FillTool {
         this._canvas = options.canvas
         this._runMutation = options.runMutation
         this._addMediaLayerFromCanvas = options.addMediaLayerFromCanvas
-        this._pushUndoState = options.pushUndoState
-        this._finalizePendingUndo = options.finalizePendingUndo
-        this._markDirty = options.markDirty
 
         this._color = '#000000'
         this._tolerance = 32
@@ -101,9 +98,9 @@ export class FillTool {
         ctx.putImageData(fillData, 0, 0)
 
         // Create a media layer from the fill canvas
-        this._finalizePendingUndo()
-        await this._addMediaLayerFromCanvas(fillCanvas, 'Fill')
-        this._markDirty()
-        this._pushUndoState()
+        const outcome = await this._addMediaLayerFromCanvas(fillCanvas, 'Fill')
+        if (outcome?.status === 'failed') {
+            console.error('[FillTool] Failed to add fill layer:', outcome.error)
+        }
     }
 }

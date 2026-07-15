@@ -17,11 +17,14 @@ async function projectState(page) {
         return {
             layerIds: app._layers.map(layer => layer.id),
             selectedLayerId: app._layerStack.selectedLayerId,
+            selectedLayerIds: app._layerStack.selectedLayerIds,
+            selectionAnchor: app._layerStack._lastClickedLayerId,
             width: app._canvas.width,
             height: app._canvas.height,
             projectId: app._currentProjectId,
             projectName: app._currentProjectName,
             dirty: app._isDirty,
+            mutationRevision: app._projectMutationRevision,
             canUndo: app._undoManager.canUndo(),
             hasSelection: app._selectionManager.hasSelection(),
             copyOrigin: app._copyOrigin,
@@ -54,6 +57,56 @@ async function putProject(page, { id, layers, width = 320, height = 180 }) {
 }
 
 test.describe('Atomic project replacement', () => {
+    test('post-settlement stage cleanup failure preserves the committed project and session', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            let online = true
+            let wentOffline = false
+            app._onlineAdapter = {
+                isOnline: () => online,
+                isApplyingRemote: () => false,
+                goOffline: () => {
+                    online = false
+                    wentOffline = true
+                },
+                schedulePublish: () => {},
+            }
+            const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
+            app._renderer.stageLayerSet = async (candidate) => {
+                const stage = await stageLayerSet(candidate)
+                const commit = stage.commit.bind(stage)
+                stage.commit = () => {
+                    commit()
+                    throw new Error('injected settled-stage cleanup failure')
+                }
+                return stage
+            }
+
+            const status = await app._handleCreateGradientBase(333, 222, {
+                leaveOnline: true,
+            })
+            return {
+                status,
+                online,
+                wentOffline,
+                effectId: app._layers[0]?.effectId,
+                size: [app._canvas.width, app._canvas.height],
+                sameLayers: app._renderer._layers === app._layers,
+            }
+        })
+
+        expect(result).toEqual({
+            status: 'opened',
+            online: false,
+            wentOffline: true,
+            effectId: 'synth/gradient',
+            size: [333, 222],
+            sameLayers: true,
+        })
+    })
+
     test('a rebuild queued inside a live stage cannot replay old layers after commit', async ({ page }) => {
         await bootSolid(page)
 
@@ -86,8 +139,127 @@ test.describe('Atomic project replacement', () => {
         expect(result.appLayerIds).not.toEqual(result.oldLayerIds)
     })
 
+    test('agent envelopes never snapshot transient replacement canvas state', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const before = {
+                canvas: { width: app._canvas.width, height: app._canvas.height },
+                layerIds: app._layers.map(layer => layer.id),
+            }
+            let enterStage
+            let releaseStage
+            const entered = new Promise(resolve => { enterStage = resolve })
+            const release = new Promise(resolve => { releaseStage = resolve })
+            app._renderer.stageLayerSet = async () => {
+                enterStage()
+                await release
+                return { success: false, error: 'injected staged replacement failure' }
+            }
+
+            const replacement = app._handleCreateGradientBase(333, 222)
+            await entered
+            const jobEnvelope = await window.LayersAgent.getJob({ jobId: 'missing-job' })
+            let invalidResolved = false
+            const invalidPromise = window.LayersAgent.resizeImage({
+                width: 'invalid', height: 100,
+            }).then(envelope => {
+                invalidResolved = true
+                return envelope
+            })
+            await new Promise(resolve => setTimeout(resolve, 0))
+            const resolvedBeforeRelease = invalidResolved
+            releaseStage()
+            const status = await replacement
+            const invalidEnvelope = await invalidPromise
+            return {
+                before,
+                status,
+                resolvedBeforeRelease,
+                jobState: jobEnvelope.state,
+                invalidState: invalidEnvelope.state,
+                after: {
+                    canvas: { width: app._canvas.width, height: app._canvas.height },
+                    layerIds: app._layers.map(layer => layer.id),
+                },
+            }
+        })
+
+        expect(result.status).toBe('failed')
+        expect(result.resolvedBeforeRelease).toBe(false)
+        expect(result.jobState.canvas).toEqual(result.before.canvas)
+        expect(result.jobState.layers.map(layer => layer.id)).toEqual(result.before.layerIds)
+        expect(result.invalidState.canvas).toEqual(result.before.canvas)
+        expect(result.invalidState.layers.map(layer => layer.id)).toEqual(result.before.layerIds)
+        expect(result.after).toEqual(result.before)
+    })
+
+    test('job polling hides a replacement model that fails after the app swap', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            app._selectionManager.setSelection({
+                type: 'rect', x: 10, y: 20, width: 30, height: 40,
+            })
+            app._currentProjectId = 'original-project'
+            app._currentProjectName = 'Original project'
+            const readState = async () => {
+                const { state } = await window.LayersAgent.getJob({ jobId: 'missing-job' })
+                return {
+                    project: state.project,
+                    canvas: state.canvas,
+                    selection: state.selection,
+                    layers: state.layers,
+                    selectedLayerIds: state.selectedLayerIds,
+                    activeLayerId: state.activeLayerId,
+                }
+            }
+            const before = await readState()
+            let enteredExit
+            let releaseExit
+            const entered = new Promise(resolve => { enteredExit = resolve })
+            const release = new Promise(resolve => { releaseExit = resolve })
+            app._maskEditMode = true
+            app._maskEditLayerId = 'missing-mask-layer'
+            app._exitMaskEditMode = async () => {
+                enteredExit()
+                await release
+                throw new Error('injected post-swap replacement failure')
+            }
+
+            const replacement = app._handleCreateGradientBase(333, 222)
+            await entered
+            const liveDuring = {
+                canvas: { width: app._canvas.width, height: app._canvas.height },
+                layerIds: app._layers.map(layer => layer.id),
+            }
+            const during = await readState()
+            releaseExit()
+            const status = await replacement
+            const after = await readState()
+            return { before, liveDuring, during, status, after }
+        })
+
+        expect(result.status).toBe('failed')
+        expect(result.liveDuring.canvas).toEqual({ width: 333, height: 222 })
+        expect(result.liveDuring.layerIds).not.toEqual(
+            result.before.layers.map(layer => layer.id))
+        expect(result.during).toEqual(result.before)
+        expect(result.after).toEqual(result.before)
+    })
+
     test('a commit-time exception restores app and renderer state and releases the stage', async ({ page }) => {
         await bootSolid(page)
+        await page.evaluate(async () => {
+            await window.LayersAgent.addLayer({
+                kind: 'effect', effectId: 'filter/blur', name: 'Second layer',
+            })
+            const stack = window.layersApp._layerStack
+            stack.selectedLayerIds = window.layersApp._layers.map(layer => layer.id)
+            stack._lastClickedLayerId = window.layersApp._layers[0].id
+        })
         const before = await projectState(page)
 
         const result = await page.evaluate(async () => {
@@ -119,6 +291,53 @@ test.describe('Atomic project replacement', () => {
 
         expect(result).toEqual({ status: 'failed', error: null, barrierReleased: true })
         expect(await projectState(page)).toEqual(before)
+    })
+
+    test('canvas restore failure still releases a failed replacement stage', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const previousSize = {
+                width: app._canvas.width,
+                height: app._canvas.height,
+            }
+            const resizeCanvas = app._resizeCanvas.bind(app)
+            app._resizeCanvas = (width, height) => {
+                resizeCanvas(width, height)
+                if (width === previousSize.width && height === previousSize.height) {
+                    throw new Error('live canvas restore failed')
+                }
+            }
+
+            const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
+            app._renderer.stageLayerSet = async (candidate) => ({
+                ...await stageLayerSet(candidate),
+                success: false,
+                error: 'candidate compile failed',
+            })
+
+            let status = 'rejected'
+            let message = null
+            try {
+                const outcome = await app._handleCreateGradientBase(333, 222)
+                status = outcome
+            } catch (err) {
+                message = err.message
+            }
+            const stageGateResult = await Promise.race([
+                app._renderer.setLayers(app._layers, { force: true })
+                    .then(() => 'released'),
+                new Promise(resolve => setTimeout(() => resolve('blocked'), 100)),
+            ])
+            return { status, message, stageGateResult }
+        })
+
+        expect(result).toEqual({
+            status: 'failed',
+            message: null,
+            stageGateResult: 'released',
+        })
     })
 
     test('a failed renderer restoration is surfaced in the replacement error', async ({ page }) => {
@@ -175,6 +394,253 @@ test.describe('Atomic project replacement', () => {
         })
 
         expect(error).toContain('duplicate')
+        expect(await projectState(page)).toEqual(before)
+    })
+
+    test('invalid persisted canvas dimensions are rejected before replacement', async ({ page }) => {
+        await bootSolid(page)
+        const before = await projectState(page)
+        const cases = [
+            { id: 'fractional-canvas-project', width: 320.5, height: 180 },
+            { id: 'oversized-canvas-project', width: 8193, height: 180 },
+        ]
+        for (const candidate of cases) {
+            await putProject(page, { ...candidate, layers: [] })
+        }
+
+        const results = await page.evaluate(async (ids) => {
+            const app = window.layersApp
+            const outcomes = []
+            for (const id of ids) {
+                try {
+                    outcomes.push({ id, status: await app._loadProject(id), error: null })
+                } catch (err) {
+                    outcomes.push({ id, status: null, error: err.message })
+                }
+            }
+            return outcomes
+        }, cases.map(candidate => candidate.id))
+
+        expect(results).toEqual(cases.map(candidate => ({
+            id: candidate.id,
+            status: null,
+            error: 'Saved project has invalid canvas dimensions',
+        })))
+        expect(await projectState(page)).toEqual(before)
+    })
+
+    test('oversized persisted mask headers are rejected before image allocation', async ({ page }) => {
+        await bootSolid(page)
+        const before = await projectState(page)
+        const layers = await page.evaluate(() => {
+            const base = structuredClone(window.layersApp._layers[0])
+            const bytes = [
+                137, 80, 78, 71, 13, 10, 26, 10,
+                0, 0, 0, 13, 73, 72, 68, 82,
+                0, 0, 32, 1,
+                0, 0, 0, 1,
+            ]
+            base.mask = `data:image/png;base64,${btoa(String.fromCharCode(...bytes))}`
+            return [base]
+        })
+        await putProject(page, { id: 'oversized-mask-project', layers })
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            let maskPreparations = 0
+            app._renderer.prepareMaskTexture = () => {
+                maskPreparations += 1
+                throw new Error('oversized mask reached texture preparation')
+            }
+            let error = null
+            try {
+                await app._loadProject('oversized-mask-project')
+            } catch (err) {
+                error = err.message || String(err)
+            }
+            return { error, maskPreparations }
+        })
+
+        expect(result.error).toMatch(/mask dimensions/i)
+        expect(result.maskPreparations).toBe(0)
+        expect(await projectState(page)).toEqual(before)
+    })
+
+    test('persisted masks must match the project canvas dimensions', async ({ page }) => {
+        await bootSolid(page)
+        const before = await projectState(page)
+        const layers = await page.evaluate(() => {
+            const base = structuredClone(window.layersApp._layers[0])
+            const canvas = document.createElement('canvas')
+            canvas.width = 1
+            canvas.height = 1
+            canvas.getContext('2d').fillRect(0, 0, 1, 1)
+            base.mask = canvas.toDataURL('image/png')
+            return [base]
+        })
+        await putProject(page, { id: 'undersized-mask-project', layers })
+
+        const error = await page.evaluate(async () => {
+            try {
+                await window.layersApp._loadProject('undersized-mask-project')
+                return null
+            } catch (err) {
+                return err.message || String(err)
+            }
+        })
+
+        expect(error).toMatch(/mask dimensions.*project canvas/i)
+        expect(await projectState(page)).toEqual(before)
+    })
+
+    test('invalid persisted layer semantics are rejected before renderer staging', async ({ page }) => {
+        await bootSolid(page)
+        const before = await projectState(page)
+        const cases = await page.evaluate(() => {
+            const base = structuredClone(window.layersApp._layers[0])
+            return [
+                { id: 'invalid-blend-project', layer: { ...structuredClone(base), blendMode: 'bogus' } },
+                { id: 'invalid-scale-project', layer: { ...structuredClone(base), scaleX: 0 } },
+                {
+                    id: 'invalid-param-project',
+                    layer: {
+                        ...structuredClone(base),
+                        effectParams: { ...base.effectParams, undeclaredParameter: 1 },
+                    },
+                },
+                {
+                    id: 'invalid-rgba-project',
+                    layer: {
+                        ...structuredClone(base),
+                        effectParams: { ...base.effectParams, color: [1, 0, 0, 0.5] },
+                    },
+                },
+                {
+                    id: 'invalid-member-project',
+                    layer: {
+                        ...structuredClone(base),
+                        children: [{
+                            id: 'invalid-member-child',
+                            name: 'Invalid channel',
+                            effectId: 'filter/channel',
+                            effectParams: { channel: 'channel.notARealMember' },
+                            visible: true,
+                        }],
+                    },
+                },
+                {
+                    id: 'invalid-choice-project',
+                    layer: {
+                        ...structuredClone(base),
+                        children: [{
+                            id: 'invalid-choice-child',
+                            name: 'Invalid text choice',
+                            effectId: 'filter/text',
+                            effectParams: { text: 'Choice', justify: 'diagonal' },
+                            visible: true,
+                        }],
+                    },
+                },
+            ]
+        })
+        for (const candidate of cases) {
+            await putProject(page, { id: candidate.id, layers: [candidate.layer] })
+        }
+
+        const result = await page.evaluate(async (ids) => {
+            const app = window.layersApp
+            let stages = 0
+            app._renderer.stageLayerSet = async () => {
+                stages += 1
+                throw new Error('invalid persisted semantics reached renderer staging')
+            }
+            const errors = []
+            for (const id of ids) {
+                try {
+                    await app._loadProject(id)
+                    errors.push(null)
+                } catch (err) {
+                    errors.push(err.message || String(err))
+                }
+            }
+            return { errors, stages }
+        }, cases.map(candidate => candidate.id))
+
+        expect(result.stages).toBe(0)
+        expect(result.errors[0]).toMatch(/blendMode/i)
+        expect(result.errors[1]).toMatch(/scale/i)
+        expect(result.errors[2]).toMatch(/parameter/i)
+        expect(result.errors[3]).toMatch(/RGB array/i)
+        expect(result.errors[4]).toMatch(/declared enum member/i)
+        expect(result.errors[5]).toMatch(/declared choice/i)
+        expect(await projectState(page)).toEqual(before)
+    })
+
+    test('oversized saved media is disposed before renderer staging', async ({ page }) => {
+        await bootSolid(page)
+        const projectId = await page.evaluate(async () => {
+            const app = window.layersApp
+            const blob = await (await fetch('/img/og-image.png')).blob()
+            const file = new File([blob], 'saved-media.png', { type: 'image/png' })
+            const added = await app._handleAddMediaLayer(file, 'image')
+            if (added.status !== 'added') throw added.error
+            const saved = await window.LayersAgent.saveProjectAs({ name: 'saved-media-bounds' })
+            if (!saved.ok) throw new Error(saved.error.message)
+            return saved.result.projectId
+        })
+        const before = await projectState(page)
+
+        const result = await page.evaluate(async (projectId) => {
+            const app = window.layersApp
+            const oversized = { width: 8193, height: 1, element: {} }
+            let disposed = false
+            let staged = false
+            app._renderer.prepareMediaResource = async () => oversized
+            app._renderer.disposeMediaResource = (resource) => {
+                if (resource === oversized) disposed = true
+            }
+            app._renderer.stageLayerSet = async () => {
+                staged = true
+                throw new Error('oversized saved media reached staging')
+            }
+            let error = null
+            try {
+                await app._loadProject(projectId)
+            } catch (err) {
+                error = err.message || String(err)
+            }
+            return { error, disposed, staged }
+        }, projectId)
+
+        expect(result.error).toMatch(/media dimensions/i)
+        expect(result.disposed).toBe(true)
+        expect(result.staged).toBe(false)
+        expect(await projectState(page)).toEqual(before)
+    })
+
+    test('oversized opened media is disposed before project staging', async ({ page }) => {
+        await bootSolid(page)
+        const before = await projectState(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const resource = { width: 8193, height: 1, element: {} }
+            let disposed = false
+            let staged = false
+            app._renderer.prepareMediaResource = async () => resource
+            app._renderer.disposeMediaResource = (candidate) => {
+                disposed = candidate === resource
+            }
+            app._renderer.stageLayerSet = async () => {
+                staged = true
+                throw new Error('oversized media reached project staging')
+            }
+            const file = new File(['oversized'], 'oversized.png', { type: 'image/png' })
+            const status = await app._handleOpenMedia(file, 'image')
+            return { status, disposed, staged }
+        })
+
+        expect(result).toEqual({ status: 'failed', disposed: true, staged: false })
         expect(await projectState(page)).toEqual(before)
     })
 
@@ -524,7 +990,9 @@ test.describe('Atomic project replacement', () => {
 
             const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
             app._renderer.stageLayerSet = async (candidate) => {
-                order.push('replacement-stage')
+                const isAgentCandidate = candidate.layers.some(layer =>
+                    layer.name === 'Delayed agent media')
+                order.push(isAgentCandidate ? 'agent-stage' : 'replacement-stage')
                 return stageLayerSet(candidate)
             }
 
@@ -559,12 +1027,206 @@ test.describe('Atomic project replacement', () => {
 
         expect(result).toEqual({
             replacementDeferredDuringFetch: true,
-            order: ['agent-settled', 'replacement-stage'],
+            order: ['agent-stage', 'agent-settled', 'replacement-stage'],
             agentOk: true,
             replacementStatus: 'opened',
             finalLayerCount: 1,
             sameArray: true,
         })
+    })
+
+    test('confirmed replacement cancels when an earlier mutation lands before commit', async ({ page }) => {
+        await bootSolid(page)
+
+        await page.evaluate(() => {
+            const app = window.layersApp
+            const originalFetch = window.fetch.bind(window)
+            window.__consentRace = {}
+            window.fetch = async (input, options) => {
+                if (input === 'https://layers.test/consent-race.png') {
+                    window.__consentRace.fetchStarted = true
+                    await new Promise(resolve => {
+                        window.__consentRace.releaseFetch = resolve
+                    })
+                    return originalFetch('/img/og-image.png')
+                }
+                return originalFetch(input, options)
+            }
+            window.__consentRace.completion = (async () => {
+                const agentPromise = window.LayersAgent.addLayer({
+                    kind: 'media',
+                    source: { kind: 'url', value: 'https://layers.test/consent-race.png' },
+                    mediaType: 'image',
+                    name: 'Mutation confirmed before completion',
+                })
+                while (!window.__consentRace.fetchStarted) {
+                    await new Promise(resolve => setTimeout(resolve, 0))
+                }
+                window.__consentRace.replacementStarted = true
+                let replacementStatus = null
+                const accepted = await app._startProjectReplacement(({
+                    leaveOnline, replacementConsent,
+                }) => app._handleCreateGradientBase(333, 222, {
+                    leaveOnline,
+                    replacementConsent,
+                }).then(status => { replacementStatus = status }))
+                const agentEnvelope = await agentPromise
+                return {
+                    accepted,
+                    replacementStatus,
+                    agentOk: agentEnvelope.ok,
+                    layerNames: app._layers.map(layer => layer.name),
+                    size: [app._canvas.width, app._canvas.height],
+                    lifecycleActive: app._projectLifecycleActive,
+                }
+            })()
+        })
+
+        await expect.poll(() => page.evaluate(
+            () => Boolean(window.__consentRace?.replacementStarted))).toBe(true)
+        await expect(page.locator('.confirm-dialog-backdrop.visible')).toBeVisible()
+        await page.locator('#confirm-ok').click()
+        await page.evaluate(() => window.__consentRace.releaseFetch())
+        const result = await page.evaluate(() => window.__consentRace.completion)
+
+        expect(result).toEqual({
+            accepted: true,
+            replacementStatus: 'cancelled',
+            agentOk: true,
+            layerNames: ['Solid', 'Mutation confirmed before completion'],
+            size: [1024, 1024],
+            lifecycleActive: false,
+        })
+    })
+
+    test('concurrent project replacement guards resolve in request order', async ({ page }) => {
+        await bootSolid(page)
+
+        await page.evaluate(() => {
+            const app = window.layersApp
+            window.__replacementGuardRace = { started: [] }
+            const first = app._startProjectReplacement(() => {
+                window.__replacementGuardRace.started.push('first')
+            })
+            const second = app._startProjectReplacement(() => {
+                window.__replacementGuardRace.started.push('second')
+            })
+            window.__replacementGuardRace.completion = Promise.all([first, second])
+        })
+
+        const confirmation = page.locator('.confirm-dialog-backdrop.visible')
+        await expect(confirmation).toBeVisible()
+        await page.locator('#confirm-ok').click()
+        await expect(confirmation).toBeVisible()
+        await page.locator('#confirm-cancel').click()
+
+        const result = await page.evaluate(async () => ({
+            accepted: await window.__replacementGuardRace.completion,
+            started: window.__replacementGuardRace.started,
+        }))
+        expect(result).toEqual({ accepted: [true, false], started: ['first'] })
+    })
+
+    test('replacement consent for session A cannot disconnect session B', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            let online = true
+            let sessionIdentity = 'session-A'
+            const disconnectedSessions = []
+            app._onlineAdapter = {
+                isOnline: () => online,
+                isApplyingRemote: () => false,
+                getSessionIdentity: () => sessionIdentity,
+                schedulePublish() {},
+                goOffline: () => {
+                    disconnectedSessions.push(sessionIdentity)
+                    online = false
+                },
+            }
+            app._confirmLeaveOnlineSession = async () => true
+            app._confirmUnsavedChanges = async () => true
+            const before = {
+                layerIds: app._layers.map(layer => layer.id),
+                size: [app._canvas.width, app._canvas.height],
+            }
+            let replacementStatus = null
+            const accepted = await app._startProjectReplacement(async ({
+                leaveOnline, replacementConsent,
+            }) => {
+                sessionIdentity = 'session-B'
+                replacementStatus = await app._handleCreateGradientBase(333, 222, {
+                    leaveOnline,
+                    replacementConsent,
+                })
+            })
+            return {
+                accepted,
+                replacementStatus,
+                disconnectedSessions,
+                online,
+                sessionIdentity,
+                layerIds: app._layers.map(layer => layer.id),
+                size: [app._canvas.width, app._canvas.height],
+                before,
+            }
+        })
+
+        expect(result.accepted).toBe(true)
+        expect(result.replacementStatus).toBe('cancelled')
+        expect(result.disconnectedSessions).toEqual([])
+        expect(result.online).toBe(true)
+        expect(result.sessionIdentity).toBe('session-B')
+        expect(result.layerIds).toEqual(result.before.layerIds)
+        expect(result.size).toEqual(result.before.size)
+    })
+
+    test('replacement and join confirmations resolve FIFO without stealing each other', async ({ page }) => {
+        await bootSolid(page)
+
+        await page.evaluate(async () => {
+            const app = window.layersApp
+            const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
+            let status = 'offline'
+            const online = {
+                on() {},
+                getStatus: () => status,
+                getSessionId: () => 'join01',
+                getShareUrl: () => 'https://layers.test/?seance=join01',
+                getNodes: () => [],
+                joinSession: async () => { status = 'online' },
+                goOffline: () => { status = 'offline' },
+                writeSessionToUrl: (url) => url,
+            }
+            const adapter = createLayersOnlineAdapter(app, {
+                location: new URL('https://layers.test/'),
+                history: { replaceState() {} }, dialog: null,
+                importSdk: async () => ({ createOnlineDslLayer: () => online }),
+            })
+            app._onlineAdapter = adapter
+            app._markDirty()
+            window.__crossFlowConfirm = { started: [] }
+            const replacement = app._startProjectReplacement(() => {
+                window.__crossFlowConfirm.started.push('replacement')
+            })
+            await new Promise(resolve => setTimeout(resolve, 0))
+            const join = adapter.joinSession('join01')
+            window.__crossFlowConfirm.completion = Promise.all([replacement, join])
+        })
+
+        const confirmation = page.locator('.confirm-dialog-backdrop.visible')
+        const message = confirmation.locator('.confirm-message')
+        await expect(message).toHaveText('You have unsaved changes. Discard them?')
+        await confirmation.locator('#confirm-ok').click()
+        await expect(message).toHaveText('Joining replaces your current composition. Continue?')
+        await confirmation.locator('#confirm-cancel').click()
+
+        const result = await page.evaluate(async () => ({
+            completion: await window.__crossFlowConfirm.completion,
+            started: window.__crossFlowConfirm.started,
+        }))
+        expect(result).toEqual({ completion: [true, null], started: ['replacement'] })
     })
 
     test('a replacement waits for a human media mutation that is still decoding', async ({ page }) => {
@@ -586,7 +1248,10 @@ test.describe('Atomic project replacement', () => {
 
             const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
             app._renderer.stageLayerSet = async (candidate) => {
-                order.push('replacement-stage')
+                if (candidate.layers.length === 1
+                    && candidate.layers[0].effectId === 'synth/gradient') {
+                    order.push('replacement-stage')
+                }
                 return stageLayerSet(candidate)
             }
 
@@ -780,6 +1445,56 @@ test.describe('Atomic project replacement', () => {
             maskEditLayerId: expect.any(String),
             overlayHidden: false,
         })
+    })
+
+    test('post-exit replacement failure restores the mask-edit tool and UI', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const layer = app._layers[0]
+            await app._addLayerMask(layer.id)
+            app._enterMaskEditMode(layer.id)
+            app._setToolMode('eraser')
+            const before = {
+                currentTool: app._currentTool,
+                maskEditMode: app._maskEditMode,
+                maskEditLayerId: app._maskEditLayerId,
+                hasStrokeHandler: Boolean(app._brushTool.onStrokeComplete),
+                bannerHidden: document.getElementById('maskEditBanner')
+                    .classList.contains('hidden'),
+                brushTitle: document.getElementById('brushToolBtn').title,
+                eraserTitle: document.getElementById('eraserToolBtn').title,
+                overlayHidden: document.getElementById('maskOverlay')
+                    .classList.contains('hidden'),
+            }
+            const exitMaskEditMode = app._exitMaskEditMode.bind(app)
+            app._exitMaskEditMode = async (...args) => {
+                await exitMaskEditMode(...args)
+                throw new Error('injected post-exit failure')
+            }
+
+            const status = await app._handleCreateGradientBase(333, 222)
+            return {
+                status,
+                before,
+                after: {
+                    currentTool: app._currentTool,
+                    maskEditMode: app._maskEditMode,
+                    maskEditLayerId: app._maskEditLayerId,
+                    hasStrokeHandler: Boolean(app._brushTool.onStrokeComplete),
+                    bannerHidden: document.getElementById('maskEditBanner')
+                        .classList.contains('hidden'),
+                    brushTitle: document.getElementById('brushToolBtn').title,
+                    eraserTitle: document.getElementById('eraserToolBtn').title,
+                    overlayHidden: document.getElementById('maskOverlay')
+                        .classList.contains('hidden'),
+                },
+            }
+        })
+
+        expect(result.status).toBe('failed')
+        expect(result.after).toEqual(result.before)
     })
 
     test('a pointer effect queued behind agent newProject is rejected', async ({ page }) => {
@@ -1027,13 +1742,13 @@ test.describe('Atomic project replacement', () => {
             const blob = await (await fetch('/img/og-image.png')).blob()
             const file = new File([blob], 'resample-source.png', { type: 'image/png' })
             await app._handleOpenMedia(file, 'image')
-            const resampleMediaLayer = app._resampleMediaLayer.bind(app)
+            const prepareMediaResource = app._renderer.prepareMediaResource.bind(app._renderer)
             let resampleStarted = false
             let releaseResample
-            app._resampleMediaLayer = async (...args) => {
+            app._renderer.prepareMediaResource = async (...args) => {
                 resampleStarted = true
                 await new Promise(resolve => { releaseResample = resolve })
-                return resampleMediaLayer(...args)
+                return prepareMediaResource(...args)
             }
             const resizePromise = window.LayersAgent.resizeImage({ width: 320, height: 180 })
             while (!resampleStarted) await new Promise(resolve => setTimeout(resolve, 0))
@@ -1178,7 +1893,7 @@ test.describe('Atomic project replacement', () => {
         })
     })
 
-    test('post-commit dialog failure cannot dispose renderer-owned saved media', async ({ page }) => {
+    test('post-commit dialog failure still reports the saved project as opened', async ({ page }) => {
         await bootSolid(page)
 
         const result = await page.evaluate(async () => {
@@ -1219,9 +1934,164 @@ test.describe('Atomic project replacement', () => {
             }
         })
 
-        expect(result.error).toBe('post-commit close failed')
+        expect(result.error).toBeNull()
         expect(result.currentProjectId).toBe(result.expectedProjectId)
         expect(result.mediaLayerId).toBe(result.expectedMediaLayerId)
         expect(result.resourceAlive).toBe(true)
+    })
+
+    test('post-commit dialog failure still reports a new base as opened', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const { openDialog } = await import('/js/ui/open-dialog.js')
+            const classList = openDialog._backdrop.classList
+            const remove = classList.remove.bind(classList)
+            let threw = false
+            classList.remove = (...tokens) => {
+                if (!threw && tokens.includes('visible')) {
+                    threw = true
+                    throw new Error('post-commit close failed')
+                }
+                return remove(...tokens)
+            }
+
+            let status = null
+            let error = null
+            try {
+                status = await app._handleCreateGradientBase(333, 222)
+            } catch (err) {
+                error = err.message
+            }
+            return {
+                status,
+                error,
+                width: app._canvas.width,
+                height: app._canvas.height,
+                lifecycleActive: app._projectLifecycleActive,
+                sameArray: app._layers === app._renderer._layers,
+            }
+        })
+
+        expect(result).toEqual({
+            status: 'opened',
+            error: null,
+            width: 333,
+            height: 222,
+            lifecycleActive: false,
+            sameArray: true,
+        })
+    })
+
+    test('post-commit toast failure still reports new media as opened', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const { toast } = await import('/js/ui/toast.js')
+            toast.success = () => { throw new Error('post-commit toast failed') }
+            const blob = await (await fetch('/img/og-image.png')).blob()
+            const file = new File([blob], 'post-commit.png', { type: 'image/png' })
+
+            let status = null
+            let error = null
+            try {
+                status = await app._handleOpenMedia(file, 'image')
+            } catch (err) {
+                error = err.message
+            }
+            return {
+                status,
+                error,
+                layerName: app._layers[0]?.name,
+                resourceAlive: Boolean(app._renderer.getMediaInfo(app._layers[0]?.id)),
+                lifecycleActive: app._projectLifecycleActive,
+            }
+        })
+
+        expect(result).toEqual({
+            status: 'opened',
+            error: null,
+            layerName: 'post-commit',
+            resourceAlive: true,
+            lifecycleActive: false,
+        })
+    })
+
+    test('offline cleanup failure after disconnect cannot roll back a replacement', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
+            const { buildNodeModel } = await import('/js/collab/docModel.js')
+            const { toast } = await import('/js/ui/toast.js')
+            const nodes = buildNodeModel(app._layers, {
+                width: app._canvas.width, height: app._canvas.height,
+            })
+            let status = 'offline'
+            let throwCleanup = false
+            const dialog = {
+                set state(_value) {
+                    if (throwCleanup) throw new Error('status cleanup failed')
+                },
+                set sessionId(_value) {}, set sessionUrl(_value) {},
+            }
+            const online = {
+                on() {},
+                getStatus: () => status,
+                getSessionId: () => 'leave1',
+                getShareUrl: () => 'https://layers.test/?seance=leave1',
+                getNodes: () => nodes,
+                joinSession: async () => { status = 'online' },
+                goOffline: () => {
+                    status = 'offline'
+                    if (throwCleanup) throw new Error('disconnect callback failed')
+                },
+                writeSessionToUrl: (url) => url,
+            }
+            const adapter = createLayersOnlineAdapter(app, {
+                location: new URL('https://layers.test/'),
+                history: {
+                    replaceState() {
+                        if (throwCleanup) throw new Error('URL cleanup failed')
+                    },
+                },
+                dialog,
+                importSdk: async () => ({ createOnlineDslLayer: () => online }),
+            })
+            app._onlineAdapter = adapter
+            await adapter.joinSession('leave1', { skipConfirm: true })
+            throwCleanup = true
+            toast.info = () => { throw new Error('offline toast failed') }
+
+            let replacementStatus = null
+            let error = null
+            try {
+                replacementStatus = await app._handleCreateGradientBase(333, 222, {
+                    leaveOnline: true,
+                })
+            } catch (err) {
+                error = err.message
+            }
+            return {
+                replacementStatus,
+                error,
+                online: adapter.isOnline(),
+                size: [app._canvas.width, app._canvas.height],
+                layerNames: app._layers.map(layer => layer.name),
+                sameRendererLayers: app._renderer._layers === app._layers,
+            }
+        })
+
+        expect(result).toEqual({
+            replacementStatus: 'opened',
+            error: null,
+            online: false,
+            size: [333, 222],
+            layerNames: ['Gradient'],
+            sameRendererLayers: true,
+        })
     })
 })

@@ -26,6 +26,54 @@ test.describe('exportImage', () => {
         expect(env.result.filename).toMatch(/\.png$/)
     })
 
+    test('captures a red effect update from the immediately preceding command', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const layer = app._layers[0]
+            const preceding = await window.LayersAgent.setLayerEffectParams({
+                layerId: layer.id,
+                params: { color: [1, 0, 0], alpha: 1 },
+                replace: true,
+            })
+            const renderCurrentFrame = app._renderCurrentFrame
+            let freshFrameCalls = 0
+            app._renderCurrentFrame = (...args) => {
+                freshFrameCalls += 1
+                return renderCurrentFrame.apply(app, args)
+            }
+            let exported
+            try {
+                exported = await window.LayersAgent.exportImage({
+                    format: 'png',
+                    triggerDownload: false,
+                })
+            } finally {
+                app._renderCurrentFrame = renderCurrentFrame
+            }
+            const binary = atob(exported.result.bytes)
+            const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+            const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }))
+            const sample = new OffscreenCanvas(1, 1)
+            sample.getContext('2d').drawImage(
+                bitmap,
+                Math.floor(bitmap.width / 2), Math.floor(bitmap.height / 2), 1, 1,
+                0, 0, 1, 1)
+            const pixel = [...sample.getContext('2d').getImageData(0, 0, 1, 1).data]
+            bitmap.close()
+            return { preceding, exported, freshFrameCalls, pixel }
+        })
+
+        expect(result.preceding.ok).toBe(true)
+        expect(result.exported.ok).toBe(true)
+        expect(result.exported.result.format).toBe('png')
+        expect(result.freshFrameCalls).toBe(1)
+        expect(result.pixel[0]).toBeGreaterThan(240)
+        expect(result.pixel[1]).toBeLessThan(15)
+        expect(result.pixel[2]).toBeLessThan(15)
+        expect(result.pixel[3]).toBeGreaterThan(240)
+    })
+
     test('exports JPG with custom quality', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() =>

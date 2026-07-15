@@ -71,6 +71,69 @@ test.describe('Layer masks', () => {
         expect(isAllBlack).toBe(true)
     })
 
+    test('invert refreshes the live overlay for the mask being edited', async ({ page }) => {
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const layer = app._layers[1]
+            await app._addLayerMask(layer.id)
+            const overlay = document.getElementById('maskOverlay')
+            const context = overlay.getContext('2d')
+            const beforeAlpha = context.getImageData(0, 0, 1, 1).data[3]
+
+            await app._invertLayerMask(layer.id)
+
+            return {
+                beforeAlpha,
+                afterAlpha: context.getImageData(0, 0, 1, 1).data[3],
+                maskValue: layer.mask.data[0],
+                editLayerId: app._maskEditLayerId,
+                layerId: layer.id,
+            }
+        })
+
+        expect(result.beforeAlpha).toBe(0)
+        expect(result.maskValue).toBe(0)
+        expect(result.afterAlpha).toBe(128)
+        expect(result.editLayerId).toBe(result.layerId)
+    })
+
+    test('agent mask transform does not replace another layer live edit overlay', async ({ page }) => {
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const editedLayer = app._layers[0]
+            const transformedLayer = app._layers[1]
+            await window.LayersAgent.addLayerMask({ layerId: editedLayer.id })
+            await window.LayersAgent.addLayerMask({ layerId: transformedLayer.id })
+            await window.LayersAgent.invertLayerMask({ layerId: transformedLayer.id })
+            app._enterMaskEditMode(editedLayer.id)
+
+            const overlay = document.getElementById('maskOverlay')
+            const context = overlay.getContext('2d')
+            const beforeAlpha = context.getImageData(0, 0, 1, 1).data[3]
+            const envelope = await window.LayersAgent.smoothMask({
+                layerId: transformedLayer.id,
+                radius: 3,
+            })
+
+            return {
+                envelope,
+                beforeAlpha,
+                afterAlpha: context.getImageData(0, 0, 1, 1).data[3],
+                editedMaskValue: editedLayer.mask.data[0],
+                transformedMaskValue: transformedLayer.mask.data[0],
+                editLayerId: app._maskEditLayerId,
+                editedLayerId: editedLayer.id,
+            }
+        })
+
+        expect(result.envelope.ok).toBe(true)
+        expect(result.beforeAlpha).toBe(0)
+        expect(result.editedMaskValue).toBe(255)
+        expect(result.transformedMaskValue).toBe(0)
+        expect(result.afterAlpha).toBe(0)
+        expect(result.editLayerId).toBe(result.editedLayerId)
+    })
+
     test('delete mask removes it', async ({ page }) => {
         await page.evaluate(async () => {
             const topLayer = window.layersApp._layers[1]

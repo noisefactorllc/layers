@@ -51,6 +51,7 @@ class TransformTool {
         this._applyTransform = options.applyTransform
         this._commitTransform = options.commitTransform
         this._cancelTransform = options.cancelTransform
+        this._captureMutationState = options.captureMutationState
         this._showNoLayerDialog = options.showNoLayerDialog
         this._selectTopmostLayer = options.selectTopmostLayer
         this._isLayerBlocked = options.isLayerBlocked
@@ -63,6 +64,7 @@ class TransformTool {
         this._startBounds = null
         this._startTransform = null
         this._mutationToken = null
+        this._gestureMutationState = null
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
@@ -125,6 +127,7 @@ class TransformTool {
         this._dragStart = null
         this._startBounds = null
         this._startTransform = null
+        this._gestureMutationState = null
     }
 
     _getCanvasCoords(e) {
@@ -243,6 +246,7 @@ class TransformTool {
             scaleY: layer.scaleY ?? 1,
             rotation: layer.rotation ?? 0
         }
+        this._gestureMutationState = this._captureMutationState?.() || null
     }
 
     _onMouseMove(e) {
@@ -265,8 +269,10 @@ class TransformTool {
 
     _onCancel() {
         if (this._state !== State.DRAGGING) return
+        const startTransform = this._startTransform
+        const mutationState = this._gestureMutationState
         this._reset()
-        this._drawOverlay()
+        this._cancelTransform?.(startTransform, mutationState)
     }
 
     _onKeyDown(e) {
@@ -274,7 +280,8 @@ class TransformTool {
 
         if (e.key === 'Escape') {
             e.preventDefault()
-            this._cancelTransform?.()
+            if (this._state === State.DRAGGING) this._onCancel()
+            else this._cancelTransform?.()
             return
         }
 

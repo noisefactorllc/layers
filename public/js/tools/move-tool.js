@@ -21,6 +21,8 @@ class MoveTool {
         this._getActiveLayer = options.getActiveLayer
         this._getSelectedLayers = options.getSelectedLayers
         this._updateLayerPosition = options.updateLayerPosition
+        this._restoreLayerPosition = options.restoreLayerPosition
+        this._captureMutationState = options.captureMutationState
         this._getLayerPosition = options.getLayerPosition || ((layer) => ({
             x: layer?.offsetX || 0,
             y: layer?.offsetY || 0
@@ -41,7 +43,9 @@ class MoveTool {
         this._layerStartPos = null
         this._didCloneOperation = false
         this._pointerUpPending = false
+        this._cancelRequested = false
         this._mutationToken = null
+        this._gestureMutationState = null
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
@@ -75,7 +79,7 @@ class MoveTool {
         window.removeEventListener('blur', this._onCancel)
         this._overlay.classList.remove(this._toolClass)
         if (this._state === State.EXTRACTING) {
-            this._pointerUpPending = true
+            this._cancelRequested = true
             return
         }
         this._reset()
@@ -103,6 +107,8 @@ class MoveTool {
         this._layerStartPos = null
         this._didCloneOperation = false
         this._pointerUpPending = false
+        this._cancelRequested = false
+        this._gestureMutationState = null
     }
 
     _getCanvasCoords(e) {
@@ -132,8 +138,10 @@ class MoveTool {
             if (!token) return
             this._mutationToken = token
             this._state = State.EXTRACTING
+            this._cancelRequested = false
             this._doAsyncThenDrag(
-                () => this._extractSelection(this._destructive),
+                () => this._extractSelection(
+                    this._destructive, () => this._cancelRequested),
                 this._getCanvasCoords(e),
                 'Extraction'
             )
@@ -154,8 +162,9 @@ class MoveTool {
 
         if (!this._destructive && this._duplicateLayer) {
             this._state = State.EXTRACTING
+            this._cancelRequested = false
             this._doAsyncThenDrag(
-                () => this._duplicateLayer(),
+                () => this._duplicateLayer(() => this._cancelRequested),
                 coords,
                 'Duplication'
             )
@@ -168,6 +177,10 @@ class MoveTool {
     async _doAsyncThenDrag(asyncFn, startCoords, label) {
         try {
             const success = await asyncFn()
+            if (this._cancelRequested) {
+                this._reset()
+                return
+            }
             if (success) {
                 this._didCloneOperation = true
                 if (this._pointerUpPending) {
@@ -191,6 +204,7 @@ class MoveTool {
         this._state = State.DRAGGING
         this._dragStart = coords
         this._layerStartPos = this._getLayerPosition(layer)
+        this._gestureMutationState = this._captureMutationState?.() || null
     }
 
     _onMouseMove(e) {
@@ -222,10 +236,17 @@ class MoveTool {
 
     _onCancel() {
         if (this._state === State.EXTRACTING) {
-            this._pointerUpPending = true
+            this._cancelRequested = true
             return
         }
-        if (this._state !== State.IDLE) this._reset()
+        if (this._state !== State.DRAGGING) return
+        const start = this._layerStartPos
+        const mutationState = this._gestureMutationState
+        try {
+            if (start) this._restoreLayerPosition?.(start.x, start.y, mutationState)
+        } finally {
+            this._reset()
+        }
     }
 }
 

@@ -12,7 +12,8 @@ class ConfirmDialog {
     constructor() {
         this._backdrop = null
         this._modal = null
-        this._resolvePromise = null
+        this._activeRequest = null
+        this._requests = []
     }
 
     /**
@@ -25,12 +26,22 @@ class ConfirmDialog {
      * @returns {Promise<boolean>} Resolves to true if confirmed, false if cancelled
      */
     show(options = {}) {
+        return new Promise(resolve => {
+            this._requests.push({ options, resolve })
+            this._showNext()
+        })
+    }
+
+    /** @private */
+    _showNext() {
+        if (this._activeRequest || this._requests.length === 0) return
+        this._activeRequest = this._requests.shift()
         const {
             message = 'Are you sure?',
             confirmText = 'OK',
             cancelText = 'Cancel',
             danger = false
-        } = options
+        } = this._activeRequest.options
 
         if (!this._backdrop) {
             this._createModal()
@@ -46,10 +57,6 @@ class ConfirmDialog {
         this._modal.querySelector('#confirm-cancel').textContent = cancelText
 
         this._backdrop.classList.add('visible')
-
-        return new Promise(resolve => {
-            this._resolvePromise = resolve
-        })
     }
 
     /**
@@ -96,10 +103,10 @@ class ConfirmDialog {
      */
     _resolve(result) {
         this._hide()
-        if (this._resolvePromise) {
-            this._resolvePromise(result)
-            this._resolvePromise = null
-        }
+        const request = this._activeRequest
+        this._activeRequest = null
+        request?.resolve(result)
+        this._showNext()
     }
 
     /**

@@ -12,7 +12,10 @@ export class ExportImageDialog {
         this.canvas = options.canvas
         this.getResolution = options.getResolution
         this.setResolution = options.setResolution
+        this.renderCurrentFrame = options.renderCurrentFrame || (() => {})
         this.acquireMutation = options.acquireMutation || (() => ({ release() {} }))
+        this.acquireSnapshotOverride = options.acquireSnapshotOverride
+            || (() => ({ release() {} }))
         this.getProjectGeneration = options.getProjectGeneration || (() => 0)
         this.onComplete = options.onComplete || (() => {})
         this.onCancel = options.onCancel || (() => {})
@@ -108,10 +111,37 @@ export class ExportImageDialog {
         }
     }
 
-    _gatherSettings() {
+    _readDimension(input, label, { reportValidation = false } = {}) {
+        const value = Number(input.value)
+        input.setCustomValidity('')
+        if (Number.isInteger(value) && value >= 64 && value <= 8192) return value
+
+        const message = `${label} must be a whole number from 64 to 8192`
+        input.setCustomValidity(message)
+        if (reportValidation) input.reportValidity()
+        throw new RangeError(message)
+    }
+
+    _completeSuccessfulExport(format) {
+        try {
+            this.close()
+        } catch (err) {
+            this.state = 'idle'
+            console.error('Failed to close image export dialog:', err)
+        }
+        try {
+            this.onComplete(format)
+        } catch (err) {
+            console.error('Failed to report completed image export:', err)
+        }
+    }
+
+    _gatherSettings({ reportValidation = false } = {}) {
         return {
-            width: parseInt(this._elements.widthInput.value, 10) || 1024,
-            height: parseInt(this._elements.heightInput.value, 10) || 1024,
+            width: this._readDimension(
+                this._elements.widthInput, 'Width', { reportValidation }),
+            height: this._readDimension(
+                this._elements.heightInput, 'Height', { reportValidation }),
             format: this._elements.formatSelect.value || 'png',
             quality: this._elements.qualitySelect.value || 'high'
         }
@@ -128,11 +158,6 @@ export class ExportImageDialog {
         return qualityMap[quality] || 0.9
     }
 
-    _ensureEven(value) {
-        const floored = Math.floor(value)
-        return Math.max(2, floored - (floored % 2))
-    }
-
     async _export() {
         if (this.state !== 'dialog') return
         if (this._projectGeneration !== this.getProjectGeneration()) {
@@ -140,39 +165,61 @@ export class ExportImageDialog {
             this.onCancel()
             return
         }
+        let settings
+        try {
+            settings = this._gatherSettings({ reportValidation: true })
+        } catch (err) {
+            console.error('Invalid image export settings:', err)
+            return
+        }
         const mutationToken = this.acquireMutation()
         if (!mutationToken) return
-        this.state = 'exporting'
-        const settings = this._gatherSettings()
-        this._savePreferences(settings)
-
-        const width = this._ensureEven(settings.width)
-        const height = this._ensureEven(settings.height)
-        const needsResize = width !== this.originalResolution.width ||
-                          height !== this.originalResolution.height
-
+        let needsResize = false
         let completed = false
+        let restoreResolution = null
+        let snapshotToken = null
         try {
+            snapshotToken = this.acquireSnapshotOverride()
+            this.state = 'exporting'
+            this._savePreferences(settings)
+
+            restoreResolution = this.getResolution()
+            const width = settings.width
+            const height = settings.height
+            needsResize = width !== restoreResolution.width ||
+                          height !== restoreResolution.height
+
             if (needsResize) {
                 this.setResolution(width, height)
                 await new Promise(resolve => requestAnimationFrame(resolve))
                 await new Promise(resolve => requestAnimationFrame(resolve))
             }
 
+            this.renderCurrentFrame()
             const qualityValue = settings.format === 'png' ? 1.0 : this._qualityToValue(settings.quality)
             this.files.saveImage(this.canvas, settings.format, qualityValue)
             completed = true
         } catch (err) {
             console.error('Export image failed:', err)
         } finally {
-            if (needsResize) {
-                this.setResolution(this.originalResolution.width, this.originalResolution.height)
+            try {
+                if (needsResize) {
+                    this.setResolution(restoreResolution.width, restoreResolution.height)
+                    this.renderCurrentFrame()
+                }
+            } catch (err) {
+                completed = false
+                console.error('Failed to restore image export resolution:', err)
+            } finally {
+                try {
+                    snapshotToken?.release()
+                } finally {
+                    mutationToken.release()
+                }
             }
-            mutationToken.release()
         }
         if (completed) {
-            this.close()
-            this.onComplete(settings.format)
+            this._completeSuccessfulExport(settings.format)
         } else {
             this.state = 'dialog'
         }

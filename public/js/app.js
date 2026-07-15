@@ -51,10 +51,13 @@ import * as strokeModel from './drawing/stroke-model.js'
 import { StrokeRenderer } from './drawing/stroke-renderer.js'
 import { autoLevels, autoContrast, autoWhiteBalance } from './utils/auto-adjust.js'
 import { bootstrapAgent } from './agent/index.js'
+import { captureProjectSnapshotOverride } from './agent/snapshot.js'
 import { SeanceDialog } from 'handfish'  // Register <seance-dialog> custom element
 import { createLayersOnlineAdapter } from './collab/onlineAdapter.js'
+import { assertRemoteNodeSemantics } from './collab/docModel.js'
 
 const ONLINE_COLLABORATION_FEATURE = 'onlineCollaboration'
+const MAX_CANVAS_DIMENSION = 8192
 
 /**
  * Feature-flag check for online collaboration. Ships enabled by default;
@@ -102,6 +105,7 @@ class LayersApp {
 
         // Drawing layer counter
         this._drawingLayerCounter = 0
+        this._drawingMutationTail = Promise.resolve()
 
         // Layer reorder FSM state
         this._reorderState = 'IDLE'  // IDLE | DRAGGING | PROCESSING | ROLLING_BACK
@@ -118,6 +122,7 @@ class LayersApp {
         // Mask editing
         this._maskEditMode = false
         this._maskEditLayerId = null
+        this._maskMutationTail = Promise.resolve()
 
         // Seance online collaboration adapter — created in init() when the
         // onlineCollaboration feature flag is enabled (default: on).
@@ -128,6 +133,7 @@ class LayersApp {
         // serializes the short renderer stage/commit section.
         this._replacementGeneration = 0
         this._projectMutationRevision = 0
+        this._projectReplacementGuardTail = Promise.resolve()
         this._projectLifecycleTail = Promise.resolve()
         this._projectLifecycleOwner = null
         this._projectLifecycleWaiters = 0
@@ -135,7 +141,8 @@ class LayersApp {
         this._projectReplacementGate = null
         this._projectReplacementActive = false
         this._projectInstallTail = Promise.resolve()
-        this._projectInstallActive = false
+        this._projectSnapshotCanvasOverride = null
+        this._publishTransactionDepth = 0
     }
 
     /**
@@ -154,6 +161,30 @@ class LayersApp {
     _markClean() {
         this._projectMutationRevision += 1
         this._isDirty = false
+    }
+
+    /** @private */
+    _captureProjectSnapshotOverride(options = {}) {
+        return captureProjectSnapshotOverride(this, options)
+    }
+
+    /** @private */
+    _beginPublishTransaction() {
+        const previousOverride = this._projectSnapshotCanvasOverride
+        const override = this._captureProjectSnapshotOverride()
+        this._projectSnapshotCanvasOverride = override
+        this._publishTransactionDepth += 1
+        return { previousOverride, override, active: true }
+    }
+
+    /** @private */
+    _endPublishTransaction(transaction) {
+        if (!transaction?.active) return
+        transaction.active = false
+        this._publishTransactionDepth -= 1
+        if (this._projectSnapshotCanvasOverride === transaction.override) {
+            this._projectSnapshotCanvasOverride = transaction.previousOverride
+        }
     }
 
     /**
@@ -186,6 +217,48 @@ class LayersApp {
         })
     }
 
+    /** @private */
+    _createUndoSnapshot(
+        layers = this._layers,
+        canvasWidth = this._canvas.width,
+        canvasHeight = this._canvas.height,
+        mediaTextures = this._renderer._mediaTextures
+    ) {
+        const mediaCanvases = new Map()
+        for (const layer of layers) {
+            if (layer.sourceType !== 'media' || layer.mediaFile) continue
+            const resource = mediaTextures.get(layer.id)
+            if (typeof resource?.element?.getContext !== 'function') continue
+            mediaCanvases.set(layer.id, resource.element)
+        }
+        return {
+            layers: this._cloneLayers(layers),
+            canvasWidth,
+            canvasHeight,
+            mediaCanvases,
+            selectedLayerIds: this._layerStack?.selectedLayerIds?.slice() || [],
+            selectionAnchor: this._layerStack?._lastClickedLayerId ?? null,
+        }
+    }
+
+    /** @private */
+    _validSelectionForLayers(layers, selectedLayerIds, selectionAnchor) {
+        const validIds = new Set()
+        for (const layer of layers) {
+            validIds.add(layer.id)
+            for (const child of layer.children || []) validIds.add(child.id)
+        }
+        const requested = Array.isArray(selectedLayerIds) ? selectedLayerIds : []
+        let selected = [...new Set(requested.filter(id => validIds.has(id)))]
+        if (selected.length === 0 && requested.length > 0 && layers.length > 0) {
+            selected = [layers.at(-1).id]
+        }
+        const anchor = validIds.has(selectionAnchor)
+            ? selectionAnchor
+            : (selected.at(-1) || null)
+        return { selectedLayerIds: selected, selectionAnchor: anchor }
+    }
+
     /**
      * Push current state onto the undo stack (call AFTER mutation).
      * Cancels any pending debounce timer.
@@ -196,11 +269,7 @@ class LayersApp {
             clearTimeout(this._undoDebounceTimer)
             this._undoDebounceTimer = null
         }
-        this._undoManager.pushState({
-            layers: this._cloneLayers(this._layers),
-            canvasWidth: this._canvas.width,
-            canvasHeight: this._canvas.height
-        })
+        this._undoManager.pushState(this._createUndoSnapshot())
         this._updateUndoMenuState()
         // Publish funnel, systemic form: every composition mutation path in
         // this app records undo (directly or via the debounced sibling
@@ -253,64 +322,614 @@ class LayersApp {
         }
     }
 
+    /** @private */
+    _capturePointerGestureMutationState() {
+        const activeLayer = this._getActiveLayer()
+        const activeLayerPosition = activeLayer
+            ? {
+                layerId: activeLayer.id,
+                effectParams: activeLayer.effectId === 'filter/text'
+                    ? activeLayer.effectParams
+                    : null,
+                hadOffsetX: Object.hasOwn(activeLayer, 'offsetX'),
+                hadOffsetY: Object.hasOwn(activeLayer, 'offsetY'),
+                offsetX: activeLayer.offsetX,
+                offsetY: activeLayer.offsetY,
+            }
+            : null
+        return {
+            dirty: this._isDirty,
+            mutationRevision: this._projectMutationRevision,
+            undoStackArray: this._undoManager._stack,
+            undoStack: this._undoManager._stack.slice(),
+            undoIndex: this._undoManager._index,
+            undoWasPending: this._undoDebounceTimer !== null,
+            activeLayerPosition,
+        }
+    }
+
+    /** @private */
+    _restorePointerGestureMutationState(previous) {
+        if (!previous) return
+        if (this._undoDebounceTimer) {
+            clearTimeout(this._undoDebounceTimer)
+            this._undoDebounceTimer = null
+        }
+        this._isDirty = previous.dirty
+        this._projectMutationRevision = previous.mutationRevision
+        previous.undoStackArray.splice(
+            0, previous.undoStackArray.length, ...previous.undoStack)
+        this._undoManager._stack = previous.undoStackArray
+        this._undoManager._index = previous.undoIndex
+        if (previous.undoWasPending) this._pushUndoStateDebounced()
+        else this._updateUndoMenuState()
+        this._onlineAdapter?.schedulePublish()
+    }
+
+    /** @private */
+    _captureLayerMutationState() {
+        return {
+            layersArray: this._layers,
+            layers: this._layers.slice(),
+            selectedLayerIds: this._layerStack?.selectedLayerIds?.slice() || [],
+            selectionAnchor: this._layerStack?._lastClickedLayerId ?? null,
+            dirty: this._isDirty,
+            mutationRevision: this._projectMutationRevision,
+            drawingLayerCounter: this._drawingLayerCounter,
+            undoStackArray: this._undoManager._stack,
+            undoStack: this._undoManager._stack.slice(),
+            undoIndex: this._undoManager._index,
+            undoWasPending: this._undoDebounceTimer !== null,
+        }
+    }
+
+    /** @private */
+    _restoreLayerMutationState(previous) {
+        if (this._undoDebounceTimer) {
+            clearTimeout(this._undoDebounceTimer)
+            this._undoDebounceTimer = null
+        }
+        previous.layersArray.splice(0, previous.layersArray.length, ...previous.layers)
+        this._layers = previous.layersArray
+        this._isDirty = previous.dirty
+        this._projectMutationRevision = previous.mutationRevision
+        this._drawingLayerCounter = previous.drawingLayerCounter
+        previous.undoStackArray.splice(
+            0, previous.undoStackArray.length, ...previous.undoStack)
+        this._undoManager._stack = previous.undoStackArray
+        this._undoManager._index = previous.undoIndex
+        this._updateLayerStack()
+        if (this._layerStack) {
+            this._layerStack.selectedLayerIds = previous.selectedLayerIds
+            this._layerStack._lastClickedLayerId = previous.selectionAnchor
+        }
+        if (previous.undoWasPending) this._pushUndoStateDebounced()
+        else this._updateUndoMenuState()
+    }
+
+    /** @private */
+    async _rollbackLayerMutation(previous, primaryError, restore = null) {
+        const primary = primaryError instanceof Error
+            ? primaryError
+            : new Error(String(primaryError))
+        const restoreErrors = []
+        try {
+            this._restoreLayerMutationState(previous)
+        } catch (err) {
+            restoreErrors.push(err instanceof Error ? err : new Error(String(err)))
+        }
+        if (restore) {
+            try {
+                await restore()
+            } catch (err) {
+                restoreErrors.push(err instanceof Error ? err : new Error(String(err)))
+            }
+        }
+        let restoreError = null
+        try {
+            const result = await this._rebuild({ force: true })
+            if (!result?.success) {
+                restoreError = new Error(result?.error || 'Unknown renderer restoration failure')
+            }
+        } catch (err) {
+            restoreError = err instanceof Error ? err : new Error(String(err))
+        }
+        const failures = restoreErrors.map(error => error.message)
+        if (restoreError) failures.push(restoreError.message)
+        if (failures.length > 0) {
+            return {
+                status: 'failed', error: new Error(
+                    `${primary.message}; failed to restore previous state: ${failures.join('; ')}`)
+            }
+        }
+        return { status: 'failed', error: primary }
+    }
+
+    /** @private */
+    _captureModelMutationState() {
+        const objects = []
+        const arrays = [{ array: this._layers, values: this._layers.slice() }]
+        const visit = (object) => {
+            objects.push({
+                object,
+                fields: new Map(Object.keys(object).map(key => [key, object[key]])),
+            })
+            if (Array.isArray(object.children)) {
+                arrays.push({ array: object.children, values: object.children.slice() })
+                object.children.forEach(visit)
+            }
+        }
+        this._layers.forEach(visit)
+        return { objects, arrays }
+    }
+
+    /** @private */
+    _restoreModelMutationState(previous) {
+        for (const { object, fields } of previous.objects) {
+            for (const key of Object.keys(object)) {
+                if (!fields.has(key)) delete object[key]
+            }
+            for (const [key, value] of fields) object[key] = value
+        }
+        for (const { array, values } of previous.arrays) {
+            array.splice(0, array.length, ...values)
+        }
+        this._layers = previous.arrays[0].array
+    }
+
+    /** @private */
+    _captureMaskEditUiState() {
+        const overlay = document.getElementById('maskOverlay')
+        const pixels = overlay?.width && overlay?.height
+            ? overlay.getContext('2d').getImageData(
+                0, 0, overlay.width, overlay.height)
+            : null
+        const banner = document.getElementById('maskEditBanner')
+        const brushBtn = document.getElementById('brushToolBtn')
+        const eraserBtn = document.getElementById('eraserToolBtn')
+        return {
+            editMode: this._maskEditMode,
+            editLayerId: this._maskEditLayerId,
+            currentTool: this._currentTool,
+            strokeHandler: this._brushTool?.onStrokeComplete || null,
+            bannerClass: banner?.className ?? null,
+            brushTitle: brushBtn?.getAttribute('title') ?? null,
+            eraserTitle: eraserBtn?.getAttribute('title') ?? null,
+            overlayClass: overlay?.className ?? null,
+            overlayStyle: overlay?.style.cssText ?? null,
+            overlayWidth: overlay?.width ?? 0,
+            overlayHeight: overlay?.height ?? 0,
+            pixels,
+        }
+    }
+
+    /** @private */
+    _restoreMaskEditUiState(previous) {
+        this._maskEditMode = previous.editMode
+        this._maskEditLayerId = previous.editLayerId
+        this._currentTool = previous.currentTool
+        if (this._brushTool) this._brushTool.onStrokeComplete = previous.strokeHandler
+
+        const banner = document.getElementById('maskEditBanner')
+        if (banner && previous.bannerClass !== null) banner.className = previous.bannerClass
+        const restoreAttribute = (element, name, value) => {
+            if (!element) return
+            if (value === null) element.removeAttribute(name)
+            else element.setAttribute(name, value)
+        }
+        restoreAttribute(document.getElementById('brushToolBtn'), 'title', previous.brushTitle)
+        restoreAttribute(document.getElementById('eraserToolBtn'), 'title', previous.eraserTitle)
+
+        const overlay = document.getElementById('maskOverlay')
+        if (!overlay) return
+        overlay.width = previous.overlayWidth
+        overlay.height = previous.overlayHeight
+        if (previous.overlayClass !== null) overlay.className = previous.overlayClass
+        if (previous.overlayStyle !== null) overlay.style.cssText = previous.overlayStyle
+        if (previous.pixels) overlay.getContext('2d').putImageData(previous.pixels, 0, 0)
+    }
+
+    /** @private */
+    async _commitModelMutation(mutate, {
+        rebuildOptions = {},
+        updateLayerStack = false,
+        updateLayerZIndex = false,
+        markDirty = true,
+        pushUndo = true,
+        finalizePendingUndo = true,
+        render = null,
+        restore = null,
+        selectedLayerIds = undefined,
+        selectionAnchor = undefined,
+    } = {}) {
+        const previous = this._captureLayerMutationState()
+        const previousModel = this._captureModelMutationState()
+        const transaction = this._beginPublishTransaction()
+        try {
+            if (finalizePendingUndo) this._finalizePendingUndo()
+            const value = await mutate()
+            if (updateLayerStack) this._updateLayerStack()
+            if (selectedLayerIds !== undefined && this._layerStack) {
+                const nextSelection = this._validSelectionForLayers(
+                    this._layers, selectedLayerIds, selectionAnchor)
+                this._layerStack.selectedLayerIds = nextSelection.selectedLayerIds
+                this._layerStack._lastClickedLayerId = nextSelection.selectionAnchor
+            }
+            const result = render
+                ? await render()
+                : await this._rebuild(rebuildOptions)
+            if (!result?.success) {
+                throw new Error(result?.error || 'Failed to render model mutation')
+            }
+            if (updateLayerZIndex) this._updateLayerZIndex()
+            if (markDirty) this._markDirty()
+            if (pushUndo === 'debounced') this._pushUndoStateDebounced()
+            else if (pushUndo) this._pushUndoState()
+            return { status: 'committed', value }
+        } catch (err) {
+            return await this._rollbackLayerMutation(previous, err, async () => {
+                this._restoreModelMutationState(previousModel)
+                this._updateLayerStack()
+                if (this._layerStack) {
+                    this._layerStack.selectedLayerIds = previous.selectedLayerIds
+                    this._layerStack._lastClickedLayerId = previous.selectionAnchor
+                }
+                if (restore) await restore()
+            })
+        } finally {
+            this._endPublishTransaction(transaction)
+        }
+    }
+
+    /** @private */
+    _commitMaskMutation(layer, mutate, options = {}) {
+        const commit = () => {
+            const previousMask = layer.mask
+            const previousMaskBytes = previousMask
+                ? new Uint8ClampedArray(previousMask.data)
+                : null
+            const textureHad = this._renderer._maskTextures.has(layer.id)
+            const previousTexture = this._renderer._maskTextures.get(layer.id)
+            const previousUi = this._captureMaskEditUiState()
+            const externalRestore = options.restore
+            return this._commitModelMutation(mutate, {
+                ...options,
+                restore: async () => {
+                    if (previousMask && previousMaskBytes) {
+                        previousMask.data.set(previousMaskBytes)
+                        layer.mask = previousMask
+                    }
+                    if (textureHad) {
+                        this._renderer._maskTextures.set(layer.id, previousTexture)
+                    } else {
+                        this._renderer._maskTextures.delete(layer.id)
+                    }
+                    this._restoreMaskEditUiState(previousUi)
+                    if (externalRestore) await externalRestore()
+                },
+            })
+        }
+        const pending = this._maskMutationTail.then(commit, commit)
+        this._maskMutationTail = pending.then(() => undefined, () => undefined)
+        return pending
+    }
+
+    /** @private */
+    _capturePreparedLayerMutationState() {
+        return {
+            layerState: this._captureLayerMutationState(),
+            selectionPath: this._selectionManager?.selectionPath ?? null,
+            canvasWidth: this._canvas.width,
+            canvasHeight: this._canvas.height,
+            rendererRunning: this._renderer.isRunning,
+        }
+    }
+
+    /** @private */
+    _disposeDetachedMediaTextures(mediaTextures, retainedTextures) {
+        const retained = new Set(retainedTextures.values())
+        const disposed = new Set()
+        for (const resource of mediaTextures.values()) {
+            if (retained.has(resource) || disposed.has(resource)) continue
+            this._renderer.disposeMediaResource(resource)
+            disposed.add(resource)
+        }
+        mediaTextures.clear()
+    }
+
+    /** @private */
+    async _restoreRendererRunState(wasRunning) {
+        if (!wasRunning) {
+            if (this._renderer.isRunning) this._renderer.stop()
+            this._renderCurrentFrame()
+            return
+        }
+        if (this._renderer.isRunning) return
+        await new Promise(resolve => requestAnimationFrame(resolve))
+        this._renderer.start()
+    }
+
+    /**
+     * Stage a complete detached layer/resource set, then commit app-owned
+     * state only after the renderer proves the candidate compilable.
+     * @private
+     */
+    async _commitPreparedLayerMutation(candidate, {
+        previousState = null,
+        selectedLayerIds = null,
+        selectionAnchor = null,
+        selectionPath,
+        markDirty = true,
+        pushUndo = true,
+        finalizePendingUndo = true,
+        beforeStage = null,
+        restoreBeforeRollback = null,
+        shouldCancel = null,
+        value = null,
+    } = {}) {
+        const previous = previousState || this._capturePreparedLayerMutationState()
+        const previousTextures = new Map(this._renderer._mediaTextures)
+        let stage = null
+        let candidateOwned = true
+
+        const restoreAppState = async () => {
+            const errors = []
+            if (restoreBeforeRollback) {
+                try {
+                    await restoreBeforeRollback()
+                } catch (err) {
+                    errors.push(err instanceof Error ? err : new Error(String(err)))
+                }
+            }
+            try {
+                this._restoreLayerMutationState(previous.layerState)
+                if (this._canvas.width !== previous.canvasWidth
+                    || this._canvas.height !== previous.canvasHeight) {
+                    this._resizeCanvas(previous.canvasWidth, previous.canvasHeight)
+                }
+                if (previous.selectionPath) {
+                    this._selectionManager?.setSelection(previous.selectionPath)
+                } else {
+                    this._selectionManager?.clearSelection()
+                }
+            } catch (err) {
+                errors.push(err instanceof Error ? err : new Error(String(err)))
+            }
+            return errors
+        }
+
+        const fail = async (primaryError) => {
+            const primary = primaryError instanceof Error
+                ? primaryError
+                : new Error(String(primaryError))
+            const stateRestoreErrors = await restoreAppState()
+            let rendererRestoreErrors = []
+            if (stage) {
+                try {
+                    const result = await stage.rollback()
+                    stage = null
+                    if (!result?.success) {
+                        rendererRestoreErrors.push(new Error(
+                            result?.error || 'Unknown renderer restoration failure'))
+                    }
+                } catch (err) {
+                    stage = null
+                    rendererRestoreErrors.push(
+                        err instanceof Error ? err : new Error(String(err)))
+                }
+            } else if (candidateOwned) {
+                try {
+                    this._disposeDetachedMediaTextures(
+                        candidate.mediaTextures, previousTextures)
+                    candidate.maskTextures.clear()
+                    candidateOwned = false
+                } catch (err) {
+                    rendererRestoreErrors.push(
+                        err instanceof Error ? err : new Error(String(err)))
+                }
+            }
+            if (rendererRestoreErrors.length > 0) {
+                try {
+                    const retry = await this._rebuild({ force: true })
+                    if (retry?.success) rendererRestoreErrors = []
+                    else rendererRestoreErrors.push(new Error(
+                        retry?.error || 'Unknown renderer restoration retry failure'))
+                } catch (err) {
+                    rendererRestoreErrors.push(
+                        err instanceof Error ? err : new Error(String(err)))
+                }
+            }
+            try {
+                await this._restoreRendererRunState(previous.rendererRunning)
+            } catch (err) {
+                rendererRestoreErrors.push(
+                    err instanceof Error ? err : new Error(String(err)))
+            }
+            const restoreErrors = [...stateRestoreErrors, ...rendererRestoreErrors]
+            return {
+                status: 'failed',
+                error: restoreErrors.length === 0
+                    ? primary
+                    : new Error(`${primary.message}; failed to restore previous state: ${restoreErrors.map(error => error.message).join('; ')}`),
+            }
+        }
+
+        const transaction = this._beginPublishTransaction()
+        try {
+            if (shouldCancel?.()) return await fail(new Error('Mutation cancelled'))
+            if (finalizePendingUndo) this._finalizePendingUndo()
+            if (beforeStage) await beforeStage()
+            if (candidate.width !== this._canvas.width
+                || candidate.height !== this._canvas.height) {
+                this._renderer.stop()
+                this._resizeCanvas(candidate.width, candidate.height)
+                await new Promise(resolve => queueMicrotask(resolve))
+            }
+            stage = await this._renderer.stageLayerSet(candidate)
+            candidateOwned = false
+            if (!stage.success) {
+                return await fail(new Error(stage.error || 'Candidate render failed'))
+            }
+            if (shouldCancel?.()) return await fail(new Error('Mutation cancelled'))
+
+            this._layers = candidate.layers
+            this._updateLayerStack()
+            const nextSelection = this._validSelectionForLayers(
+                candidate.layers,
+                selectedLayerIds ?? previous.layerState.selectedLayerIds,
+                selectionAnchor ?? previous.layerState.selectionAnchor)
+            if (this._layerStack) {
+                this._layerStack.selectedLayerIds = nextSelection.selectedLayerIds
+                this._layerStack._lastClickedLayerId = nextSelection.selectionAnchor
+            }
+            if (selectionPath !== undefined) {
+                if (selectionPath) this._selectionManager?.setSelection(selectionPath)
+                else this._selectionManager?.clearSelection()
+            }
+            if (markDirty) this._markDirty()
+            if (pushUndo) this._pushUndoState()
+            else this._updateUndoMenuState()
+
+            await this._restoreRendererRunState(previous.rendererRunning)
+            if (shouldCancel?.()) return await fail(new Error('Mutation cancelled'))
+            const committedStage = stage
+            stage = null
+            try {
+                const commitResult = committedStage.commit()
+                if (commitResult?.success === false) {
+                    console.error('[Layers] Failed to retire prepared mutation resources:',
+                        commitResult.error || 'Unknown renderer cleanup failure')
+                }
+            } catch (err) {
+                console.error('[Layers] Failed to retire prepared mutation resources:', err)
+            }
+            return { status: 'committed', value }
+        } catch (err) {
+            return await fail(err)
+        } finally {
+            this._endPublishTransaction(transaction)
+        }
+    }
+
+    /** @private */
+    async _prepareLayerSetCandidate(layers, width, height, {
+        reuseMediaIds = new Set(),
+        reuseMaskIds = new Set(),
+        mediaOverrides = new Map(),
+        maskOverrides = new Map(),
+    } = {}) {
+        // Calling this method transfers ownership of every detached media
+        // override. The returned candidate owns them on success; this method
+        // disposes them on preparation failure.
+        const mediaTextures = new Map(
+            [...mediaOverrides].filter(([, resource]) => Boolean(resource)))
+        const maskTextures = new Map()
+        try {
+            for (const layer of layers) {
+                if (mediaOverrides.has(layer.id)) {
+                    const resource = mediaOverrides.get(layer.id)
+                    if (resource) mediaTextures.set(layer.id, resource)
+                } else if (reuseMediaIds.has(layer.id)) {
+                    const resource = this._renderer._mediaTextures.get(layer.id)
+                    if (resource) mediaTextures.set(layer.id, resource)
+                } else if (layer.sourceType === 'media' && layer.mediaFile) {
+                    const resource = await this._renderer.prepareMediaResource(
+                        layer.mediaFile, layer.mediaType)
+                    if (resource) mediaTextures.set(layer.id, resource)
+                } else if (layer.sourceType === 'drawing') {
+                    const canvas = await this._createDrawingLayerCanvas(layer, width, height)
+                    if (canvas) {
+                        mediaTextures.set(
+                            layer.id, this._renderer.prepareCanvasMediaResource(canvas))
+                    }
+                }
+
+                if (maskOverrides.has(layer.id)) {
+                    const texture = maskOverrides.get(layer.id)
+                    if (texture) maskTextures.set(layer.id, texture)
+                } else if (reuseMaskIds.has(layer.id)) {
+                    const texture = this._renderer._maskTextures.get(layer.id)
+                    if (texture) maskTextures.set(layer.id, texture)
+                } else if (layer.mask) {
+                    maskTextures.set(layer.id, this._renderer.prepareMaskTexture(layer.mask))
+                }
+            }
+            return { layers, width, height, mediaTextures, maskTextures }
+        } catch (err) {
+            this._disposeDetachedMediaTextures(
+                mediaTextures, this._renderer._mediaTextures)
+            maskTextures.clear()
+            throw err
+        }
+    }
+
+    /** @private */
+    async _commitAddedLayer(layer, {
+        resource = null,
+        showSuccess = true,
+    } = {}) {
+        let candidate
+        try {
+            candidate = await this._prepareLayerSetCandidate(
+                [...this._layers, layer], this._canvas.width, this._canvas.height, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                    reuseMaskIds: new Set(this._renderer._maskTextures.keys()),
+                    mediaOverrides: resource
+                        ? new Map([[layer.id, resource]])
+                        : new Map(),
+                })
+        } catch (err) {
+            return { status: 'failed', error: err }
+        }
+        const outcome = await this._commitPreparedLayerMutation(candidate, {
+            selectedLayerIds: [layer.id],
+            selectionAnchor: layer.id,
+            value: layer.id,
+        })
+        if (outcome.status !== 'committed') {
+            return outcome
+        }
+        if (showSuccess) {
+            try {
+                toast.success(`Added layer: ${layer.name}`)
+            } catch (err) {
+                console.error('[Layers] Failed to show layer confirmation:', err)
+            }
+        }
+        return { status: 'added', layerId: layer.id }
+    }
+
     /**
      * Restore a snapshot from the undo stack
      * @param {object} snapshot - { layers, canvasWidth, canvasHeight }
      * @private
      */
-    async _restoreState(snapshot) {
-        // Unload all current media and drawing textures (drawing layers are
-        // registered in _mediaTextures too; re-rasterized below if they survive)
-        for (const layer of this._layers) {
-            if (layer.sourceType === 'media' || layer.sourceType === 'drawing') {
-                this._renderer.unloadMedia(layer.id)
+    async _restoreState(snapshot, previousState = null) {
+        const previous = previousState || this._capturePreparedLayerMutationState()
+        const selection = this._validSelectionForLayers(
+            snapshot.layers,
+            snapshot.selectedLayerIds ?? previous.layerState.selectedLayerIds,
+            snapshot.selectionAnchor ?? previous.layerState.selectionAnchor)
+        let candidate
+        try {
+            const mediaOverrides = new Map()
+            for (const [layerId, canvas] of snapshot.mediaCanvases || []) {
+                mediaOverrides.set(
+                    layerId, this._renderer.prepareCanvasMediaResource(canvas))
             }
+            candidate = await this._prepareLayerSetCandidate(
+                this._cloneLayers(snapshot.layers),
+                snapshot.canvasWidth, snapshot.canvasHeight, { mediaOverrides })
+        } catch (err) {
+            this._restoreLayerMutationState(previous.layerState)
+            return { status: 'failed', error: err }
         }
-
-        // Restore layers (deep clone to avoid aliasing with the stack)
-        this._layers = this._cloneLayers(snapshot.layers)
-
-        // Resize canvas if dimensions changed
-        if (snapshot.canvasWidth !== this._canvas.width ||
-            snapshot.canvasHeight !== this._canvas.height) {
-            this._renderer.stop()
-            this._resizeCanvas(snapshot.canvasWidth, snapshot.canvasHeight)
-        }
-
-        // Reload media for any media layers
-        for (const layer of this._layers) {
-            if (layer.sourceType === 'media' && layer.mediaFile) {
-                await this._renderer.loadMedia(layer.id, layer.mediaFile, layer.mediaType)
-            }
-        }
-
-        // Re-rasterize drawing layers after undo restore
-        for (const layer of this._layers) {
-            if (layer.sourceType === 'drawing' && layer.strokes?.length > 0) {
-                await this._rasterizeDrawingLayer(layer)
-            }
-        }
-
-        // Re-upload mask textures after undo restore
-        for (const layer of this._layers) {
-            if (layer.mask) {
-                this._renderer.uploadMaskTexture(layer.id, layer.mask)
-            } else {
-                this._renderer.removeMaskTexture(layer.id)
-            }
-        }
-
-        this._updateLayerStack()
-        await this._rebuild({ force: true })
-
-        // Restart renderer if it was stopped
-        if (!this._renderer.isRunning) {
-            await new Promise(resolve => requestAnimationFrame(resolve))
-            this._renderer.start()
-        }
-
-        this._updateUndoMenuState()
-        this._markDirty()
+        return this._commitPreparedLayerMutation(candidate, {
+            previousState: previous,
+            finalizePendingUndo: false,
+            pushUndo: false,
+            ...selection,
+        })
     }
 
     /**
@@ -318,13 +937,20 @@ class LayersApp {
      * @private
      */
     async _undo() {
-        if (this._restoring) return
-        this._finalizePendingUndo()
-        const snapshot = this._undoManager.undo()
-        if (snapshot) {
-            this._restoring = true
-            try { await this._restoreState(snapshot) }
-            finally { this._restoring = false }
+        if (this._restoring) return { status: 'committed' }
+        const transaction = this._beginPublishTransaction()
+        try {
+            const previous = this._capturePreparedLayerMutationState()
+            this._finalizePendingUndo()
+            const snapshot = this._undoManager.undo()
+            if (snapshot) {
+                this._restoring = true
+                try { return await this._restoreState(snapshot, previous) }
+                finally { this._restoring = false }
+            }
+            return { status: 'committed' }
+        } finally {
+            this._endPublishTransaction(transaction)
         }
     }
 
@@ -333,13 +959,20 @@ class LayersApp {
      * @private
      */
     async _redo() {
-        if (this._restoring) return
-        this._finalizePendingUndo()
-        const snapshot = this._undoManager.redo()
-        if (snapshot) {
-            this._restoring = true
-            try { await this._restoreState(snapshot) }
-            finally { this._restoring = false }
+        if (this._restoring) return { status: 'committed' }
+        const transaction = this._beginPublishTransaction()
+        try {
+            const previous = this._capturePreparedLayerMutationState()
+            this._finalizePendingUndo()
+            const snapshot = this._undoManager.redo()
+            if (snapshot) {
+                this._restoring = true
+                try { return await this._restoreState(snapshot, previous) }
+                finally { this._restoring = false }
+            }
+            return { status: 'committed' }
+        } finally {
+            this._endPublishTransaction(transaction)
         }
     }
 
@@ -440,8 +1073,12 @@ class LayersApp {
             getActiveLayer: () => this._getActiveLayer(),
             getSelectedLayers: () => this._layerStack?.selectedLayerIds || [],
             updateLayerPosition: (x, y) => this._updateActiveLayerPosition(x, y),
+            restoreLayerPosition: (x, y, state) =>
+                this._restoreActiveLayerPosition(x, y, state),
+            captureMutationState: () => this._capturePointerGestureMutationState(),
             getLayerPosition,
-            extractSelection: (destructive) => this._extractSelectionToLayer(destructive),
+            extractSelection: (destructive, shouldCancel) =>
+                this._extractSelectionToLayer(destructive, shouldCancel),
             showNoLayerDialog: () => this._showNoLayerSelectedDialog(),
             selectTopmostLayer: () => this._selectTopmostLayer(),
             isLayerBlocked: (layer) => {
@@ -464,11 +1101,16 @@ class LayersApp {
             getActiveLayer: () => this._getActiveLayer(),
             getSelectedLayers: () => this._layerStack?.selectedLayerIds || [],
             updateLayerPosition: (x, y) => this._updateActiveLayerPosition(x, y),
+            restoreLayerPosition: (x, y, state) =>
+                this._restoreActiveLayerPosition(x, y, state),
+            captureMutationState: () => this._capturePointerGestureMutationState(),
             getLayerPosition,
-            extractSelection: (destructive) => this._extractSelectionToLayer(destructive),
+            extractSelection: (destructive, shouldCancel) =>
+                this._extractSelectionToLayer(destructive, shouldCancel),
             showNoLayerDialog: () => this._showNoLayerSelectedDialog(),
             selectTopmostLayer: () => this._selectTopmostLayer(),
-            duplicateLayer: () => this._duplicateActiveLayer(),
+            duplicateLayer: (shouldCancel) =>
+                this._duplicateActiveLayer(null, shouldCancel),
             onComplete: () => this._onCloneComplete(),
             acquireMutation: (existingToken) =>
                 this._tryAcquireProjectLifecycle(existingToken),
@@ -483,7 +1125,8 @@ class LayersApp {
             getLayerBounds: (layer) => this._getLayerBounds(layer),
             applyTransform: (values) => this._applyLayerTransform(values),
             commitTransform: () => this._commitTransform(),
-            cancelTransform: () => this._cancelTransform(),
+            cancelTransform: (start, state) => this._cancelTransform(start, state),
+            captureMutationState: () => this._capturePointerGestureMutationState(),
             showNoLayerDialog: () => this._showNoLayerSelectedDialog(),
             selectTopmostLayer: () => this._selectTopmostLayer(),
             isLayerBlocked: (layer) => {
@@ -504,12 +1147,7 @@ class LayersApp {
         // Initialize brush tool
         this._brushTool = new BrushTool({
             overlay: this._selectionOverlay,
-            ensureDrawingLayer: () => this._ensureDrawingLayer(),
-            rasterizeDrawingLayer: (layer) => this._rasterizeDrawingLayer(layer),
-            rebuild: (opts) => this._rebuild(opts),
-            pushUndoState: () => this._pushUndoState(),
-            finalizePendingUndo: () => this._finalizePendingUndo(),
-            markDirty: () => this._markDirty(),
+            commitStroke: (stroke) => this._commitDrawingStroke(stroke),
             acquireMutation: (existingToken) =>
                 this._tryAcquireProjectLifecycle(existingToken)
         })
@@ -518,11 +1156,13 @@ class LayersApp {
         this._eraserTool = new EraserTool({
             overlay: this._selectionOverlay,
             getActiveLayer: () => this._getActiveLayer(),
-            rasterizeDrawingLayer: (layer) => this._rasterizeDrawingLayer(layer),
-            rebuild: (opts) => this._rebuild(opts),
+            commitStrokeDeletion: (layer, strokeId) =>
+                this._commitDrawingLayerMutation(layer, (targetLayer) => {
+                    targetLayer.strokes = targetLayer.strokes.filter(
+                        stroke => stroke.id !== strokeId)
+                }, { pushUndo: false }),
             pushUndoState: () => this._pushUndoState(),
             finalizePendingUndo: () => this._finalizePendingUndo(),
-            markDirty: () => this._markDirty(),
             acquireMutation: (existingToken) =>
                 this._tryAcquireProjectLifecycle(existingToken)
         })
@@ -530,12 +1170,7 @@ class LayersApp {
         // Initialize shape tool
         this._shapeTool = new ShapeTool({
             overlay: this._selectionOverlay,
-            ensureDrawingLayer: () => this._ensureDrawingLayer(),
-            rasterizeDrawingLayer: (layer) => this._rasterizeDrawingLayer(layer),
-            rebuild: (opts) => this._rebuild(opts),
-            pushUndoState: () => this._pushUndoState(),
-            finalizePendingUndo: () => this._finalizePendingUndo(),
-            markDirty: () => this._markDirty(),
+            commitStroke: (stroke) => this._commitDrawingStroke(stroke),
             acquireMutation: (existingToken) =>
                 this._tryAcquireProjectLifecycle(existingToken)
         })
@@ -546,9 +1181,6 @@ class LayersApp {
             canvas: this._canvas,
             runMutation: (task) => this._runPointerMutation(task),
             addMediaLayerFromCanvas: (c, n) => this._addMediaLayerFromCanvas(c, n),
-            pushUndoState: () => this._pushUndoState(),
-            finalizePendingUndo: () => this._finalizePendingUndo(),
-            markDirty: () => this._markDirty()
         })
 
         // Initialize eyedropper tool
@@ -598,12 +1230,29 @@ class LayersApp {
 
         // Export system
         this._files = new Files()
+        const acquireExportSnapshot = () => {
+            const previousOverride = this._projectSnapshotCanvasOverride
+            const override = this._captureProjectSnapshotOverride({ canvasOnly: true })
+            this._projectSnapshotCanvasOverride = override
+            let active = true
+            return {
+                release: () => {
+                    if (!active) return
+                    active = false
+                    if (this._projectSnapshotCanvasOverride === override) {
+                        this._projectSnapshotCanvasOverride = previousOverride
+                    }
+                },
+            }
+        }
         this._exportImageDialog = new ExportImageDialog({
             files: this._files,
             canvas: this._canvas,
             getResolution: () => ({ width: this._canvas.width, height: this._canvas.height }),
             setResolution: (w, h) => this._resizeCanvas(w, h),
+            renderCurrentFrame: () => this._renderCurrentFrame(),
             acquireMutation: () => this._tryAcquireProjectLifecycle(),
+            acquireSnapshotOverride: acquireExportSnapshot,
             getProjectGeneration: () => this._replacementGeneration,
             onComplete: (format) => toast.success(`Exported as ${format.toUpperCase()}`),
             onCancel: () => {}
@@ -615,6 +1264,7 @@ class LayersApp {
             getResolution: () => ({ width: this._canvas.width, height: this._canvas.height }),
             setResolution: (w, h) => this._resizeCanvas(w, h),
             acquireMutation: () => this._tryAcquireProjectLifecycle(),
+            acquireSnapshotOverride: acquireExportSnapshot,
             getProjectGeneration: () => this._replacementGeneration,
             onComplete: (format) => toast.success(`Exported as ${format.toUpperCase()}`),
             onCancel: () => {}
@@ -732,32 +1382,53 @@ class LayersApp {
         openDialog.show({
             canClose: replaceProject,
             onOpen: async (file, mediaType) => {
-                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                await continueReplacement(({
+                    leaveOnline: confirmedLeaveOnline,
+                    replacementConsent: confirmedConsent,
+                }) =>
                     this._handleOpenMedia(file, mediaType, {
                         leaveOnline: confirmedLeaveOnline,
+                        replacementConsent: confirmedConsent,
                     }))
             },
             onSolid: async (width, height) => {
-                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                await continueReplacement(({
+                    leaveOnline: confirmedLeaveOnline,
+                    replacementConsent: confirmedConsent,
+                }) =>
                     this._handleCreateSolidBase(width, height, {
                         leaveOnline: confirmedLeaveOnline,
+                        replacementConsent: confirmedConsent,
                     }))
             },
             onGradient: async (width, height) => {
-                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                await continueReplacement(({
+                    leaveOnline: confirmedLeaveOnline,
+                    replacementConsent: confirmedConsent,
+                }) =>
                     this._handleCreateGradientBase(width, height, {
                         leaveOnline: confirmedLeaveOnline,
+                        replacementConsent: confirmedConsent,
                     }))
             },
             onTransparent: async (width, height) => {
-                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
+                await continueReplacement(({
+                    leaveOnline: confirmedLeaveOnline,
+                    replacementConsent: confirmedConsent,
+                }) =>
                     this._handleCreateTransparentBase(width, height, {
                         leaveOnline: confirmedLeaveOnline,
+                        replacementConsent: confirmedConsent,
                     }))
             },
             onClipboard: async () => {
-                await continueReplacement(({ leaveOnline: confirmedLeaveOnline }) =>
-                    this._handleNewFromClipboard({ leaveOnline: confirmedLeaveOnline }))
+                await continueReplacement(({
+                    leaveOnline: confirmedLeaveOnline,
+                    replacementConsent: confirmedConsent,
+                }) => this._handleNewFromClipboard({
+                    leaveOnline: confirmedLeaveOnline,
+                    replacementConsent: confirmedConsent,
+                }))
             },
             onLoadProject: () => {
                 this._showLoadProjectDialog(true, { leaveOnline, replacementConsent })
@@ -770,6 +1441,7 @@ class LayersApp {
         return {
             mutationRevision: this._projectMutationRevision,
             online: Boolean(this._onlineAdapter?.isOnline()),
+            onlineSessionIdentity: this._onlineAdapter?.getSessionIdentity?.() ?? null,
         }
     }
 
@@ -777,6 +1449,8 @@ class LayersApp {
     _projectReplacementStateMatches(state) {
         return state?.mutationRevision === this._projectMutationRevision
             && state.online === Boolean(this._onlineAdapter?.isOnline())
+            && state.onlineSessionIdentity
+                === (this._onlineAdapter?.getSessionIdentity?.() ?? null)
     }
 
     /**
@@ -787,22 +1461,34 @@ class LayersApp {
      * @private
      */
     async _startProjectReplacement(startFlow) {
-        while (true) {
-            const confirmedState = this._captureProjectReplacementState()
-            if (!await this._confirmLeaveOnlineSession()) return false
-            if (!await this._confirmUnsavedChanges()) return false
-            if (!this._projectReplacementStateMatches(confirmedState)) continue
+        const waitForGuard = this._projectReplacementGuardTail
+        let releaseGuard
+        this._projectReplacementGuardTail = new Promise(resolve => { releaseGuard = resolve })
+        await waitForGuard
 
-            const replacementConsent = {
-                ...confirmedState,
-                leaveOnline: confirmedState.online,
+        let replacementConsent
+        try {
+            while (true) {
+                const confirmedState = this._captureProjectReplacementState()
+                if (!await this._confirmLeaveOnlineSession()) return false
+                if (!await this._confirmUnsavedChanges()) return false
+                if (!this._projectReplacementStateMatches(confirmedState)) continue
+
+                replacementConsent = {
+                    ...confirmedState,
+                    leaveOnline: confirmedState.online,
+                }
+                break
             }
-            await startFlow({
-                leaveOnline: replacementConsent.leaveOnline,
-                replacementConsent,
-            })
-            return true
+        } finally {
+            releaseGuard()
         }
+
+        await startFlow({
+            leaveOnline: replacementConsent.leaveOnline,
+            replacementConsent,
+        })
+        return true
     }
 
     /**
@@ -860,9 +1546,13 @@ class LayersApp {
             }
             const mediaType = file.type.startsWith('video') ? 'video' : 'image'
             let result = null
-            const openFile = async ({ leaveOnline: confirmedLeaveOnline }) => {
+            const openFile = async ({
+                leaveOnline: confirmedLeaveOnline,
+                replacementConsent: confirmedConsent,
+            }) => {
                 result = await this._handleOpenMedia(file, mediaType, {
                     leaveOnline: confirmedLeaveOnline,
+                    replacementConsent: confirmedConsent,
                 })
             }
             const accepted = replacementConsent
@@ -877,6 +1567,24 @@ class LayersApp {
     }
 
     /**
+     * Finish non-essential UI work after a project replacement is committed.
+     * @param {string} successMessage - Toast message on success
+     * @private
+     */
+    _completeProjectReplacementUi(successMessage) {
+        try {
+            openDialog.element.close()
+        } catch (err) {
+            console.error('[Layers] Failed to close project chooser after replacement:', err)
+        }
+        try {
+            toast.success(successMessage)
+        } catch (err) {
+            console.error('[Layers] Failed to show project replacement confirmation:', err)
+        }
+    }
+
+    /**
      * Create a base layer and initialize the project
      * @param {object} layer - Layer object to use as base
      * @param {number} width - Canvas width
@@ -885,7 +1593,11 @@ class LayersApp {
      * @private
      */
     async _initializeBaseLayer(layer, width, height, successMessage,
-        { leaveOnline = false, mutationToken = null } = {}) {
+        {
+            leaveOnline = false,
+            mutationToken = null,
+            replacementConsent = null,
+        } = {}) {
         const generation = ++this._replacementGeneration
         return this._runProjectReplacement(mutationToken, async (token, replacementGate) => {
             const outcome = await this._installPreparedProject({
@@ -901,13 +1613,13 @@ class LayersApp {
             }, {
                 generation,
                 leaveOnline,
+                replacementConsent,
                 mutationToken: token,
                 replacementGate,
             })
 
             if (outcome.status === 'opened') {
-                openDialog.element.close()
-                toast.success(successMessage)
+                this._completeProjectReplacementUi(successMessage)
             } else if (outcome.status === 'failed') {
                 console.error('[Layers] Failed to create base layer:', outcome.error)
                 toast.error('Failed to create project: ' + outcome.error.message)
@@ -1145,6 +1857,114 @@ class LayersApp {
         return maxLayerNumber >= 0 ? maxLayerNumber + 1 : null
     }
 
+    /** @private */
+    async _validatePersistedLayerSemantics(layers, width, height) {
+        const numericFields = ['opacity', 'offsetX', 'offsetY', 'rotation']
+        const nodes = []
+        for (const layer of layers) {
+            for (const field of numericFields) {
+                if (layer[field] != null && !Number.isFinite(layer[field])) {
+                    throw new Error(`Saved layer "${layer.id}" has invalid ${field}`)
+                }
+            }
+            const scaleX = layer.scaleX ?? 1
+            const scaleY = layer.scaleY ?? 1
+            if (!Number.isFinite(scaleX) || scaleX === 0
+                || !Number.isFinite(scaleY) || scaleY === 0) {
+                throw new Error(`Saved layer "${layer.id}" has invalid scale`)
+            }
+            if (layer.sourceType === 'drawing' && layer.strokes.length > 0) {
+                const transformedWidth = Math.ceil(width * Math.abs(scaleX))
+                const transformedHeight = Math.ceil(height * Math.abs(scaleY))
+                if (transformedWidth > MAX_CANVAS_DIMENSION
+                    || transformedHeight > MAX_CANVAS_DIMENSION) {
+                    throw new Error(`Saved layer "${layer.id}" transformed raster is too large`)
+                }
+            }
+            nodes.push({
+                kind: 'layers-layer',
+                id: layer.id,
+                text: JSON.stringify({
+                    v: 1,
+                    name: layer.name,
+                    sourceType: layer.sourceType,
+                    effectId: layer.effectId,
+                    effectParams: layer.effectParams,
+                    mediaType: layer.mediaType,
+                    visible: layer.visible,
+                    locked: layer.locked,
+                    opacity: layer.opacity,
+                    blendMode: layer.blendMode,
+                    offsetX: layer.offsetX,
+                    offsetY: layer.offsetY,
+                    scaleX,
+                    scaleY,
+                    rotation: layer.rotation,
+                    flipH: layer.flipH,
+                    flipV: layer.flipV,
+                    maskEnabled: layer.maskEnabled,
+                    maskVisible: layer.maskVisible,
+                }),
+            })
+            for (const child of layer.children || []) {
+                nodes.push({
+                    kind: 'layers-child',
+                    id: child.id,
+                    text: JSON.stringify({
+                        v: 1,
+                        name: child.name,
+                        effectId: child.effectId,
+                        effectParams: child.effectParams,
+                        visible: child.visible,
+                    }),
+                })
+            }
+        }
+
+        const manifest = this._renderer?.manifest || {}
+        const layerEffectIds = new Set(
+            this._renderer?.getAllEffects?.().map(effect => effect.effectId) || [])
+        const excludedStarterNamespaces = new Set([
+            'mixer', 'render', 'points', '3d', 'filter3d',
+        ])
+        for (const [effectId, entry] of Object.entries(manifest)) {
+            const namespace = effectId.split('/')[0]
+            if (entry?.starter && !entry.externalTexture
+                && !excludedStarterNamespaces.has(namespace)) {
+                layerEffectIds.add(effectId)
+            }
+        }
+        const childEffectIds = new Set(
+            this._renderer?.getLayerEffects?.().map(effect => effect.effectId) || [])
+        await assertRemoteNodeSemantics(nodes, {
+            manifest,
+            getEffectDefinition: effectId =>
+                this._renderer?.getEffectDefinition?.(effectId),
+            getDeclaredDslIdentifierValues: spec =>
+                this._renderer?.getDeclaredDslIdentifierValues?.(spec) || [],
+            layerEffectIds,
+            childEffectIds,
+        })
+    }
+
+    /** @private */
+    _validatePreparedMediaResource(layer, resource) {
+        if (!resource
+            || !Number.isSafeInteger(resource.width) || resource.width < 1
+            || resource.width > MAX_CANVAS_DIMENSION
+            || !Number.isSafeInteger(resource.height) || resource.height < 1
+            || resource.height > MAX_CANVAS_DIMENSION) {
+            throw new Error(`Saved media dimensions are invalid for layer "${layer.id}"`)
+        }
+        const width = Math.ceil(resource.width * Math.abs(layer.scaleX ?? 1))
+        const height = Math.ceil(resource.height * Math.abs(layer.scaleY ?? 1))
+        if (!Number.isSafeInteger(width) || width < 1 || width > MAX_CANVAS_DIMENSION
+            || !Number.isSafeInteger(height) || height < 1
+            || height > MAX_CANVAS_DIMENSION) {
+            throw new Error(`Saved media dimensions are invalid for layer "${layer.id}"`)
+        }
+    }
+
     /**
      * Capture the app-owned portion of a project so a commit-side exception
      * can restore it before the renderer stage is rolled back.
@@ -1154,28 +1974,38 @@ class LayersApp {
     _captureProjectCommitState() {
         return {
             layers: this._layers,
-            selectedLayerId: this._layerStack?.selectedLayerId ?? null,
+            selectedLayerIds: this._layerStack?.selectedLayerIds ?? [],
+            selectionAnchor: this._layerStack?._lastClickedLayerId ?? null,
             selectionPath: this._selectionManager?.selectionPath ?? null,
             copyOrigin: this._copyOrigin,
             projectId: this._currentProjectId,
             projectName: this._currentProjectName,
             dirty: this._isDirty,
-            undoStack: this._undoManager._stack,
+            mutationRevision: this._projectMutationRevision,
+            undoStackArray: this._undoManager._stack,
+            undoStack: this._undoManager._stack.slice(),
             undoIndex: this._undoManager._index,
             undoWasPending: this._undoDebounceTimer !== null,
-            maskEditMode: this._maskEditMode,
             maskEditLayerId: this._maskEditLayerId,
+            maskEditUi: this._maskEditMode ? this._captureMaskEditUiState() : null,
         }
     }
 
     /** @private */
     _restoreProjectCommitState(previous) {
+        if (this._undoDebounceTimer) {
+            clearTimeout(this._undoDebounceTimer)
+            this._undoDebounceTimer = null
+        }
         this._layers = previous.layers
         this._currentProjectId = previous.projectId
         this._currentProjectName = previous.projectName
         this._isDirty = previous.dirty
+        this._projectMutationRevision = previous.mutationRevision
         this._copyOrigin = previous.copyOrigin
-        this._undoManager._stack = previous.undoStack
+        previous.undoStackArray.splice(
+            0, previous.undoStackArray.length, ...previous.undoStack)
+        this._undoManager._stack = previous.undoStackArray
         this._undoManager._index = previous.undoIndex
 
         if (previous.selectionPath) {
@@ -1184,15 +2014,21 @@ class LayersApp {
             this._selectionManager?.clearSelection()
         }
         this._updateLayerStack()
-        if (this._layerStack) this._layerStack.selectedLayerId = previous.selectedLayerId
+        if (this._layerStack) {
+            this._layerStack.selectedLayerIds = previous.selectedLayerIds
+            this._layerStack._lastClickedLayerId = previous.selectionAnchor
+        }
         this._updateUndoMenuState()
 
-        if (previous.maskEditMode && !this._maskEditMode) {
-            this._enterMaskEditMode(previous.maskEditLayerId)
+        if (previous.maskEditUi) {
+            const maskLayer = this._layers.find(
+                layer => layer.id === previous.maskEditLayerId)
+            if (maskLayer) maskLayer.maskVisible = true
+            this._restoreMaskEditUiState(previous.maskEditUi)
+            this._updateLayerStack()
         }
-        if (previous.undoWasPending && !this._undoDebounceTimer) {
-            this._pushUndoStateDebounced()
-        }
+        if (previous.undoWasPending) this._pushUndoStateDebounced()
+        else this._updateUndoMenuState()
     }
 
     /** @private */
@@ -1206,7 +2042,8 @@ class LayersApp {
      * Compile a detached project, then synchronously swap app state only if
      * it is still the newest replacement generation.
      * @param {object} candidate
-     * @param {{generation:number,leaveOnline?:boolean,mutationToken?:object,replacementGate?:object}} options
+     * @param {{generation:number,leaveOnline?:boolean,mutationToken?:object,
+     *   replacementGate?:object,replacementConsent?:object}} options
      * @returns {Promise<{status:'opened'|'failed'|'cancelled',error?:Error}>}
      * @private
      */
@@ -1215,11 +2052,12 @@ class LayersApp {
         leaveOnline = false,
         mutationToken = null,
         replacementGate = null,
+        replacementConsent = null,
     }) {
         return this._runProjectLifecycle(mutationToken,
             () => this._queueProjectInstall(async () => {
-            this._projectInstallActive = true
             const previousSize = { width: this._canvas.width, height: this._canvas.height }
+            const transaction = this._beginPublishTransaction()
             let candidateOwned = true
             let stage = null
             let previousAppState = null
@@ -1233,25 +2071,40 @@ class LayersApp {
             }
 
             const rollback = async () => {
-                restoreLiveCanvas()
-                if (!stage) return null
+                const errors = []
                 try {
-                    const result = await stage.rollback()
-                    stage = null
-                    if (!result?.success) {
-                        this._renderer.stop()
-                        return new Error(result?.error || 'Unknown renderer restoration failure')
-                    }
-                    return null
+                    restoreLiveCanvas()
                 } catch (err) {
-                    stage = null
-                    this._renderer.stop()
-                    return err instanceof Error ? err : new Error(String(err))
+                    errors.push(err instanceof Error ? err : new Error(String(err)))
                 }
+                if (stage) {
+                    try {
+                        const result = await stage.rollback()
+                        if (!result?.success) {
+                            this._renderer.stop()
+                            errors.push(new Error(
+                                result?.error || 'Unknown renderer restoration failure'))
+                        }
+                    } catch (err) {
+                        this._renderer.stop()
+                        errors.push(err instanceof Error ? err : new Error(String(err)))
+                    } finally {
+                        stage = null
+                    }
+                }
+                if (errors.length === 0) return null
+                if (errors.length === 1) return errors[0]
+                return new Error(errors.map(error => error.message).join('; '))
             }
 
             try {
                 if (generation !== this._replacementGeneration) {
+                    this._disposePreparedProject(candidate)
+                    candidateOwned = false
+                    return { status: 'cancelled' }
+                }
+                if (replacementConsent
+                    && !this._projectReplacementStateMatches(replacementConsent)) {
                     this._disposePreparedProject(candidate)
                     candidateOwned = false
                     return { status: 'cancelled' }
@@ -1308,6 +2161,19 @@ class LayersApp {
                     }
                     return { status: 'cancelled' }
                 }
+                if (replacementConsent
+                    && !this._projectReplacementStateMatches(replacementConsent)) {
+                    const restoreError = await rollback()
+                    if (restoreError) {
+                        return {
+                            status: 'failed',
+                            error: this._replacementFailure(
+                                new Error('Replacement confirmation became stale'),
+                                restoreError)
+                        }
+                    }
+                    return { status: 'cancelled' }
+                }
                 if (this._onlineAdapter?.isApplyingRemote?.()) {
                     const restoreError = await rollback()
                     return {
@@ -1329,11 +2195,13 @@ class LayersApp {
 
                 // Build the new baseline before touching app state. Malformed
                 // candidates fail here while the renderer can still roll back.
-                const undoBaseline = {
-                    layers: this._cloneLayers(candidate.layers),
-                    canvasWidth: candidate.width,
-                    canvasHeight: candidate.height
-                }
+                const undoBaseline = this._createUndoSnapshot(
+                    candidate.layers, candidate.width, candidate.height,
+                    candidate.mediaTextures)
+                undoBaseline.selectedLayerIds = candidate.selectedLayerId
+                    ? [candidate.selectedLayerId]
+                    : []
+                undoBaseline.selectionAnchor = candidate.selectedLayerId || null
                 previousAppState = this._captureProjectCommitState()
 
                 try {
@@ -1364,8 +2232,17 @@ class LayersApp {
                         this._onlineAdapter.goOffline()
                     }
 
-                    stage.commit()
+                    const committedStage = stage
                     stage = null
+                    try {
+                        const commitResult = committedStage.commit()
+                        if (commitResult?.success === false) {
+                            console.error('[Layers] Failed to retire replaced project resources:',
+                                commitResult.error || 'Unknown renderer cleanup failure')
+                        }
+                    } catch (err) {
+                        console.error('[Layers] Failed to retire replaced project resources:', err)
+                    }
                     if (candidate.nextLayerId != null) {
                         bumpLayerCounter(candidate.nextLayerId)
                     }
@@ -1392,7 +2269,7 @@ class LayersApp {
                     error: this._replacementFailure(err, restoreError)
                 }
             } finally {
-                this._projectInstallActive = false
+                this._endPublishTransaction(transaction)
             }
             }), { replacementGate })
     }
@@ -1453,6 +2330,7 @@ class LayersApp {
             generation = null,
             mutationToken = null,
             replacementGate = null,
+            replacementConsent = null,
         } = {}) {
         const layer = createMediaLayer(file, mediaType)
         const candidateGeneration = generation ?? ++this._replacementGeneration
@@ -1471,7 +2349,11 @@ class LayersApp {
                 this._renderer.disposeMediaResource(resource)
                 return 'cancelled'
             }
-            if (!resource || resource.width <= 0 || resource.height <= 0) {
+            if (!resource
+                || !Number.isSafeInteger(resource.width) || resource.width < 1
+                || resource.width > MAX_CANVAS_DIMENSION
+                || !Number.isSafeInteger(resource.height) || resource.height < 1
+                || resource.height > MAX_CANVAS_DIMENSION) {
                 this._renderer.disposeMediaResource(resource)
                 toast.error('Failed to load media: invalid dimensions')
                 return 'failed'
@@ -1490,13 +2372,13 @@ class LayersApp {
             }, {
                 generation: candidateGeneration,
                 leaveOnline,
+                replacementConsent,
                 mutationToken: token,
                 replacementGate: activeReplacementGate,
             })
 
             if (outcome.status === 'opened') {
-                openDialog.element.close()
-                toast.success(`Opened ${file.name}`)
+                this._completeProjectReplacementUi(`Opened ${file.name}`)
             } else if (outcome.status === 'failed') {
                 console.error('[Layers] Failed to install media:', outcome.error)
                 toast.error('Failed to open media: ' + outcome.error.message)
@@ -1513,7 +2395,11 @@ class LayersApp {
      * Handle new project from clipboard image
      * @private
      */
-    async _handleNewFromClipboard({ leaveOnline = false, mutationToken = null } = {}) {
+    async _handleNewFromClipboard({
+        leaveOnline = false,
+        mutationToken = null,
+        replacementConsent = null,
+    } = {}) {
         const generation = ++this._replacementGeneration
         return this._runProjectReplacement(mutationToken, async (token, replacementGate) => {
             const result = await pasteFromClipboard()
@@ -1525,6 +2411,7 @@ class LayersApp {
             const file = new File([result.blob], 'Clipboard Image.png', { type: 'image/png' })
             return this._handleOpenMedia(file, 'image', {
                 leaveOnline,
+                replacementConsent,
                 generation,
                 mutationToken: token,
                 replacementGate,
@@ -1537,6 +2424,7 @@ class LayersApp {
      * @private
      */
     async _handleCopyImage() {
+        this._renderCurrentFrame()
         const ok = await copyCanvasToClipboard(this._canvas)
         if (ok) {
             toast.success('Copied image to clipboard')
@@ -1567,7 +2455,10 @@ class LayersApp {
      * @param {string} mediaType - 'image' or 'video'
      * @private
      */
-    async _handleAddMediaLayer(file, mediaType, { mutationToken = null } = {}) {
+    async _handleAddMediaLayer(file, mediaType, {
+        mutationToken = null,
+        name = null,
+    } = {}) {
         return this._runProjectLifecycle(mutationToken, async () => {
             if (this._onlineAdapter?.isOnline()) {
                 toast.warning('Media layers aren’t supported while a Layers session is online')
@@ -1582,30 +2473,8 @@ class LayersApp {
                 return { status: 'blocked-online' }
             }
 
-            let layer
-            try {
-                this._finalizePendingUndo()
-                layer = createMediaLayer(file, mediaType)
-                this._layers.push(layer)
-                this._renderer.setMediaResource(layer.id, resource)
-            } catch (err) {
-                this._renderer.disposeMediaResource(resource)
-                throw err
-            }
-
-            // Update and rebuild
-            this._updateLayerStack()
-            await this._rebuild()
-            this._markDirty()
-            this._pushUndoState()
-
-            // Select the new layer
-            if (this._layerStack) {
-                this._layerStack.selectedLayerId = layer.id
-            }
-
-            toast.success(`Added layer: ${layer.name}`)
-            return { status: 'added', layerId: layer.id }
+            const layer = createMediaLayer(file, mediaType, name)
+            return this._commitAddedLayer(layer, { resource })
         })
     }
 
@@ -1614,46 +2483,38 @@ class LayersApp {
      * @param {string} effectId - Effect ID
      * @private
      */
-    async _handleAddEffectLayer(effectId) {
-        this._finalizePendingUndo()
-        const layer = createEffectLayer(effectId)
-        this._layers.push(layer)
+    async _handleAddEffectLayer(effectId, { name = null, params = null } = {}) {
+        const layer = createEffectLayer(effectId, name, params || {})
+        return this._commitAddedLayer(layer)
+    }
 
-        // Update and rebuild
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-
-        // Select the new layer
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = layer.id
-        }
-
-        toast.success(`Added layer: ${layer.name}`)
+    /**
+     * Handle adding an empty drawing layer.
+     * @param {string} [name]
+     * @returns {Promise<{status:'added',layerId:string}|{status:'failed',error:Error}>}
+     * @private
+     */
+    async _handleAddDrawingLayer(name) {
+        const layer = createDrawingLayer(name)
+        return this._commitAddedLayer(layer)
     }
 
     async _handleAutoCorrection(correctionFn) {
+        this._renderCurrentFrame()
         const result = correctionFn(this._canvas)
         if (!result) {
             toast.info('No correction needed')
             return null
         }
-        this._finalizePendingUndo()
-        const layer = createEffectLayer(result.effectId)
-        layer.name = result.name
-        Object.assign(layer.effectParams, result.effectParams)
-        this._layers.push(layer)
-
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = layer.id
+        const layer = createEffectLayer(
+            result.effectId, result.name, result.effectParams)
+        const outcome = await this._commitAddedLayer(layer, { showSuccess: false })
+        if (outcome.status !== 'added') return outcome
+        try {
+            toast.success(`Applied: ${result.name}`)
+        } catch (err) {
+            console.error('[Layers] Failed to show auto-correction confirmation:', err)
         }
-        toast.success(`Applied: ${result.name}`)
         // Return the newly-created adjustment layer so callers (e.g. the
         // agent's auto* commands) can report whether work was done.
         return layer
@@ -1665,11 +2526,9 @@ class LayersApp {
      * Add a fully white (revealed) mask to a layer.
      * @param {string} layerId
      */
-    async _addLayerMask(layerId) {
+    async _addLayerMask(layerId, { enterEditMode = true } = {}) {
         const layer = this._layers.find(l => l.id === layerId)
         if (!layer || layer.mask) return
-
-        this._finalizePendingUndo()
 
         const w = this._canvas.width
         const h = this._canvas.height
@@ -1681,16 +2540,17 @@ class LayersApp {
             mask.data[i + 2] = 255 // B
             mask.data[i + 3] = 255 // A
         }
-        layer.mask = mask
-        layer.maskEnabled = true
-
-        this._renderer.uploadMaskTexture(layerId, mask)
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-        this._enterMaskEditMode(layerId)
-        toast.success('Layer mask added — paint to hide areas, Escape to exit')
+        const outcome = await this._commitMaskMutation(layer, () => {
+            layer.mask = mask
+            layer.maskEnabled = true
+            this._renderer.uploadMaskTexture(layerId, mask)
+        }, { updateLayerStack: true })
+        if (outcome.status !== 'committed') return outcome
+        if (enterEditMode) {
+            this._enterMaskEditMode(layerId)
+            toast.success('Layer mask added — paint to hide areas, Escape to exit')
+        }
+        return outcome
     }
 
     /**
@@ -1707,16 +2567,14 @@ class LayersApp {
             return
         }
 
-        this._finalizePendingUndo()
-        layer.mask = selMask
-        layer.maskEnabled = true
-
-        this._renderer.uploadMaskTexture(layerId, selMask)
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
+        const outcome = await this._commitMaskMutation(layer, () => {
+            layer.mask = selMask
+            layer.maskEnabled = true
+            this._renderer.uploadMaskTexture(layerId, selMask)
+        }, { updateLayerStack: true })
+        if (outcome.status !== 'committed') return outcome
         toast.success('Mask created from selection')
+        return outcome
     }
 
     /**
@@ -1727,21 +2585,17 @@ class LayersApp {
         const layer = this._layers.find(l => l.id === layerId)
         if (!layer || !layer.mask) return
 
-        this._finalizePendingUndo()
-        layer.mask = null
-        layer.maskEnabled = true
-        layer.maskVisible = false
-
-        if (this._maskEditMode && this._maskEditLayerId === layerId) {
-            await this._exitMaskEditMode()
-        }
-
+        const editing = this._maskEditMode && this._maskEditLayerId === layerId
+        const outcome = await this._commitMaskMutation(layer, () => {
+            layer.mask = null
+            layer.maskEnabled = true
+            layer.maskVisible = false
+            if (editing) this._applyMaskEditModeExitUi(layer, { uploadTexture: false })
+        }, { updateLayerStack: true })
+        if (outcome.status !== 'committed') return outcome
         this._renderer.removeMaskTexture(layerId)
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
         toast.info('Layer mask deleted')
+        return outcome
     }
 
     /**
@@ -1752,20 +2606,21 @@ class LayersApp {
         const layer = this._layers.find(l => l.id === layerId)
         if (!layer?.mask) return
 
-        this._finalizePendingUndo()
-        const data = layer.mask.data
-        for (let i = 0; i < data.length; i += 4) {
-            data[i] = 255 - data[i]         // R
-            data[i + 1] = 255 - data[i + 1] // G
-            data[i + 2] = 255 - data[i + 2] // B
-            // A stays 255
-        }
-
-        this._renderer.uploadMaskTexture(layerId, layer.mask)
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
+        const outcome = await this._commitMaskMutation(layer, () => {
+            const data = layer.mask.data
+            for (let i = 0; i < data.length; i += 4) {
+                data[i] = 255 - data[i]
+                data[i + 1] = 255 - data[i + 1]
+                data[i + 2] = 255 - data[i + 2]
+            }
+            this._renderer.uploadMaskTexture(layerId, layer.mask)
+            if (this._maskEditMode && this._maskEditLayerId === layerId) {
+                this._renderMaskOverlay(layer)
+            }
+        })
+        if (outcome.status !== 'committed') return outcome
         toast.success('Mask inverted')
+        return outcome
     }
 
     /** Convert mask format (RGB=val, A=255) to selection format (A=val) */
@@ -1786,19 +2641,27 @@ class LayersApp {
         return mask
     }
 
+    /** @private */
+    _applyLayerMaskTransform(layerId, transform) {
+        const layer = this._layers.find(l => l.id === layerId)
+        if (!layer?.mask) return
+        return this._commitMaskMutation(layer, () => {
+            const converted = this._maskToSelectionFormat(layer.mask)
+            layer.mask = this._selectionFormatToMask(transform(converted))
+            this._renderer.uploadMaskTexture(layerId, layer.mask)
+            if (this._maskEditMode && this._maskEditLayerId === layerId) {
+                this._renderMaskOverlay(layer)
+            }
+        })
+    }
+
     async _featherLayerMask(layerId) {
         const layer = this._layers.find(l => l.id === layerId)
         if (!layer?.mask) return
         const radius = await selectionParamDialog.show({ title: 'Feather Mask', label: 'Radius', defaultValue: 5, min: 1, max: 100 })
         if (radius === null) return
-        this._finalizePendingUndo()
-        const converted = this._maskToSelectionFormat(layer.mask)
-        layer.mask = this._selectionFormatToMask(featherMask(converted, radius))
-        this._renderer.uploadMaskTexture(layerId, layer.mask)
-        if (this._maskEditMode) this._renderMaskOverlay(layer)
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
+        return this._applyLayerMaskTransform(
+            layerId, converted => featherMask(converted, radius))
     }
 
     async _expandLayerMask(layerId) {
@@ -1806,14 +2669,8 @@ class LayersApp {
         if (!layer?.mask) return
         const radius = await selectionParamDialog.show({ title: 'Expand Mask', label: 'Radius', defaultValue: 5, min: 1, max: 100 })
         if (radius === null) return
-        this._finalizePendingUndo()
-        const converted = this._maskToSelectionFormat(layer.mask)
-        layer.mask = this._selectionFormatToMask(expandMask(converted, radius))
-        this._renderer.uploadMaskTexture(layerId, layer.mask)
-        if (this._maskEditMode) this._renderMaskOverlay(layer)
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
+        return this._applyLayerMaskTransform(
+            layerId, converted => expandMask(converted, radius))
     }
 
     async _contractLayerMask(layerId) {
@@ -1821,14 +2678,8 @@ class LayersApp {
         if (!layer?.mask) return
         const radius = await selectionParamDialog.show({ title: 'Contract Mask', label: 'Radius', defaultValue: 5, min: 1, max: 100 })
         if (radius === null) return
-        this._finalizePendingUndo()
-        const converted = this._maskToSelectionFormat(layer.mask)
-        layer.mask = this._selectionFormatToMask(contractMask(converted, radius))
-        this._renderer.uploadMaskTexture(layerId, layer.mask)
-        if (this._maskEditMode) this._renderMaskOverlay(layer)
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
+        return this._applyLayerMaskTransform(
+            layerId, converted => contractMask(converted, radius))
     }
 
     async _smoothLayerMask(layerId) {
@@ -1836,14 +2687,8 @@ class LayersApp {
         if (!layer?.mask) return
         const radius = await selectionParamDialog.show({ title: 'Smooth Mask', label: 'Radius', defaultValue: 5, min: 1, max: 100 })
         if (radius === null) return
-        this._finalizePendingUndo()
-        const converted = this._maskToSelectionFormat(layer.mask)
-        layer.mask = this._selectionFormatToMask(smoothMask(converted, radius))
-        this._renderer.uploadMaskTexture(layerId, layer.mask)
-        if (this._maskEditMode) this._renderMaskOverlay(layer)
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
+        return this._applyLayerMaskTransform(
+            layerId, converted => smoothMask(converted, radius))
     }
 
     /**
@@ -1853,13 +2698,19 @@ class LayersApp {
     async _toggleMaskEnabled(layerId) {
         const layer = this._layers.find(l => l.id === layerId)
         if (!layer?.mask) return
+        return this._setMaskEnabled(layerId, !layer.maskEnabled)
+    }
 
-        this._finalizePendingUndo()
-        layer.maskEnabled = !layer.maskEnabled
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
+    /** @private */
+    _setMaskEnabled(layerId, enabled) {
+        const layer = this._layers.find(l => l.id === layerId)
+        if (!layer?.mask) return
+        if (layer.maskEnabled === enabled) {
+            return Promise.resolve({ status: 'committed', noop: true })
+        }
+        return this._commitMaskMutation(layer, () => {
+            layer.maskEnabled = enabled
+        }, { updateLayerStack: true })
     }
 
     /**
@@ -2024,16 +2875,31 @@ class LayersApp {
      */
     async _exitMaskEditMode({ updateRenderer = true } = {}) {
         if (!this._maskEditMode) return
-
-        this._closeContextMenus()
-
         const layer = updateRenderer
             ? this._layers.find(l => l.id === this._maskEditLayerId)
             : null
-        if (layer && updateRenderer) {
+        if (!updateRenderer) {
+            this._applyMaskEditModeExitUi(null, { uploadTexture: false })
+            return { status: 'committed' }
+        }
+        if (!layer) return
+        return this._commitMaskMutation(layer, () => {
+            this._applyMaskEditModeExitUi(layer)
+        }, {
+            rebuildOptions: { force: true },
+            updateLayerStack: true,
+            markDirty: false,
+            pushUndo: false,
+            finalizePendingUndo: false,
+        })
+    }
+
+    /** @private */
+    _applyMaskEditModeExitUi(layer, { uploadTexture = true } = {}) {
+        this._closeContextMenus()
+        if (layer) {
             layer.maskVisible = false
-            // Apply mask: re-upload latest mask data so renderer composites with it
-            if (layer.mask) {
+            if (uploadTexture && layer.mask) {
                 this._renderer.uploadMaskTexture(layer.id, layer.mask)
             }
         }
@@ -2056,10 +2922,6 @@ class LayersApp {
         const overlay = document.getElementById('maskOverlay')
         if (overlay) {
             overlay.classList.add('hidden')
-        }
-        if (updateRenderer) {
-            this._updateLayerStack()
-            await this._rebuild({ force: true })
         }
     }
 
@@ -2108,44 +2970,40 @@ class LayersApp {
     async _handleMaskStroke(stroke, isEraser) {
         const layer = this._layers.find(l => l.id === this._maskEditLayerId)
         if (!layer?.mask) return
+        return this._commitMaskMutation(layer, () => {
+            // Rasterize the stroke to a temporary canvas
+            if (!this._strokeRenderer) {
+                this._strokeRenderer = new StrokeRenderer()
+            }
 
-        this._finalizePendingUndo()
+            // Scale stroke from overlay coordinates to mask coordinates
+            const scaleX = layer.mask.width / this._selectionOverlay.width
+            const scaleY = layer.mask.height / this._selectionOverlay.height
+            const maskStroke = {
+                ...stroke,
+                color: isEraser ? '#000000' : '#ffffff',
+                size: stroke.size * Math.max(scaleX, scaleY),
+                points: stroke.points.map(p => ({ x: p.x * scaleX, y: p.y * scaleY }))
+            }
+            const strokeCanvas = this._strokeRenderer.rasterize(
+                [maskStroke], layer.mask.width, layer.mask.height
+            )
 
-        // Rasterize the stroke to a temporary canvas
-        if (!this._strokeRenderer) {
-            this._strokeRenderer = new StrokeRenderer()
-        }
+            // Composite onto the mask
+            const maskCanvas = document.createElement('canvas')
+            maskCanvas.width = layer.mask.width
+            maskCanvas.height = layer.mask.height
+            const ctx = maskCanvas.getContext('2d')
+            ctx.putImageData(layer.mask, 0, 0)
+            ctx.drawImage(strokeCanvas, 0, 0)
 
-        // Scale stroke from overlay coordinates to mask coordinates
-        const scaleX = layer.mask.width / this._selectionOverlay.width
-        const scaleY = layer.mask.height / this._selectionOverlay.height
-        const maskStroke = {
-            ...stroke,
-            color: isEraser ? '#000000' : '#ffffff',
-            size: stroke.size * Math.max(scaleX, scaleY),
-            points: stroke.points.map(p => ({ x: p.x * scaleX, y: p.y * scaleY }))
-        }
-        const strokeCanvas = this._strokeRenderer.rasterize(
-            [maskStroke], layer.mask.width, layer.mask.height
-        )
+            // Read back the composited result
+            layer.mask = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height)
 
-        // Composite onto the mask
-        const maskCanvas = document.createElement('canvas')
-        maskCanvas.width = layer.mask.width
-        maskCanvas.height = layer.mask.height
-        const ctx = maskCanvas.getContext('2d')
-        ctx.putImageData(layer.mask, 0, 0)
-        ctx.drawImage(strokeCanvas, 0, 0)
-
-        // Read back the composited result
-        layer.mask = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height)
-
-        // Update texture and overlay
-        this._renderer.uploadMaskTexture(layer.id, layer.mask)
-        this._renderMaskOverlay(layer)
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoStateDebounced()
+            // Update texture and overlay
+            this._renderer.uploadMaskTexture(layer.id, layer.mask)
+            this._renderMaskOverlay(layer)
+        }, { pushUndo: 'debounced' })
     }
 
     // ── End mask management ─────────────────────────────────────────────
@@ -2156,27 +3014,29 @@ class LayersApp {
      * @param {string} effectId - Effect ID to add
      * @private
      */
-    async _handleAddChildEffect(parentLayerId, effectId) {
+    async _handleAddChildEffect(parentLayerId, effectId, {
+        name = null,
+        params = null,
+    } = {}) {
         const parent = this._layers.find(l => l.id === parentLayerId)
         if (!parent) return
+        const child = createChildEffect(effectId, name, params || {})
+        const outcome = await this._commitModelMutation(() => {
+            if (!parent.children) parent.children = []
+            parent.children.push(child)
+        }, {
+            updateLayerStack: true,
+            selectedLayerIds: [child.id],
+            selectionAnchor: child.id,
+        })
+        if (outcome.status !== 'committed') return outcome
 
-        this._finalizePendingUndo()
-
-        const child = createChildEffect(effectId)
-        if (!parent.children) parent.children = []
-        parent.children.push(child)
-
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-
-        // Select the new child
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = child.id
+        try {
+            toast.success(`Added effect: ${child.name}`)
+        } catch (err) {
+            console.error('[Layers] Failed to show child-effect confirmation:', err)
         }
-
-        toast.success(`Added effect: ${child.name}`)
+        return { ...outcome, childId: child.id }
     }
 
     /**
@@ -2194,49 +3054,68 @@ class LayersApp {
             const childIndex = parent.children.findIndex(c => c.id === layerId)
             if (childIndex < 0) return
 
-            this._finalizePendingUndo()
             const child = parent.children[childIndex]
-            parent.children.splice(childIndex, 1)
-
-            this._updateLayerStack()
-            await this._rebuild()
-            this._markDirty()
-            this._pushUndoState()
-
-            toast.info(`Deleted effect: ${child.name}`)
-            return
+            const selectedIds = this._layerStack?.selectedLayerIds || []
+            const survivingSelectedIds = selectedIds.filter(id => id !== child.id)
+            const nextSelectedIds = selectedIds.includes(child.id)
+                ? (survivingSelectedIds.length > 0
+                    ? survivingSelectedIds
+                    : [parent.id])
+                : selectedIds
+            const outcome = await this._commitModelMutation(() => {
+                parent.children.splice(childIndex, 1)
+            }, {
+                updateLayerStack: true,
+                selectedLayerIds: nextSelectedIds,
+                selectionAnchor: nextSelectedIds.at(-1) || null,
+            })
+            if (outcome.status !== 'committed') return outcome
+            try {
+                toast.info(`Deleted effect: ${child.name}`)
+            } catch (err) {
+                console.error('[Layers] Failed to show child-effect deletion:', err)
+            }
+            return outcome
         }
 
         // Existing top-level layer delete logic
         const index = this._layers.findIndex(l => l.id === layerId)
         if (index <= 0) return // Can't delete base layer
 
-        this._finalizePendingUndo()
         const layer = this._layers[index]
-
-        // Unload media/drawing texture if needed
+        const selectedIds = this._layerStack?.selectedLayerIds || []
+        const survivingSelectedIds = selectedIds.filter(id => id !== layer.id)
+        const nextSelectedIds = selectedIds.includes(layer.id)
+            ? (survivingSelectedIds.length > 0
+                ? survivingSelectedIds
+                : [this._layers[index - 1].id])
+            : selectedIds
+        const editing = this._maskEditMode && this._maskEditLayerId === layer.id
+        const previousUi = editing ? this._captureMaskEditUiState() : null
+        const outcome = await this._commitModelMutation(() => {
+            if (editing) {
+                this._applyMaskEditModeExitUi(layer, { uploadTexture: false })
+            }
+            this._layers.splice(index, 1)
+        }, {
+            updateLayerStack: true,
+            selectedLayerIds: nextSelectedIds,
+            selectionAnchor: nextSelectedIds.at(-1) || null,
+            restore: () => {
+                if (previousUi) this._restoreMaskEditUiState(previousUi)
+            },
+        })
+        if (outcome.status !== 'committed') return outcome
         if (layer.sourceType === 'media' || layer.sourceType === 'drawing') {
             this._renderer.unloadMedia(layerId)
         }
-
-        // Clean up mask texture if present
-        if (layer.mask) {
-            this._renderer.removeMaskTexture(layer.id)
+        if (layer.mask) this._renderer.removeMaskTexture(layer.id)
+        try {
+            toast.info(`Deleted layer: ${layer.name}`)
+        } catch (err) {
+            console.error('[Layers] Failed to show layer deletion:', err)
         }
-        if (this._maskEditMode && this._maskEditLayerId === layer.id) {
-            await this._exitMaskEditMode()
-        }
-
-        // Remove layer
-        this._layers.splice(index, 1)
-
-        // Update and rebuild
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-
-        toast.info(`Deleted layer: ${layer.name}`)
+        return outcome
     }
 
     /**
@@ -2245,11 +3124,6 @@ class LayersApp {
      * @private
      */
     async _handleLayerChange(detail) {
-        const isDebounced = detail.property === 'effectParams' || detail.property === 'opacity'
-        if (!isDebounced) {
-            this._finalizePendingUndo()
-        }
-
         // Find the target — either a child or a top-level layer
         let layer
         if (detail.parentLayerId) {
@@ -2258,56 +3132,65 @@ class LayersApp {
         } else {
             layer = this._layers.find(l => l.id === detail.layerId)
         }
-
-        if (layer) {
-            layer[detail.property] = detail.value
-        }
-
-        this._markDirty()
+        if (!layer) return
 
         // Handle child-specific property changes
-        if (detail.parentLayerId) {
-            if (detail.property === 'effectParams') {
-                this._renderer.updateLayerParams(detail.layerId, detail.value)
-                this._renderer.syncDsl()
-                this._pushUndoStateDebounced()
+        if (detail.property === 'effectParams') {
+            const previousParams = layer.effectParams
+            const outcome = await this._commitModelMutation(() => {
+                layer.effectParams = detail.value
+            }, {
+                pushUndo: 'debounced',
+                finalizePendingUndo: false,
+                render: () => {
+                    this._renderer.updateLayerParams(detail.layerId, detail.value)
+                    this._renderer.syncDsl()
+                    return { success: true }
+                },
+                restore: () => {
+                    this._renderer.updateLayerParams(detail.layerId, previousParams)
+                    this._renderer.syncDsl()
+                },
+            })
+            if (outcome.status === 'committed') {
                 this._onlineAdapter?.schedulePublish()
-            } else {
-                await this._rebuild()
-                this._pushUndoState()
             }
-            return
+            return outcome
         }
 
-        // Determine if this requires a full rebuild or just a parameter update
-        switch (detail.property) {
-            case 'effectParams':
-                // Update parameters directly without recompiling
-                this._renderer.updateLayerParams(detail.layerId, detail.value)
-                // Keep DSL in sync to prevent spurious rebuild on next structural change
-                this._renderer.syncDsl()
-                this._pushUndoStateDebounced()
-                this._onlineAdapter?.schedulePublish()
-                break
+        const field = detail.property === 'visibility'
+            ? 'visible'
+            : detail.property
+        const isDebounced = detail.property === 'opacity'
+        return this._commitModelMutation(() => {
+            layer[field] = detail.value
+        }, {
+            updateLayerStack: detail.updateLayerStack === true
+                || detail.property === 'visibility',
+            pushUndo: isDebounced ? 'debounced' : true,
+            finalizePendingUndo: !isDebounced,
+        })
+    }
 
-            case 'opacity':
-                // Rebuild DSL with new opacity baked into blendMode mixAmt
-                await this._rebuild()
-                this._pushUndoStateDebounced()
-                break
+    /** @private */
+    _reorderLayer(layerId, toIndex) {
+        const fromIndex = this._layers.findIndex(layer => layer.id === layerId)
+        if (fromIndex <= 0 || toIndex <= 0) return
+        return this._commitModelMutation(() => {
+            const [moved] = this._layers.splice(fromIndex, 1)
+            this._layers.splice(toIndex, 0, moved)
+        }, { updateLayerStack: true, updateLayerZIndex: true })
+    }
 
-            case 'visibility':
-            case 'blendMode':
-                // Structural changes require full rebuild
-                await this._rebuild()
-                this._pushUndoState()
-                break
-
-            default:
-                // Unknown property - rebuild to be safe
-                await this._rebuild()
-                this._pushUndoState()
-        }
+    /** @private */
+    _reorderChildEffect(parentLayerId, childId, toIndex) {
+        const parent = this._layers.find(layer => layer.id === parentLayerId)
+        const fromIndex = parent?.children?.findIndex(child => child.id === childId) ?? -1
+        if (fromIndex < 0) return
+        return this._commitModelMutation(() => {
+            const [moved] = parent.children.splice(fromIndex, 1)
+            parent.children.splice(toIndex, 0, moved)
+        }, { updateLayerStack: true })
     }
 
     /**
@@ -2329,7 +3212,8 @@ class LayersApp {
 
         // Capture snapshot
         const snapshot = {
-            layers: JSON.parse(JSON.stringify(this._layers)),
+            layersArray: this._layers,
+            layers: this._layers.slice(),
             dsl: this._renderer._currentDsl
         }
         const mutationToken = this._tryAcquireProjectLifecycle()
@@ -2486,23 +3370,23 @@ class LayersApp {
             const result = await this._renderer.tryCompile(newDsl)
 
             if (result.success) {
-                this._finalizePendingUndo()
-
-                // Commit the change
-                this._layers = newLayers
-                // Force rebuild to update layer-step mapping even if DSL is unchanged
-                // (DSL may be string-identical after reorder when layers have same effects)
-                await this._rebuild({ force: true })
-                this._updateLayerStack()
-                this._updateLayerZIndex()
-                this._markDirty()
-                this._pushUndoState()
+                const outcome = await this._commitModelMutation(() => {
+                    this._layers.splice(0, this._layers.length, ...newLayers)
+                }, {
+                    rebuildOptions: { force: true },
+                    updateLayerStack: true,
+                    updateLayerZIndex: true,
+                })
+                if (outcome.status !== 'committed') {
+                    toast.error(`Layer reorder failed: ${outcome.error.message}. Changes reverted.`)
+                }
 
                 this._reorderState = 'IDLE'
                 this._reorderSnapshot = null
                 this._reorderSource = null
 
-                console.debug('[Layers] FSM: PROCESSING → IDLE (success)')
+                console.debug(`[Layers] FSM: PROCESSING → IDLE (${outcome.status})`)
+                return outcome
             } else {
                 // Validation failed - rollback
                 await this._rollback(result.error || 'DSL validation failed')
@@ -2523,21 +3407,53 @@ class LayersApp {
         this._reorderState = 'ROLLING_BACK'
         console.debug('[Layers] FSM: PROCESSING → ROLLING_BACK', { error })
 
-        // Restore snapshot
+        const primary = error instanceof Error ? error : new Error(String(error))
+        const restorationErrors = []
         if (this._reorderSnapshot) {
-            this._layers = this._reorderSnapshot.layers
-            await this._rebuild()
-            this._updateLayerStack()
+            try {
+                this._reorderSnapshot.layersArray.splice(
+                    0, this._reorderSnapshot.layersArray.length,
+                    ...this._reorderSnapshot.layers)
+                this._layers = this._reorderSnapshot.layersArray
+            } catch (err) {
+                restorationErrors.push(err instanceof Error ? err : new Error(String(err)))
+            }
+            try {
+                const result = await this._rebuild({ force: true })
+                if (!result?.success) {
+                    restorationErrors.push(new Error(
+                        result?.error || 'Unknown renderer restoration failure'))
+                }
+            } catch (err) {
+                restorationErrors.push(err instanceof Error ? err : new Error(String(err)))
+            }
+            try {
+                this._updateLayerStack()
+            } catch (err) {
+                restorationErrors.push(err instanceof Error ? err : new Error(String(err)))
+            }
+        } else {
+            restorationErrors.push(new Error('Reorder snapshot unavailable'))
         }
-
-        // Show error to user
-        toast.error(`Layer reorder failed: ${error}. Changes reverted.`)
 
         this._reorderState = 'IDLE'
         this._reorderSnapshot = null
         this._reorderSource = null
 
+        let outcome
+        if (restorationErrors.length > 0) {
+            const combined = new Error(
+                `${primary.message}; failed to restore previous state: ${restorationErrors
+                    .map(failure => failure.message).join('; ')}`)
+            toast.error(`Layer reorder failed: ${combined.message}`)
+            outcome = { status: 'failed', error: combined }
+        } else {
+            toast.error(`Layer reorder failed: ${primary.message}. Changes reverted.`)
+            outcome = { status: 'failed', error: primary }
+        }
+
         console.debug('[Layers] FSM: ROLLING_BACK → IDLE')
+        return outcome
     }
 
     /**
@@ -2557,26 +3473,6 @@ class LayersApp {
         }
 
         this._updateLayerMenu()
-    }
-
-    /**
-     * Save visibility state of all layers
-     * @returns {Map<string, boolean>}
-     * @private
-     */
-    _saveVisibility() {
-        return new Map(this._layers.map(l => [l.id, l.visible]))
-    }
-
-    /**
-     * Restore previously saved visibility state
-     * @param {Map<string, boolean>} snapshot
-     * @private
-     */
-    _restoreVisibility(snapshot) {
-        for (const l of this._layers) {
-            if (snapshot.has(l.id)) l.visible = snapshot.get(l.id)
-        }
     }
 
     /**
@@ -2606,6 +3502,11 @@ class LayersApp {
         return result
     }
 
+    /** Render all pending uniform updates before reading the visible canvas. @private */
+    _renderCurrentFrame() {
+        this._renderer.render(this._renderer.getPausedNormalizedTime())
+    }
+
     /**
      * Rasterize a drawing layer's strokes to a canvas and register the texture.
      * @param {object} layer - Drawing layer with strokes array
@@ -2614,7 +3515,10 @@ class LayersApp {
     async _rasterizeDrawingLayer(layer) {
         const canvas = await this._createDrawingLayerCanvas(
             layer, this._canvas.width, this._canvas.height)
-        if (!canvas) return
+        if (!canvas) {
+            this._renderer.unloadMedia(layer.id)
+            return
+        }
         this._renderer.setMediaResource(
             layer.id, this._renderer.prepareCanvasMediaResource(canvas))
     }
@@ -2657,27 +3561,20 @@ class LayersApp {
      * Used by fill tool and other tools that generate raster content.
      * @param {HTMLCanvasElement} canvas - Source canvas with content
      * @param {string} [name] - Layer name
+     * @returns {Promise<{status: 'added', layerId: string}|{status: 'blocked-online'}|{status:'failed',error:Error}>}
      * @private
      */
     async _addMediaLayerFromCanvas(canvas, name) {
-        if (this._blockedMediaOnline('Adding this layer')) return
+        if (this._blockedMediaOnline('Adding this layer')) {
+            return { status: 'blocked-online' }
+        }
         const layer = createMediaLayer(null, 'image', name || 'Fill')
         layer.mediaFile = null
-        this._layers.push(layer)
-
-        this._renderer._mediaTextures.set(layer.id, {
-            type: 'image',
-            element: canvas,
-            width: canvas.width,
-            height: canvas.height
+        const resource = this._renderer.prepareCanvasMediaResource(canvas)
+        return this._commitAddedLayer(layer, {
+            resource,
+            showSuccess: false,
         })
-
-        this._updateLayerStack()
-        await this._rebuild({ force: true })
-
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = layer.id
-        }
     }
 
     /**
@@ -3158,8 +4055,8 @@ class LayersApp {
 
         // File menu - New from Clipboard
         document.getElementById('newFromClipboardMenuItem')?.addEventListener('click', () =>
-            this._startProjectReplacement(({ leaveOnline }) =>
-                this._handleNewFromClipboard({ leaveOnline })))
+            this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
+                this._handleNewFromClipboard({ leaveOnline, replacementConsent })))
 
         // File menu - Save Project (uses Save As if no project ID)
         document.getElementById('saveProjectMenuItem')?.addEventListener('click', () => {
@@ -3292,19 +4189,24 @@ class LayersApp {
 
         // Select menu - Modify operations
         document.getElementById('borderSelectionMenuItem')?.addEventListener('click', () => {
-            this._modifySelection({ title: 'Border Selection', label: 'Width', defaultValue: 1 }, borderMask)
+            this._runPointerMutation(() => this._modifySelection(
+                { title: 'Border Selection', label: 'Width', defaultValue: 1 }, borderMask))
         })
         document.getElementById('smoothSelectionMenuItem')?.addEventListener('click', () => {
-            this._modifySelection({ title: 'Smooth Selection', label: 'Radius', defaultValue: 2 }, smoothMask)
+            this._runPointerMutation(() => this._modifySelection(
+                { title: 'Smooth Selection', label: 'Radius', defaultValue: 2 }, smoothMask))
         })
         document.getElementById('expandSelectionMenuItem')?.addEventListener('click', () => {
-            this._modifySelection({ title: 'Expand Selection', label: 'Radius', defaultValue: 1 }, expandMask)
+            this._runPointerMutation(() => this._modifySelection(
+                { title: 'Expand Selection', label: 'Radius', defaultValue: 1 }, expandMask))
         })
         document.getElementById('contractSelectionMenuItem')?.addEventListener('click', () => {
-            this._modifySelection({ title: 'Contract Selection', label: 'Radius', defaultValue: 1 }, contractMask)
+            this._runPointerMutation(() => this._modifySelection(
+                { title: 'Contract Selection', label: 'Radius', defaultValue: 1 }, contractMask))
         })
         document.getElementById('featherSelectionMenuItem')?.addEventListener('click', () => {
-            this._modifySelection({ title: 'Feather Selection', label: 'Radius', defaultValue: 2 }, featherMask)
+            this._runPointerMutation(() => this._modifySelection(
+                { title: 'Feather Selection', label: 'Radius', defaultValue: 2 }, featherMask))
         })
 
         // View menu - Zoom
@@ -3533,7 +4435,20 @@ class LayersApp {
         if (!this._layerStack) return
 
         this._layerStack.addEventListener('layer-change', (e) => {
-            this._runPointerMutation(() => this._handleLayerChange(e.detail))
+            const mutation = this._runPointerMutation(
+                () => this._handleLayerChange(e.detail))
+            if (!mutation) {
+                this._updateLayerStack()
+                return
+            }
+            void mutation.then(
+                outcome => {
+                    if (outcome === undefined) this._updateLayerStack()
+                },
+                error => {
+                    console.error('[Layers] Layer change failed:', error)
+                    this._updateLayerStack()
+                })
         })
 
         this._layerStack.addEventListener('layer-delete', (e) => {
@@ -3677,12 +4592,11 @@ class LayersApp {
      * @private
      */
     async _flattenImage() {
-        if (this._blockedMediaOnline('Flattening')) return
-        if (this._layers.length === 0) return
-
-        this._finalizePendingUndo()
+        if (this._blockedMediaOnline('Flattening')) return { status: 'failed' }
+        if (this._layers.length === 0) return { status: 'committed' }
 
         // Capture current canvas (all visible layers composited)
+        this._renderCurrentFrame()
         const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
         const ctx = offscreen.getContext('2d')
         ctx.drawImage(this._canvas, 0, 0)
@@ -3692,28 +4606,27 @@ class LayersApp {
         const file = new File([blob], 'flattened-image.png', { type: 'image/png' })
 
         const newLayer = createMediaLayer(file, 'image', this._currentProjectName || 'flattened image')
-
-        // Unload all existing media
-        for (const layer of this._layers) {
-            if (layer.sourceType === 'media') {
-                this._renderer.unloadMedia(layer.id)
-            }
+        let resource
+        try {
+            resource = await this._renderer.prepareMediaResource(file, 'image')
+            const candidate = await this._prepareLayerSetCandidate(
+                [newLayer], this._canvas.width, this._canvas.height, {
+                    mediaOverrides: new Map([[newLayer.id, resource]]),
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                selectedLayerIds: [newLayer.id],
+                selectionAnchor: newLayer.id,
+            })
+            if (outcome.status !== 'committed') return outcome
+        } catch (err) {
+            return { status: 'failed', error: err }
         }
-
-        // Replace entire layer stack
-        this._layers = [newLayer]
-        await this._renderer.loadMedia(newLayer.id, file, 'image')
-
-        // Update UI
-        this._updateLayerStack()
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = newLayer.id
+        try {
+            toast.success('Image flattened')
+        } catch (err) {
+            console.error('[Layers] Failed to show flatten confirmation:', err)
         }
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-
-        toast.success('Image flattened')
+        return { status: 'committed' }
     }
 
     /**
@@ -3722,25 +4635,51 @@ class LayersApp {
      * @private
      */
     async _rasterizeLayer(layerId) {
-        if (this._blockedMediaOnline('Rasterizing')) return
+        if (this._blockedMediaOnline('Rasterizing')) return { status: 'failed' }
         const layer = this._layers.find(l => l.id === layerId)
-        if (!layer || layer.sourceType === 'media') return
-
-        this._finalizePendingUndo()
-
-        const newId = await this._rasterizeLayerInPlace(layerId)
-        if (!newId) return
-
-        // Rename with "(rasterized)" suffix
-        const newLayer = this._layers.find(l => l.id === newId)
-        if (newLayer) newLayer.name = `${layer.name} (rasterized)`
-
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-
-        toast.success('Layer rasterized')
+        if (!layer || layer.sourceType === 'media') return { status: 'committed' }
+        const composite = await this._renderLayerComposite([layerId], {
+            selectedLayerOverrides: {
+                visible: true,
+                opacity: 100,
+                blendMode: 'mix',
+            },
+        })
+        if (!composite) return { status: 'failed' }
+        const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
+        offscreen.getContext('2d').drawImage(composite, 0, 0)
+        const blob = await offscreen.convertToBlob({ type: 'image/png' })
+        const file = new File([blob], 'rasterized.png', { type: 'image/png' })
+        const newLayer = createMediaLayer(file, 'image', `${layer.name} (rasterized)`)
+        newLayer.id = layer.id
+        newLayer.visible = layer.visible
+        newLayer.opacity = layer.opacity
+        newLayer.blendMode = layer.blendMode
+        const layers = [...this._layers]
+        layers[layers.indexOf(layer)] = newLayer
+        let resource
+        try {
+            resource = await this._renderer.prepareMediaResource(file, 'image')
+            const candidate = await this._prepareLayerSetCandidate(
+                layers, this._canvas.width, this._canvas.height, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                    reuseMaskIds: new Set(this._renderer._maskTextures.keys()),
+                    mediaOverrides: new Map([[newLayer.id, resource]]),
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                selectedLayerIds: [newLayer.id],
+                selectionAnchor: newLayer.id,
+            })
+            if (outcome.status !== 'committed') return outcome
+        } catch (err) {
+            return { status: 'failed', error: err }
+        }
+        try {
+            toast.success('Layer rasterized')
+        } catch (err) {
+            console.error('[Layers] Failed to show rasterize confirmation:', err)
+        }
+        return { status: 'committed' }
     }
 
     /**
@@ -3749,10 +4688,8 @@ class LayersApp {
      * @private
      */
     async _flattenLayers(layerIds) {
-        if (this._blockedMediaOnline('Flattening')) return
-        if (layerIds.length < 2) return
-
-        this._finalizePendingUndo()
+        if (this._blockedMediaOnline('Flattening')) return { status: 'failed' }
+        if (layerIds.length < 2) return { status: 'committed' }
 
         // Find the layers and their indices
         const selectedLayers = layerIds
@@ -3760,64 +4697,55 @@ class LayersApp {
             .filter(item => item.layer && item.index !== -1)
             .sort((a, b) => a.index - b.index)
 
-        if (selectedLayers.length < 2) return
+        if (selectedLayers.length < 2) return { status: 'committed' }
 
         // Find topmost selected layer index (highest index = top of stack)
         const topmostIndex = Math.max(...selectedLayers.map(item => item.index))
 
-        const savedVisibility = this._saveVisibility()
-
-        // Hide all layers except selected visible ones
-        for (const l of this._layers) {
-            if (!layerIds.includes(l.id)) l.visible = false
-        }
-
-        // Rebuild to render only selected visible layers
-        await this._rebuild()
-
-        // Capture the rendered result
+        const composite = await this._renderLayerComposite(layerIds)
+        if (!composite) return { status: 'failed' }
         const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
         const ctx = offscreen.getContext('2d')
-        ctx.drawImage(this._canvas, 0, 0)
-
-        this._restoreVisibility(savedVisibility)
+        ctx.drawImage(composite, 0, 0)
 
         const blob = await offscreen.convertToBlob({ type: 'image/png' })
         const file = new File([blob], 'flattened.png', { type: 'image/png' })
 
         const newLayer = createMediaLayer(file, 'image', 'flattened')
 
-        // Load media
-        await this._renderer.loadMedia(newLayer.id, file, 'image')
-
-        // Unload media for selected layers that are media type
-        for (const item of selectedLayers) {
-            if (item.layer.sourceType === 'media') {
-                this._renderer.unloadMedia(item.layer.id)
-            }
-        }
-
-        // Remove selected layers from stack (in reverse order to preserve indices)
+        const layers = [...this._layers]
         const indicesToRemove = selectedLayers.map(item => item.index).sort((a, b) => b - a)
         for (const idx of indicesToRemove) {
-            this._layers.splice(idx, 1)
+            layers.splice(idx, 1)
         }
 
         // Insert new layer at topmost position (adjusted for removed layers above it)
         const removedAboveTopmost = indicesToRemove.filter(idx => idx < topmostIndex).length
         const insertIndex = topmostIndex - removedAboveTopmost
-        this._layers.splice(insertIndex, 0, newLayer)
-
-        // Update UI
-        this._updateLayerStack()
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = newLayer.id
+        layers.splice(insertIndex, 0, newLayer)
+        let resource
+        try {
+            resource = await this._renderer.prepareMediaResource(file, 'image')
+            const candidate = await this._prepareLayerSetCandidate(
+                layers, this._canvas.width, this._canvas.height, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                    reuseMaskIds: new Set(this._renderer._maskTextures.keys()),
+                    mediaOverrides: new Map([[newLayer.id, resource]]),
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                selectedLayerIds: [newLayer.id],
+                selectionAnchor: newLayer.id,
+            })
+            if (outcome.status !== 'committed') return outcome
+        } catch (err) {
+            return { status: 'failed', error: err }
         }
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-
-        toast.success('Layers flattened')
+        try {
+            toast.success('Layers flattened')
+        } catch (err) {
+            console.error('[Layers] Failed to show flatten confirmation:', err)
+        }
+        return { status: 'committed' }
     }
 
     /**
@@ -3972,14 +4900,12 @@ class LayersApp {
             if (e.key === 'v' || e.key === 'V') {
                 const selected = this._layerStack?.getSelectedLayer()
                 if (selected) {
-                    this._runPointerMutation(async () => {
-                        this._finalizePendingUndo()
-                        selected.visible = !selected.visible
-                        this._updateLayerStack()
-                        await this._rebuild()
-                        this._markDirty()
-                        this._pushUndoState()
-                    })
+                    this._runPointerMutation(() => this._handleLayerChange({
+                        layerId: selected.id,
+                        property: 'visibility',
+                        value: !selected.visible,
+                        updateLayerStack: true,
+                    }))
                 }
             }
 
@@ -4140,14 +5066,13 @@ class LayersApp {
      * @returns {Promise<boolean>} True if successful
      * @private
      */
-    async _duplicateActiveLayer() {
+    async _duplicateActiveLayer(layer = null, shouldCancel = null) {
         // Gated unconditionally (not just for an already-media active layer):
         // this always rasterizes the active layer's composite into a NEW
         // media layer below, regardless of the source layer's own
         // sourceType — an effect or drawing layer duplicate is media too.
         if (this._blockedMediaOnline('Duplicating')) return false
-        this._finalizePendingUndo()
-        const layer = this._getActiveLayer()
+        layer ||= this._getActiveLayer()
         if (!layer) return false
 
         const canvasWidth = this._canvas.width
@@ -4166,19 +5091,28 @@ class LayersApp {
         const file = new File([blob], 'duplicated.png', { type: 'image/png' })
 
         const newLayer = createMediaLayer(file, 'image', `${layer.name} copy`)
-
-        // Insert after source layer
         const layerIndex = this._layers.findIndex(l => l.id === layer.id)
-        this._layers.splice(layerIndex + 1, 0, newLayer)
-
-        await this._renderer.loadMedia(newLayer.id, file, 'image')
-        this._layerStack.selectedLayerId = newLayer.id
-
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-        return true
+        const layers = [...this._layers]
+        layers.splice(layerIndex + 1, 0, newLayer)
+        let resource
+        try {
+            resource = await this._renderer.prepareMediaResource(file, 'image')
+            const candidate = await this._prepareLayerSetCandidate(
+                layers, canvasWidth, canvasHeight, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                    reuseMaskIds: new Set(this._renderer._maskTextures.keys()),
+                    mediaOverrides: new Map([[newLayer.id, resource]]),
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                selectedLayerIds: [newLayer.id],
+                selectionAnchor: newLayer.id,
+                shouldCancel,
+                value: newLayer.id,
+            })
+            return outcome.status === 'committed'
+        } catch (err) {
+            return false
+        }
     }
 
     /**
@@ -4206,18 +5140,84 @@ class LayersApp {
         if (!layer) return
 
         if (layer.effectId === 'filter/text') {
+            const previousParams = layer.effectParams
             const posX = Math.max(0, Math.min(1, x / this._canvas.width))
             const posY = Math.max(0, Math.min(1, y / this._canvas.height))
             layer.effectParams = { ...layer.effectParams, posX, posY }
-            this._renderer.updateTextParams(layer.id, layer.effectParams)
+            try {
+                this._renderer.updateTextParams(layer.id, layer.effectParams)
+            } catch (err) {
+                layer.effectParams = previousParams
+                try {
+                    this._renderer.updateTextParams(layer.id, previousParams)
+                } catch (restoreError) {
+                    throw new Error(
+                        `${err.message}; failed to restore text position: ${restoreError.message}`)
+                }
+                throw err
+            }
         } else {
+            const hadOffsetX = Object.hasOwn(layer, 'offsetX')
+            const hadOffsetY = Object.hasOwn(layer, 'offsetY')
+            const previousOffsetX = layer.offsetX
+            const previousOffsetY = layer.offsetY
             layer.offsetX = Math.round(x)
             layer.offsetY = Math.round(y)
-            this._renderer.updateLayerOffset(layer.id, layer.offsetX, layer.offsetY)
+            try {
+                this._renderer.updateLayerOffset(layer.id, layer.offsetX, layer.offsetY)
+            } catch (err) {
+                if (hadOffsetX) layer.offsetX = previousOffsetX
+                else delete layer.offsetX
+                if (hadOffsetY) layer.offsetY = previousOffsetY
+                else delete layer.offsetY
+                try {
+                    this._renderer.updateLayerOffset(
+                        layer.id, previousOffsetX || 0, previousOffsetY || 0)
+                } catch (restoreError) {
+                    throw new Error(
+                        `${err.message}; failed to restore layer position: ${restoreError.message}`)
+                }
+                throw err
+            }
         }
 
         this._markDirty()
         this._pushUndoStateDebounced()
+    }
+
+    /** @private */
+    _restoreActiveLayerPosition(x, y, mutationState) {
+        const layer = this._getActiveLayer()
+        if (!layer) return
+        const exactPosition = mutationState?.activeLayerPosition?.layerId === layer.id
+            ? mutationState.activeLayerPosition
+            : null
+        try {
+            if (layer.effectId === 'filter/text') {
+                layer.effectParams = exactPosition
+                    ? exactPosition.effectParams
+                    : {
+                        ...layer.effectParams,
+                        posX: Math.max(0, Math.min(1, x / this._canvas.width)),
+                        posY: Math.max(0, Math.min(1, y / this._canvas.height)),
+                    }
+                this._renderer.updateTextParams(layer.id, layer.effectParams)
+            } else {
+                if (exactPosition) {
+                    if (exactPosition.hadOffsetX) layer.offsetX = exactPosition.offsetX
+                    else delete layer.offsetX
+                    if (exactPosition.hadOffsetY) layer.offsetY = exactPosition.offsetY
+                    else delete layer.offsetY
+                } else {
+                    layer.offsetX = Math.round(x)
+                    layer.offsetY = Math.round(y)
+                }
+                this._renderer.updateLayerOffset(
+                    layer.id, layer.offsetX || 0, layer.offsetY || 0)
+            }
+        } finally {
+            this._restorePointerGestureMutationState(mutationState)
+        }
     }
 
     /**
@@ -4249,6 +5249,39 @@ class LayersApp {
         return { x, y, width: w, height: h, rotation }
     }
 
+    /** @private */
+    _validateLayerTransformAllocation(layer, values = {}) {
+        if (!layer || (layer.sourceType !== 'media' && layer.sourceType !== 'drawing')) {
+            return { valid: false, error: 'Layer has no transformable raster source' }
+        }
+        const media = this._renderer?.getMediaInfo(layer.id)
+        const sourceWidth = media?.width
+            ?? (layer.sourceType === 'drawing' ? this._canvas.width : 0)
+        const sourceHeight = media?.height
+            ?? (layer.sourceType === 'drawing' ? this._canvas.height : 0)
+        const scaleX = values.scaleX ?? layer.scaleX ?? 1
+        const scaleY = values.scaleY ?? layer.scaleY ?? 1
+        if (!Number.isFinite(scaleX) || scaleX === 0
+            || !Number.isFinite(scaleY) || scaleY === 0
+            || !Number.isSafeInteger(sourceWidth) || sourceWidth < 1
+            || !Number.isSafeInteger(sourceHeight) || sourceHeight < 1) {
+            return { valid: false, error: 'Transform dimensions are invalid' }
+        }
+        const width = Math.ceil(sourceWidth * Math.abs(scaleX))
+        const height = Math.ceil(sourceHeight * Math.abs(scaleY))
+        const maxPixels = MAX_CANVAS_DIMENSION * MAX_CANVAS_DIMENSION
+        if (!Number.isSafeInteger(width) || width < 1 || width > MAX_CANVAS_DIMENSION
+            || !Number.isSafeInteger(height) || height < 1
+            || height > MAX_CANVAS_DIMENSION
+            || width * height > maxPixels) {
+            return {
+                valid: false,
+                error: `Transformed raster must fit within ${MAX_CANVAS_DIMENSION} x ${MAX_CANVAS_DIMENSION}`,
+            }
+        }
+        return { valid: true, width, height }
+    }
+
     /**
      * Apply transform values to the active layer during drag (debounced undo)
      * @param {object} values - Transform values to apply
@@ -4256,15 +5289,39 @@ class LayersApp {
      */
     _applyLayerTransform(values) {
         const layer = this._getActiveLayer()
-        if (!layer) return
+        if (!layer || (layer.sourceType !== 'media' && layer.sourceType !== 'drawing')) return
+        const allocation = this._validateLayerTransformAllocation(layer, values)
+        if (!allocation.valid) {
+            toast.warning(allocation.error)
+            return
+        }
 
+        const keys = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation']
+        const previous = Object.fromEntries(keys.map(key => [key, {
+            had: Object.hasOwn(layer, key),
+            value: layer[key],
+        }]))
         if (values.offsetX !== undefined) layer.offsetX = Math.round(values.offsetX)
         if (values.offsetY !== undefined) layer.offsetY = Math.round(values.offsetY)
         if (values.scaleX !== undefined) layer.scaleX = values.scaleX
         if (values.scaleY !== undefined) layer.scaleY = values.scaleY
         if (values.rotation !== undefined) layer.rotation = values.rotation
 
-        this._updateTransformRender(layer)
+        try {
+            this._updateTransformRender(layer)
+        } catch (err) {
+            for (const key of keys) {
+                if (previous[key].had) layer[key] = previous[key].value
+                else delete layer[key]
+            }
+            try {
+                this._updateTransformRender(layer, { strict: true })
+            } catch (restoreError) {
+                throw new Error(
+                    `${err.message}; failed to restore layer transform: ${restoreError.message}`)
+            }
+            throw err
+        }
         this._markDirty()
         this._pushUndoStateDebounced()
     }
@@ -4282,17 +5339,27 @@ class LayersApp {
      * Cancel transform and switch to selection tool
      * @private
      */
-    _cancelTransform() {
-        this._setToolMode('selection')
+    _cancelTransform(startTransform = null, mutationState = null) {
+        const layer = this._getActiveLayer()
+        try {
+            if (layer && startTransform) {
+                Object.assign(layer, startTransform)
+                this._updateTransformRender(layer, { strict: true })
+            }
+        } finally {
+            this._restorePointerGestureMutationState(mutationState)
+            this._setToolMode('selection')
+        }
     }
 
     /**
      * Update renderer for transform changes via CPU-side offscreen canvas
      * @param {object} layer
+     * @param {{strict?: boolean}} options
      * @private
      */
-    _updateTransformRender(layer) {
-        if (layer.sourceType !== 'media') return
+    _updateTransformRender(layer, { strict = false } = {}) {
+        if (layer.sourceType !== 'media' && layer.sourceType !== 'drawing') return
         const transform = {
             scaleX: layer.scaleX ?? 1,
             scaleY: layer.scaleY ?? 1,
@@ -4300,7 +5367,8 @@ class LayersApp {
             flipH: layer.flipH || false,
             flipV: layer.flipV || false
         }
-        this._renderer?.updateLayerTransform(layer.id, transform, layer.offsetX || 0, layer.offsetY || 0)
+        this._renderer?.updateLayerTransform(
+            layer.id, transform, layer.offsetX || 0, layer.offsetY || 0, { strict })
     }
 
     /**
@@ -4308,84 +5376,25 @@ class LayersApp {
      * @param {'horizontal'|'vertical'} direction
      * @private
      */
-    _flipActiveLayer(direction) {
-        const layer = this._getActiveLayer()
+    async _flipActiveLayer(direction, layer = this._getActiveLayer()) {
         if (!layer || layer.sourceType !== 'media') {
             toast.warning('Select a media layer to flip')
             return
         }
 
-        this._finalizePendingUndo()
-
-        if (direction === 'horizontal') {
-            layer.flipH = !layer.flipH
-        } else {
-            layer.flipV = !layer.flipV
-        }
-
-        this._updateTransformRender(layer)
-        this._markDirty()
-        this._pushUndoState()
-    }
-
-    /**
-     * Rasterize a layer in place without UI updates or toast
-     * Used internally before extraction
-     * @param {string} layerId
-     * @returns {Promise<string|null>} The new layer id, or null if already media
-     * @private
-     */
-    async _rasterizeLayerInPlace(layerId) {
-        // _rasterizeLayer() already gates before calling this today, but this
-        // is gated too since it mutates _layers directly and its own doc
-        // comment invites other internal callers ("used internally before
-        // extraction") that might not go through _rasterizeLayer() first.
-        if (this._blockedMediaOnline('Rasterizing')) return null
-        const layerIndex = this._layers.findIndex(l => l.id === layerId)
-        if (layerIndex === -1) return null
-
-        const layer = this._layers[layerIndex]
-        if (layer.sourceType === 'media') return layer.id
-
-        const savedVisibility = this._saveVisibility()
-        for (const l of this._layers) {
-            if (l.id !== layerId) l.visible = false
-        }
-        await this._rebuild()
-        // Wait for the renderer to paint the new DSL before snapshotting.
-        // Without this the canvas still shows the previous composite.
-        await new Promise(resolve => requestAnimationFrame(resolve))
-
-        const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
-        const ctx = offscreen.getContext('2d')
-        ctx.drawImage(this._canvas, 0, 0)
-
-        this._restoreVisibility(savedVisibility)
-
-        // Convert to media layer
-        const blob = await offscreen.convertToBlob({ type: 'image/png' })
-        const file = new File([blob], 'rasterized.png', { type: 'image/png' })
-
-        const newLayer = createMediaLayer(file, 'image', layer.name)
-        newLayer.visible = layer.visible
-        newLayer.opacity = layer.opacity
-        newLayer.blendMode = layer.blendMode
-        newLayer.offsetX = 0
-        newLayer.offsetY = 0
-        newLayer.scaleX = 1
-        newLayer.scaleY = 1
-        newLayer.rotation = 0
-        newLayer.flipH = false
-        newLayer.flipV = false
-
-        await this._renderer.loadMedia(newLayer.id, file, 'image')
-        this._layers[layerIndex] = newLayer
-
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = newLayer.id
-        }
-
-        return newLayer.id
+        return this._commitModelMutation(() => {
+            if (direction === 'horizontal') {
+                layer.flipH = !layer.flipH
+            } else {
+                layer.flipV = !layer.flipV
+            }
+        }, {
+            render: () => {
+                this._updateTransformRender(layer, { strict: true })
+                return { success: true }
+            },
+            restore: () => this._updateTransformRender(layer),
+        })
     }
 
     /**
@@ -4393,7 +5402,7 @@ class LayersApp {
      * @param {boolean} destructive - If true, modify originals (punch holes/flatten). If false, just clone.
      * @private
      */
-    async _extractSelectionToLayer(destructive = true) {
+    async _extractSelectionToLayer(destructive = true, shouldCancel = null) {
         if (!this._selectionManager?.hasSelection()) {
             console.warn('[Extract] No selection')
             return false
@@ -4412,9 +5421,11 @@ class LayersApp {
             .filter(Boolean)
 
         if (selectedLayers.length === 1) {
-            return this._extractFromSingleLayer(selectedLayers[0], destructive)
+            return this._extractFromSingleLayer(
+                selectedLayers[0], destructive, shouldCancel)
         }
-        return this._extractFromMultipleLayers(selectedIds, destructive)
+        return this._extractFromMultipleLayers(
+            selectedIds, destructive, shouldCancel)
     }
 
     /**
@@ -4456,7 +5467,7 @@ class LayersApp {
      * @param {boolean} punchHole - Whether to punch hole in original
      * @private
      */
-    async _extractFromSingleLayer(layer, punchHole) {
+    async _extractFromSingleLayer(layer, punchHole, shouldCancel = null) {
         if (this._blockedMediaOnline('Extracting the selection')) return false
         const selectionPath = this._selectionManager.selectionPath
         const canvasWidth = this._canvas.width
@@ -4488,6 +5499,11 @@ class LayersApp {
             return false
         }
 
+        const layers = [...this._layers]
+        const layerIndex = layers.findIndex(candidate => candidate.id === layer.id)
+        const mediaOverrides = new Map()
+        const preparedResources = []
+
         // Punch hole in source if requested
         if (punchHole) {
             const punchedCanvas = new OffscreenCanvas(canvasWidth, canvasHeight)
@@ -4500,39 +5516,62 @@ class LayersApp {
             const punchedBlob = await punchedCanvas.convertToBlob({ type: 'image/png' })
             const punchedFile = new File([punchedBlob], layer.mediaFile?.name || 'layer.png', { type: 'image/png' })
 
-            // Replace layer content with punched image (converts effect layers to media)
-            this._renderer.unloadMedia(layer.id)
-            layer.sourceType = 'media'
-            layer.mediaFile = punchedFile
-            layer.mediaType = 'image'
-            layer.effectId = null
-            layer.effectParams = {}
-            layer.offsetX = 0
-            layer.offsetY = 0
-            await this._renderer.loadMedia(layer.id, punchedFile, 'image')
+            const punchedLayer = {
+                ...layer,
+                sourceType: 'media',
+                mediaFile: punchedFile,
+                mediaType: 'image',
+                effectId: null,
+                effectParams: {},
+                offsetX: 0,
+                offsetY: 0,
+            }
+            layers[layerIndex] = punchedLayer
+            try {
+                const resource = await this._renderer.prepareMediaResource(
+                    punchedFile, 'image')
+                preparedResources.push(resource)
+                mediaOverrides.set(punchedLayer.id, resource)
+            } catch (err) {
+                return false
+            }
         }
 
         // Create new layer with extracted pixels
-        const extractedBlob = await extractedCanvas.convertToBlob({ type: 'image/png' })
-        const extractedFile = new File([extractedBlob], 'moved-selection.png', { type: 'image/png' })
-
-        const newLayer = createMediaLayer(extractedFile, 'image', 'moved selection')
-
-        // Insert after source layer
-        const layerIndex = this._layers.findIndex(l => l.id === layer.id)
-        this._layers.splice(layerIndex + 1, 0, newLayer)
-
-        await this._renderer.loadMedia(newLayer.id, extractedFile, 'image')
-        this._layerStack.selectedLayerId = newLayer.id
-
-        if (punchHole) {
-            this._selectionManager.clearSelection()
+        let newLayer
+        try {
+            const extractedBlob = await extractedCanvas.convertToBlob({ type: 'image/png' })
+            const extractedFile = new File(
+                [extractedBlob], 'moved-selection.png', { type: 'image/png' })
+            newLayer = createMediaLayer(extractedFile, 'image', 'moved selection')
+            layers.splice(layerIndex + 1, 0, newLayer)
+            const resource = await this._renderer.prepareMediaResource(
+                extractedFile, 'image')
+            preparedResources.push(resource)
+            mediaOverrides.set(newLayer.id, resource)
+        } catch (err) {
+            for (const resource of preparedResources) {
+                this._renderer.disposeMediaResource(resource)
+            }
+            return false
         }
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-        return true
+        try {
+            const candidate = await this._prepareLayerSetCandidate(
+                layers, canvasWidth, canvasHeight, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                    reuseMaskIds: new Set(this._renderer._maskTextures.keys()),
+                    mediaOverrides,
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                selectedLayerIds: [newLayer.id],
+                selectionAnchor: newLayer.id,
+                selectionPath: punchHole ? null : selectionPath,
+                shouldCancel,
+            })
+            return outcome.status === 'committed'
+        } catch (err) {
+            return false
+        }
     }
 
     /**
@@ -4541,7 +5580,7 @@ class LayersApp {
      * @param {boolean} punchHole - Whether to flatten and punch (true) or just clone (false)
      * @private
      */
-    async _extractFromMultipleLayers(layerIds, punchHole) {
+    async _extractFromMultipleLayers(layerIds, punchHole, shouldCancel = null) {
         if (this._blockedMediaOnline('Extracting the selection')) return false
         const selectionPath = this._selectionManager.selectionPath
         const canvasWidth = this._canvas.width
@@ -4572,9 +5611,11 @@ class LayersApp {
             return false
         }
 
-        // Find topmost layer index for insertion
-        const topmostIndex = Math.max(...layerIds.map(id => this._layers.findIndex(l => l.id === id)))
-
+        const topmostIndex = Math.max(...layerIds.map(
+            id => this._layers.findIndex(layer => layer.id === id)))
+        const layers = [...this._layers]
+        const mediaOverrides = new Map()
+        const preparedResources = []
         if (punchHole) {
             // Flatten layers, then punch hole
             // First flatten (similar to _flattenLayers but we keep the result for punching)
@@ -4592,53 +5633,71 @@ class LayersApp {
             const flattenedFile = new File([flattenedBlob], 'flattened.png', { type: 'image/png' })
 
             const flattenedLayer = createMediaLayer(flattenedFile, 'image', 'flattened')
-
-            // Remove old layers
-            const selectedLayers = layerIds.map(id => this._layers.find(l => l.id === id)).filter(Boolean)
-            for (const layer of selectedLayers) {
-                if (layer.sourceType === 'media') {
-                    this._renderer.unloadMedia(layer.id)
-                }
-            }
             const indicesToRemove = layerIds
-                .map(id => this._layers.findIndex(l => l.id === id))
+                .map(id => layers.findIndex(layer => layer.id === id))
                 .filter(i => i !== -1)
                 .sort((a, b) => b - a)
             for (const idx of indicesToRemove) {
-                this._layers.splice(idx, 1)
+                layers.splice(idx, 1)
             }
-
-            // Insert flattened layer
             const removedAboveTopmost = indicesToRemove.filter(idx => idx < topmostIndex).length
             const insertIndex = topmostIndex - removedAboveTopmost
-            this._layers.splice(insertIndex, 0, flattenedLayer)
-            await this._renderer.loadMedia(flattenedLayer.id, flattenedFile, 'image')
+            layers.splice(insertIndex, 0, flattenedLayer)
+            try {
+                const resource = await this._renderer.prepareMediaResource(
+                    flattenedFile, 'image')
+                preparedResources.push(resource)
+                mediaOverrides.set(flattenedLayer.id, resource)
+            } catch (err) {
+                for (const resource of preparedResources) {
+                    this._renderer.disposeMediaResource(resource)
+                }
+                return false
+            }
         }
 
         // Create new layer with extracted pixels
-        const extractedBlob = await extractedCanvas.convertToBlob({ type: 'image/png' })
-        const extractedFile = new File([extractedBlob], 'moved-selection.png', { type: 'image/png' })
-
-        const newLayer = createMediaLayer(extractedFile, 'image', 'moved selection')
-
-        // Insert at top
-        this._layers.push(newLayer)
-        await this._renderer.loadMedia(newLayer.id, extractedFile, 'image')
-        this._layerStack.selectedLayerId = newLayer.id
-
-        if (punchHole) {
-            this._selectionManager.clearSelection()
+        let newLayer
+        try {
+            const extractedBlob = await extractedCanvas.convertToBlob({ type: 'image/png' })
+            const extractedFile = new File(
+                [extractedBlob], 'moved-selection.png', { type: 'image/png' })
+            newLayer = createMediaLayer(extractedFile, 'image', 'moved selection')
+            layers.push(newLayer)
+            const resource = await this._renderer.prepareMediaResource(
+                extractedFile, 'image')
+            preparedResources.push(resource)
+            mediaOverrides.set(newLayer.id, resource)
+        } catch (err) {
+            for (const resource of preparedResources) {
+                this._renderer.disposeMediaResource(resource)
+            }
+            return false
         }
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-        return true
+        try {
+            const candidate = await this._prepareLayerSetCandidate(
+                layers, canvasWidth, canvasHeight, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                    reuseMaskIds: new Set(this._renderer._maskTextures.keys()),
+                    mediaOverrides,
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                selectedLayerIds: [newLayer.id],
+                selectionAnchor: newLayer.id,
+                selectionPath: punchHole ? null : selectionPath,
+                shouldCancel,
+            })
+            return outcome.status === 'committed'
+        } catch (err) {
+            return false
+        }
     }
 
     /**
      * Load an Image element from a Blob
      * @param {Blob} blob
+     * @param {object} [options]
+     * @param {boolean} [options.preserveSelectedVisibility=false]
      * @returns {Promise<HTMLImageElement|null>}
      * @private
      */
@@ -4664,25 +5723,85 @@ class LayersApp {
      * @returns {Promise<HTMLImageElement|null>}
      * @private
      */
-    async _renderLayerComposite(layerIds) {
-        const savedVisibility = this._saveVisibility()
-
-        for (const l of this._layers) {
-            l.visible = layerIds.includes(l.id)
+    async _renderLayerComposite(layerIds, {
+        preserveSelectedVisibility = false,
+        selectedLayerOverrides = null,
+    } = {}) {
+        const candidate = {
+            layers: this._layers.map(layer => {
+                const selected = layerIds.includes(layer.id)
+                const candidateLayer = {
+                    ...layer,
+                    ...(selected && selectedLayerOverrides
+                        ? selectedLayerOverrides
+                        : {}),
+                }
+                candidateLayer.visible = selected
+                    && (!preserveSelectedVisibility || candidateLayer.visible)
+                return candidateLayer
+            }),
+            mediaTextures: new Map(this._renderer._mediaTextures),
+            maskTextures: new Map(this._renderer._maskTextures),
+        }
+        let stage = null
+        let drewCandidate = false
+        const restoreNormalizedTime = this._renderer.getPausedNormalizedTime()
+        const redrawRestoredComposition = () => {
+            if (!drewCandidate) return true
+            try {
+                this._renderer.render(restoreNormalizedTime)
+                return true
+            } catch (err) {
+                console.error('[Layers] Failed to redraw restored composite:', err)
+                return false
+            }
+        }
+        const rollback = async () => {
+            if (!stage) return true
+            let restored = false
+            try {
+                const result = await stage.rollback()
+                restored = Boolean(result?.success)
+            } catch (err) {
+                console.error('[Layers] Failed to restore composite renderer:', err)
+            } finally {
+                stage = null
+            }
+            if (restored) return redrawRestoredComposition()
+            try {
+                const retry = await this._rebuild({ force: true })
+                if (!retry?.success) {
+                    console.error('[Layers] Composite renderer restoration retry failed:',
+                        retry?.error || 'Unknown renderer restoration failure')
+                    this._renderer.stop()
+                } else {
+                    redrawRestoredComposition()
+                }
+            } catch (err) {
+                console.error('[Layers] Failed to retry composite restoration:', err)
+                this._renderer.stop()
+            }
+            return false
         }
 
-        await this._rebuild()
-        this._renderer.render(0)
-
-        const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
-        const ctx = offscreen.getContext('2d')
-        ctx.drawImage(this._canvas, 0, 0)
-
-        this._restoreVisibility(savedVisibility)
-        await this._rebuild()
-
-        const blob = await offscreen.convertToBlob({ type: 'image/png' })
-        return this._loadImageFromBlob(blob)
+        try {
+            stage = await this._renderer.stageLayerSet(candidate)
+            if (!stage.success) {
+                await rollback()
+                return null
+            }
+            drewCandidate = true
+            this._renderer.render(0)
+            const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
+            offscreen.getContext('2d').drawImage(this._canvas, 0, 0)
+            if (!await rollback()) return null
+            const blob = await offscreen.convertToBlob({ type: 'image/png' })
+            return this._loadImageFromBlob(blob)
+        } catch (err) {
+            console.error('[Layers] Failed to render layer composite:', err)
+            await rollback()
+            return null
+        }
     }
 
     /**
@@ -4774,6 +5893,13 @@ class LayersApp {
      * @private
      */
     _setToolMode(tool) {
+        if (tool === 'transform') {
+            const layer = this._getActiveLayer()
+            if (!layer || (layer.sourceType !== 'media' && layer.sourceType !== 'drawing')) {
+                toast.warning('Select a media or drawing layer to transform')
+                return
+            }
+        }
         this._cancelColorRangePick()
         if (tool === 'eyedropper') this._previousTool = this._currentTool
         this._currentTool = tool
@@ -4849,6 +5975,75 @@ class LayersApp {
         document.getElementById('moveToolBtn')?.classList.toggle('disabled', isVideo)
     }
 
+    /** @private */
+    async _commitDrawingLayerMutation(layer, mutate, { pushUndo = true } = {}) {
+        const commit = async () => {
+            const previous = this._captureLayerMutationState()
+            let targetLayer = layer
+            let previousStrokeArray = null
+            let previousStrokes = null
+            let previousDrawingCanvas = null
+            let previousResource = null
+            const transaction = this._beginPublishTransaction()
+            try {
+                targetLayer ||= this._ensureDrawingLayer({ recordMutation: false })
+                previousStrokeArray = targetLayer.strokes
+                previousStrokes = previousStrokeArray.slice()
+                previousDrawingCanvas = targetLayer.drawingCanvas
+                previousResource = this._renderer.getMediaInfo(targetLayer.id)
+                this._finalizePendingUndo()
+                mutate(targetLayer)
+                await this._rasterizeDrawingLayer(targetLayer)
+                const result = await this._rebuild({ force: true })
+                if (!result?.success) {
+                    throw new Error(result?.error || 'Failed to render drawing mutation')
+                }
+                this._markDirty()
+                if (pushUndo) this._pushUndoState()
+                return {
+                    status: 'committed',
+                    layerId: targetLayer.id,
+                }
+            } catch (err) {
+                if (targetLayer && previousStrokeArray && previousStrokes) {
+                    previousStrokeArray.splice(
+                        0, previousStrokeArray.length, ...previousStrokes)
+                    targetLayer.strokes = previousStrokeArray
+                    targetLayer.drawingCanvas = previousDrawingCanvas
+                    const currentResource = this._renderer.getMediaInfo(targetLayer.id)
+                    if (previousResource) {
+                        if (currentResource !== previousResource) {
+                            this._renderer.setMediaResource(targetLayer.id, previousResource)
+                        }
+                    } else if (currentResource) {
+                        this._renderer.unloadMedia(targetLayer.id)
+                    }
+                }
+                return await this._rollbackLayerMutation(previous, err)
+            } finally {
+                this._endPublishTransaction(transaction)
+            }
+        }
+        const pending = this._drawingMutationTail.then(commit, commit)
+        this._drawingMutationTail = pending.then(() => undefined, () => undefined)
+        return pending
+    }
+
+    /**
+     * Commit a human or agent brush/shape stroke only if the resulting layer
+     * stack compiles.
+     * @param {object} stroke
+     * @param {object|null} layer
+     * @returns {Promise<{status:'committed',layerId:string,strokeId:string}|{status:'failed',error:Error}>}
+     * @private
+     */
+    async _commitDrawingStroke(stroke, layer = null) {
+        const result = await this._commitDrawingLayerMutation(
+            layer, targetLayer => targetLayer.strokes.push(stroke))
+        if (result.status !== 'committed') return result
+        return { ...result, strokeId: stroke.id }
+    }
+
     /**
      * Ensure a drawing layer exists and is active. If the active layer is already
      * a drawing layer, return it. Otherwise, create a new drawing layer above the
@@ -4856,11 +6051,11 @@ class LayersApp {
      * @returns {Object} The drawing layer
      * @private
      */
-    _ensureDrawingLayer() {
+    _ensureDrawingLayer({ recordMutation = true } = {}) {
         const active = this._getActiveLayer()
         if (active?.sourceType === 'drawing') return active
 
-        this._finalizePendingUndo()
+        if (recordMutation) this._finalizePendingUndo()
         const layer = createDrawingLayer(`Drawing ${++this._drawingLayerCounter}`)
 
         // Insert above current layer
@@ -4872,8 +6067,10 @@ class LayersApp {
             this._layerStack.selectedLayerId = layer.id
         }
 
-        this._markDirty()
-        this._pushUndoState()
+        if (recordMutation) {
+            this._markDirty()
+            this._pushUndoState()
+        }
         return layer
     }
 
@@ -4883,6 +6080,8 @@ class LayersApp {
      */
     async _handleCopy() {
         if (!this._selectionManager?.hasSelection()) return
+
+        this._renderCurrentFrame()
 
         const selectionPath = this._selectionManager.selectionPath
         const selectedLayers = this._layerStack?.selectedLayers || []
@@ -4916,11 +6115,11 @@ class LayersApp {
     async _handlePaste() {
         if (this._onlineAdapter?.isOnline()) {
             toast.warning('Media layers aren’t supported while a Layers session is online')
-            return
+            return { status: 'failed' }
         }
         const result = await pasteFromClipboard()
         if (!result) {
-            return // No image in clipboard, silent fail
+            return { status: 'failed' } // No image in clipboard, silent fail
         }
 
         const { blob } = result
@@ -4938,6 +6137,7 @@ class LayersApp {
         const canvasWidth = this._canvas.width
         const canvasHeight = this._canvas.height
         let file, offsetX = 0, offsetY = 0
+        let clearSelection = false
 
         // If there's an active selection, scale image to fit selection bounds
         if (this._selectionManager?.hasSelection()) {
@@ -4951,7 +6151,7 @@ class LayersApp {
                 // Offset is center-relative: image center minus canvas center
                 offsetX = Math.round(bounds.x + bounds.width / 2 - canvasWidth / 2)
                 offsetY = Math.round(bounds.y + bounds.height / 2 - canvasHeight / 2)
-                this._selectionManager.clearSelection()
+                clearSelection = true
             }
         }
 
@@ -4966,25 +6166,35 @@ class LayersApp {
             // else offsetX=0, offsetY=0 (centered)
         }
 
-        // Create properly-sized layer with offset positioning
-        this._finalizePendingUndo()
         const layer = createMediaLayer(file, 'image')
         layer.offsetX = offsetX
         layer.offsetY = offsetY
-        this._layers.push(layer)
-
-        await this._renderer.loadMedia(layer.id, file, 'image')
-
-        this._updateLayerStack()
-        await this._rebuild()
-        this._markDirty()
-        this._pushUndoState()
-
-        if (this._layerStack) {
-            this._layerStack.selectedLayerId = layer.id
+        let resource
+        try {
+            resource = await this._renderer.prepareMediaResource(file, 'image')
+            const candidate = await this._prepareLayerSetCandidate(
+                [...this._layers, layer], canvasWidth, canvasHeight, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                    reuseMaskIds: new Set(this._renderer._maskTextures.keys()),
+                    mediaOverrides: new Map([[layer.id, resource]]),
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                selectedLayerIds: [layer.id],
+                selectionAnchor: layer.id,
+                selectionPath: clearSelection
+                    ? null
+                    : this._selectionManager?.selectionPath,
+            })
+            if (outcome.status !== 'committed') return outcome
+        } catch (err) {
+            return { status: 'failed', error: err }
         }
-
-        toast.success(`Added layer: ${layer.name}`)
+        try {
+            toast.success(`Added layer: ${layer.name}`)
+        } catch (err) {
+            console.error('[Layers] Failed to show paste confirmation:', err)
+        }
+        return { status: 'committed' }
     }
 
     /**
@@ -5053,9 +6263,13 @@ class LayersApp {
             isRequired,
             onLoad: async (projectId) => {
                 let status = null
-                const loadSelectedProject = async ({ leaveOnline: confirmedLeaveOnline }) => {
+                const loadSelectedProject = async ({
+                    leaveOnline: confirmedLeaveOnline,
+                    replacementConsent: confirmedConsent,
+                }) => {
                     status = await this._loadProject(projectId, {
                         leaveOnline: confirmedLeaveOnline,
+                        replacementConsent: confirmedConsent,
                     })
                 }
                 if (replacementConsent
@@ -5101,12 +6315,19 @@ class LayersApp {
                 this._currentProjectId = savedId
                 this._currentProjectName = projectName
                 this._markClean()
-
-                toast.success('Project saved')
             } catch (err) {
                 console.error('[Layers] Failed to save project:', err)
-                toast.error('Failed to save project')
+                try {
+                    toast.error('Failed to save project')
+                } catch (toastError) {
+                    console.error('[Layers] Failed to show save error:', toastError)
+                }
                 throw err
+            }
+            try {
+                toast.success('Project saved')
+            } catch (err) {
+                console.error('[Layers] Failed to show save confirmation:', err)
             }
         })
     }
@@ -5116,7 +6337,11 @@ class LayersApp {
      * @param {string} projectId - Project ID
      * @private
      */
-    async _loadProject(projectId, { leaveOnline = false, mutationToken = null } = {}) {
+    async _loadProject(projectId, {
+        leaveOnline = false,
+        mutationToken = null,
+        replacementConsent = null,
+    } = {}) {
         const generation = ++this._replacementGeneration
         return this._runProjectReplacement(mutationToken, async (token, replacementGate) => {
             let candidate = null
@@ -5131,14 +6356,22 @@ class LayersApp {
             const { project, mediaFiles } = result
             const width = Number(project.canvasWidth)
             const height = Number(project.canvasHeight)
-            if (!Number.isFinite(width) || width <= 0
-                || !Number.isFinite(height) || height <= 0) {
+            if (!Number.isSafeInteger(width) || width < 1 || width > MAX_CANVAS_DIMENSION
+                || !Number.isSafeInteger(height) || height < 1
+                || height > MAX_CANVAS_DIMENSION) {
                 throw new Error('Saved project has invalid canvas dimensions')
             }
 
             const layers = structuredClone(project.layers || [])
             const nextLayerId = this._validatePersistedLayers(layers)
-            await decodeMasks(layers)
+            await this._validatePersistedLayerSemantics(layers, width, height)
+            await decodeMasks(layers, {
+                maxWidth: width,
+                maxHeight: height,
+                maxPixels: width * height,
+                expectedWidth: width,
+                expectedHeight: height,
+            })
             if (generation !== this._replacementGeneration) return 'cancelled'
 
             candidate = {
@@ -5163,7 +6396,12 @@ class LayersApp {
                     }
                     layer.mediaFile = file
                     const resource = await this._renderer.prepareMediaResource(file, layer.mediaType)
-                    if (!resource) throw new Error(`Unsupported media for layer "${layer.name || layer.id}"`)
+                    try {
+                        this._validatePreparedMediaResource(layer, resource)
+                    } catch (err) {
+                        if (resource) this._renderer.disposeMediaResource(resource)
+                        throw err
+                    }
                     candidate.mediaTextures.set(layer.id, resource)
                     if (generation !== this._replacementGeneration) {
                         this._disposePreparedProject(candidate)
@@ -5193,6 +6431,7 @@ class LayersApp {
                 candidate, {
                     generation,
                     leaveOnline,
+                    replacementConsent,
                     mutationToken: token,
                     replacementGate,
                 })
@@ -5200,9 +6439,7 @@ class LayersApp {
             if (outcome.status === 'failed') throw outcome.error
             if (outcome.status === 'cancelled') return 'cancelled'
 
-            // Close the open dialog (in case we came from there)
-            openDialog.element.close()
-            toast.success(`Loaded "${project.name}"`)
+            this._completeProjectReplacementUi(`Loaded "${project.name}"`)
             return 'opened'
             } catch (err) {
                 if (candidate) this._disposePreparedProject(candidate)
@@ -5218,6 +6455,7 @@ class LayersApp {
      * @private
      */
     _quickSavePng() {
+        this._renderCurrentFrame()
         const filename = getTimestampedFilename('layers')
         exportPng(this._canvas, filename)
         toast.success('Saved as PNG')
@@ -5228,6 +6466,7 @@ class LayersApp {
      * @private
      */
     _quickSaveJpg() {
+        this._renderCurrentFrame()
         const filename = getTimestampedFilename('layers')
         exportJpg(this._canvas, filename)
         toast.success('Saved as JPG')
@@ -5240,8 +6479,6 @@ class LayersApp {
      * @private
      */
     async _modifySelection(dialogOptions, maskFn) {
-        if (this._projectLifecycleActive || this._projectReplacementActive
-            || this._projectLifecycleWaiters > 0) return
         const generation = this._replacementGeneration
         const r = await selectionParamDialog.show(dialogOptions)
         if (r === null || generation !== this._replacementGeneration) return
@@ -5281,6 +6518,8 @@ class LayersApp {
             if (this._colorRangePickCleanup !== cleanup) return
             this._selectionOverlay.removeEventListener('click', handler)
             document.removeEventListener('keydown', cancelHandler)
+            window.removeEventListener('blur', blurHandler)
+            document.removeEventListener('visibilitychange', visibilityHandler)
             this._colorRangePicking = false
             this._selectionOverlay.style.cursor = ''
             this._selectionManager.enabled = selectionWasEnabled
@@ -5301,10 +6540,16 @@ class LayersApp {
         const cancelHandler = (e) => {
             if (e.key === 'Escape') cleanup()
         }
+        const blurHandler = () => cleanup()
+        const visibilityHandler = () => {
+            if (document.hidden) cleanup()
+        }
 
         this._colorRangePickCleanup = cleanup
         this._selectionOverlay.addEventListener('click', handler)
         document.addEventListener('keydown', cancelHandler)
+        window.addEventListener('blur', blurHandler)
+        document.addEventListener('visibilitychange', visibilityHandler)
         return true
     }
 
@@ -5313,6 +6558,7 @@ class LayersApp {
     }
 
     _handleColorRangePick(e) {
+        this._renderCurrentFrame()
         const rect = this._selectionOverlay.getBoundingClientRect()
         const scaleX = this._canvas.width / rect.width
         const scaleY = this._canvas.height / rect.height
@@ -5347,85 +6593,124 @@ class LayersApp {
     }
 
     async _cropToSelection() {
-        if (!this._selectionManager?.hasSelection()) return
-
-        this._finalizePendingUndo()
+        if (!this._selectionManager?.hasSelection()) return { status: 'committed' }
 
         const selectionPath = this._selectionManager.selectionPath
         const bounds = getSelectionBounds(selectionPath)
-        if (bounds.width <= 0 || bounds.height <= 0) return
+        if (bounds.width <= 0 || bounds.height <= 0) return { status: 'committed' }
 
-        for (const layer of this._layers) {
-            if (layer.sourceType === 'media' && layer.mediaType !== 'video') {
-                await this._cropMediaLayer(layer, bounds)
-            } else {
-                // Video and effect layers: shift offsets (video can't be rasterized)
-                layer.offsetX = (layer.offsetX || 0) - bounds.x
-                layer.offsetY = (layer.offsetY || 0) - bounds.y
+        const layers = this._cloneLayers(this._layers)
+        const mediaOverrides = new Map()
+        const preparedResources = []
+        let mediaOwnershipTransferred = false
+        const disposePreparedResources = () => {
+            const disposed = new Set()
+            for (const resource of preparedResources) {
+                if (!resource || disposed.has(resource)) continue
+                this._renderer.disposeMediaResource(resource)
+                disposed.add(resource)
             }
+            preparedResources.length = 0
         }
-
-        // Crop masks to match new canvas bounds
-        for (const layer of this._layers) {
-            if (layer.mask) {
-                const tempCanvas = document.createElement('canvas')
-                tempCanvas.width = layer.mask.width
-                tempCanvas.height = layer.mask.height
-                tempCanvas.getContext('2d').putImageData(layer.mask, 0, 0)
-
-                const croppedCanvas = document.createElement('canvas')
-                croppedCanvas.width = bounds.width
-                croppedCanvas.height = bounds.height
-                const ctx = croppedCanvas.getContext('2d')
-                ctx.drawImage(
-                    tempCanvas,
-                    bounds.x, bounds.y, bounds.width, bounds.height,
-                    0, 0, bounds.width, bounds.height
-                )
-                layer.mask = ctx.getImageData(0, 0, bounds.width, bounds.height)
-                this._renderer.uploadMaskTexture(layer.id, layer.mask)
+        try {
+            for (const layer of layers) {
+                const bakeRaster = layer.sourceType === 'drawing'
+                    || (layer.sourceType === 'media' && layer.mediaType !== 'video')
+                if (bakeRaster) {
+                    const compositeImg = await this._renderLayerComposite([layer.id], {
+                        selectedLayerOverrides: {
+                            visible: true,
+                            opacity: 100,
+                            blendMode: 'mix',
+                        },
+                    })
+                    if (!compositeImg) {
+                        return {
+                            status: 'failed',
+                            error: new Error('Failed to render crop source'),
+                        }
+                    }
+                    const offscreen = new OffscreenCanvas(bounds.width, bounds.height)
+                    offscreen.getContext('2d').drawImage(
+                        compositeImg,
+                        bounds.x, bounds.y, bounds.width, bounds.height,
+                        0, 0, bounds.width, bounds.height)
+                    const blob = await offscreen.convertToBlob({ type: 'image/png' })
+                    const file = new File([blob], 'cropped.png', { type: 'image/png' })
+                    const resource = await this._renderer.prepareMediaResource(file, 'image')
+                    preparedResources.push(resource)
+                    mediaOverrides.set(layer.id, resource)
+                    layer.sourceType = 'media'
+                    layer.mediaFile = file
+                    layer.mediaType = 'image'
+                    delete layer.strokes
+                    delete layer.drawingCanvas
+                    layer.offsetX = 0
+                    layer.offsetY = 0
+                    layer.scaleX = 1
+                    layer.scaleY = 1
+                    layer.rotation = 0
+                    layer.flipH = false
+                    layer.flipV = false
+                    layer.effectParams = {}
+                    layer.children = []
+                    layer.mask = null
+                    layer.maskEnabled = true
+                    layer.maskVisible = false
+                } else {
+                    // Video and effect layers retain their canvas position without
+                    // rasterization. Offsets are relative to the canvas center.
+                    layer.offsetX = (layer.offsetX || 0)
+                        + (this._canvas.width - bounds.width) / 2 - bounds.x
+                    layer.offsetY = (layer.offsetY || 0)
+                        + (this._canvas.height - bounds.height) / 2 - bounds.y
+                }
             }
+
+            // Crop masks to match new canvas bounds
+            for (const layer of layers) {
+                if (layer.mask) {
+                    const tempCanvas = document.createElement('canvas')
+                    tempCanvas.width = layer.mask.width
+                    tempCanvas.height = layer.mask.height
+                    tempCanvas.getContext('2d').putImageData(layer.mask, 0, 0)
+
+                    const croppedCanvas = document.createElement('canvas')
+                    croppedCanvas.width = bounds.width
+                    croppedCanvas.height = bounds.height
+                    const ctx = croppedCanvas.getContext('2d')
+                    ctx.drawImage(
+                        tempCanvas,
+                        bounds.x, bounds.y, bounds.width, bounds.height,
+                        0, 0, bounds.width, bounds.height
+                    )
+                    layer.mask = ctx.getImageData(0, 0, bounds.width, bounds.height)
+                }
+            }
+
+            // Calling _prepareLayerSetCandidate transfers detached override ownership,
+            // including when candidate preparation rejects.
+            mediaOwnershipTransferred = true
+            const candidate = await this._prepareLayerSetCandidate(
+                layers, bounds.width, bounds.height, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                    mediaOverrides,
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                selectionPath: null,
+            })
+            if (outcome.status !== 'committed') return outcome
+        } catch (err) {
+            return { status: 'failed', error: err }
+        } finally {
+            if (!mediaOwnershipTransferred) disposePreparedResources()
         }
-
-        // Stop renderer before resizing (resize invalidates WebGL state)
-        this._renderer.stop()
-        this._resizeCanvas(bounds.width, bounds.height)
-        this._selectionManager.clearSelection()
-
-        // Recompile pipeline at new dimensions and restart
-        await this._rebuild()
-        await new Promise(resolve => requestAnimationFrame(resolve))
-        this._renderer.start()
-        this._markDirty()
-        this._pushUndoState()
-
-        toast.success('Cropped to selection')
-    }
-
-    async _cropMediaLayer(layer, bounds) {
-        // Render through the shader to capture what the user sees
-        const compositeImg = await this._renderLayerComposite([layer.id])
-        if (!compositeImg) return
-
-        const offscreen = new OffscreenCanvas(bounds.width, bounds.height)
-        const ctx = offscreen.getContext('2d')
-        ctx.drawImage(
-            compositeImg,
-            bounds.x, bounds.y, bounds.width, bounds.height,
-            0, 0, bounds.width, bounds.height
-        )
-
-        const blob = await offscreen.convertToBlob({ type: 'image/png' })
-        const file = new File([blob], 'cropped.png', { type: 'image/png' })
-
-        // Replace layer with rasterized crop (transforms are baked into the output)
-        this._renderer.unloadMedia(layer.id)
-        layer.mediaFile = file
-        layer.mediaType = 'image'
-        layer.offsetX = 0
-        layer.offsetY = 0
-        layer.effectParams = {}
-        await this._renderer.loadMedia(layer.id, file, 'image')
+        try {
+            toast.success('Cropped to selection')
+        } catch (err) {
+            console.error('[Layers] Failed to show crop confirmation:', err)
+        }
+        return { status: 'committed' }
     }
 
     _showImageSizeDialog() {
@@ -5442,89 +6727,163 @@ class LayersApp {
         })
     }
 
+    /** @private */
+    _scaleDrawingStrokes(strokes, scaleX, scaleY) {
+        const sizeScale = Math.max(Math.abs(scaleX), Math.abs(scaleY))
+        return (strokes || []).map(stroke => {
+            const scaled = { ...stroke }
+            if (Array.isArray(stroke.points)) {
+                scaled.points = stroke.points.map(point => ({
+                    x: point.x * scaleX,
+                    y: point.y * scaleY,
+                }))
+            }
+            if (Number.isFinite(stroke.x)) scaled.x = stroke.x * scaleX
+            if (Number.isFinite(stroke.y)) scaled.y = stroke.y * scaleY
+            if (Number.isFinite(stroke.width)) scaled.width = stroke.width * scaleX
+            if (Number.isFinite(stroke.height)) scaled.height = stroke.height * scaleY
+            if (Number.isFinite(stroke.size)) scaled.size = stroke.size * sizeScale
+            return scaled
+        })
+    }
+
     async _resizeImage(newWidth, newHeight) {
+        if (!Number.isSafeInteger(newWidth) || newWidth < 1
+            || newWidth > MAX_CANVAS_DIMENSION
+            || !Number.isSafeInteger(newHeight) || newHeight < 1
+            || newHeight > MAX_CANVAS_DIMENSION) {
+            return {
+                status: 'failed',
+                error: new Error('Image dimensions are invalid'),
+            }
+        }
         const oldWidth = this._canvas.width
         const oldHeight = this._canvas.height
-        if (newWidth === oldWidth && newHeight === oldHeight) return
-
-        this._finalizePendingUndo()
+        if (newWidth === oldWidth && newHeight === oldHeight) {
+            return { status: 'committed' }
+        }
 
         const scaleX = newWidth / oldWidth
         const scaleY = newHeight / oldHeight
 
-        // Resize each layer
-        for (const layer of this._layers) {
-            if (layer.sourceType === 'media') {
-                await this._resampleMediaLayer(layer, scaleX, scaleY)
-            } else {
-                // Effect layers: scale offsets only
-                layer.offsetX = Math.round((layer.offsetX || 0) * scaleX)
-                layer.offsetY = Math.round((layer.offsetY || 0) * scaleY)
+        const layers = this._cloneLayers(this._layers)
+        const mediaOverrides = new Map()
+        const preparedResources = []
+        const videoDimensions = []
+        let mediaOwnershipTransferred = false
+        const disposePreparedResources = () => {
+            const disposed = new Set()
+            for (const resource of preparedResources) {
+                if (!resource || disposed.has(resource)) continue
+                this._renderer.disposeMediaResource(resource)
+                disposed.add(resource)
             }
+            preparedResources.length = 0
         }
-
-        // Resize masks to match new canvas dimensions
-        for (const layer of this._layers) {
-            if (layer.mask) {
-                const tempCanvas = document.createElement('canvas')
-                tempCanvas.width = layer.mask.width
-                tempCanvas.height = layer.mask.height
-                tempCanvas.getContext('2d').putImageData(layer.mask, 0, 0)
-
-                const resizedCanvas = document.createElement('canvas')
-                resizedCanvas.width = newWidth
-                resizedCanvas.height = newHeight
-                const ctx = resizedCanvas.getContext('2d')
-                ctx.drawImage(tempCanvas, 0, 0, newWidth, newHeight)
-                layer.mask = ctx.getImageData(0, 0, newWidth, newHeight)
-                this._renderer.uploadMaskTexture(layer.id, layer.mask)
+        try {
+            for (const layer of layers) {
+                if (layer.sourceType === 'media') {
+                    const media = this._renderer._mediaTextures.get(layer.id)
+                    if (media?.element) {
+                        const rawWidth = Math.round(media.width * scaleX)
+                        const rawHeight = Math.round(media.height * scaleY)
+                        if (rawWidth > MAX_CANVAS_DIMENSION
+                            || rawHeight > MAX_CANVAS_DIMENSION) {
+                            throw new Error('Resized media dimensions are too large')
+                        }
+                        const dstW = Math.max(1, rawWidth)
+                        const dstH = Math.max(1, rawHeight)
+                        if (layer.mediaType === 'video') {
+                            videoDimensions.push({
+                                media,
+                                width: media.width,
+                                height: media.height,
+                                nextWidth: dstW,
+                                nextHeight: dstH,
+                            })
+                        } else {
+                            const offscreen = new OffscreenCanvas(dstW, dstH)
+                            offscreen.getContext('2d').drawImage(
+                                media.element, 0, 0, media.width, media.height,
+                                0, 0, dstW, dstH)
+                            const blob = await offscreen.convertToBlob({ type: 'image/png' })
+                            const file = new File([blob], 'resized.png', { type: 'image/png' })
+                            const resource = await this._renderer.prepareMediaResource(
+                                file, 'image')
+                            preparedResources.push(resource)
+                            mediaOverrides.set(layer.id, resource)
+                            layer.mediaFile = file
+                        }
+                    }
+                    layer.offsetX = Math.round((layer.offsetX || 0) * scaleX)
+                    layer.offsetY = Math.round((layer.offsetY || 0) * scaleY)
+                } else if (layer.sourceType === 'drawing') {
+                    layer.strokes = this._scaleDrawingStrokes(
+                        layer.strokes, scaleX, scaleY)
+                    layer.offsetX = Math.round((layer.offsetX || 0) * scaleX)
+                    layer.offsetY = Math.round((layer.offsetY || 0) * scaleY)
+                } else {
+                    // Effect layers: scale offsets only
+                    layer.offsetX = Math.round((layer.offsetX || 0) * scaleX)
+                    layer.offsetY = Math.round((layer.offsetY || 0) * scaleY)
+                }
             }
+
+            // Resize masks to match new canvas dimensions
+            for (const layer of layers) {
+                if (layer.mask) {
+                    const tempCanvas = document.createElement('canvas')
+                    tempCanvas.width = layer.mask.width
+                    tempCanvas.height = layer.mask.height
+                    tempCanvas.getContext('2d').putImageData(layer.mask, 0, 0)
+
+                    const resizedCanvas = document.createElement('canvas')
+                    resizedCanvas.width = newWidth
+                    resizedCanvas.height = newHeight
+                    const ctx = resizedCanvas.getContext('2d')
+                    ctx.drawImage(tempCanvas, 0, 0, newWidth, newHeight)
+                    layer.mask = ctx.getImageData(0, 0, newWidth, newHeight)
+                }
+            }
+
+            // Calling _prepareLayerSetCandidate transfers detached override ownership,
+            // including when candidate preparation rejects.
+            mediaOwnershipTransferred = true
+            const reuseMediaIds = new Set(this._renderer._mediaTextures.keys())
+            for (const layer of layers) {
+                if (layer.sourceType === 'drawing') reuseMediaIds.delete(layer.id)
+            }
+            const candidate = await this._prepareLayerSetCandidate(
+                layers, newWidth, newHeight, {
+                    reuseMediaIds,
+                    mediaOverrides,
+                })
+            const outcome = await this._commitPreparedLayerMutation(candidate, {
+                beforeStage: () => {
+                    for (const entry of videoDimensions) {
+                        entry.media.width = entry.nextWidth
+                        entry.media.height = entry.nextHeight
+                    }
+                },
+                restoreBeforeRollback: () => {
+                    for (const entry of videoDimensions) {
+                        entry.media.width = entry.width
+                        entry.media.height = entry.height
+                    }
+                },
+            })
+            if (outcome.status !== 'committed') return outcome
+        } catch (err) {
+            return { status: 'failed', error: err }
+        } finally {
+            if (!mediaOwnershipTransferred) disposePreparedResources()
         }
-
-        // Stop renderer before resizing (resize invalidates WebGL state)
-        this._renderer.stop()
-
-        this._resizeCanvas(newWidth, newHeight)
-        await this._rebuild()
-        await new Promise(resolve => requestAnimationFrame(resolve))
-        this._renderer.start()
-        this._markDirty()
-        this._pushUndoState()
-
-        toast.success(`Resized to ${newWidth} x ${newHeight}`)
-    }
-
-    async _resampleMediaLayer(layer, scaleX, scaleY) {
-        const media = this._renderer._mediaTextures.get(layer.id)
-        if (!media || !media.element) return
-
-        const srcW = media.width
-        const srcH = media.height
-        const dstW = Math.round(srcW * scaleX)
-        const dstH = Math.round(srcH * scaleY)
-
-        if (layer.mediaType === 'video') {
-            // Video: update stored dimensions so imageSize uniform reflects scale.
-            // Video element stays alive — animation continues.
-            media.width = dstW
-            media.height = dstH
-        } else {
-            // Image: create resampled pixels
-            const offscreen = new OffscreenCanvas(dstW, dstH)
-            const ctx = offscreen.getContext('2d')
-            ctx.drawImage(media.element, 0, 0, srcW, srcH, 0, 0, dstW, dstH)
-
-            const blob = await offscreen.convertToBlob({ type: 'image/png' })
-            const file = new File([blob], 'resized.png', { type: 'image/png' })
-
-            this._renderer.unloadMedia(layer.id)
-            await this._renderer.loadMedia(layer.id, file, 'image')
-
-            layer.mediaFile = file
+        try {
+            toast.success(`Resized to ${newWidth} x ${newHeight}`)
+        } catch (err) {
+            console.error('[Layers] Failed to show resize confirmation:', err)
         }
-
-        layer.offsetX = Math.round((layer.offsetX || 0) * scaleX)
-        layer.offsetY = Math.round((layer.offsetY || 0) * scaleY)
+        return { status: 'committed' }
     }
 
     _showCanvasSizeDialog() {
@@ -5627,9 +6986,9 @@ class LayersApp {
     async _changeCanvasSize(newWidth, newHeight, anchor = 'center') {
         const oldWidth = this._canvas.width
         const oldHeight = this._canvas.height
-        if (newWidth === oldWidth && newHeight === oldHeight) return
-
-        this._finalizePendingUndo()
+        if (newWidth === oldWidth && newHeight === oldHeight) {
+            return { status: 'committed' }
+        }
 
         const deltaW = newWidth - oldWidth
         const deltaH = newHeight - oldHeight
@@ -5653,14 +7012,16 @@ class LayersApp {
         }
         // else top: shiftY = 0
 
+        const layers = this._cloneLayers(this._layers)
+
         // Adjust all layer offsets
-        for (const layer of this._layers) {
+        for (const layer of layers) {
             layer.offsetX = (layer.offsetX || 0) + shiftX
             layer.offsetY = (layer.offsetY || 0) + shiftY
         }
 
         // Reposition masks onto new canvas dimensions
-        for (const layer of this._layers) {
+        for (const layer of layers) {
             if (layer.mask) {
                 const tempCanvas = document.createElement('canvas')
                 tempCanvas.width = layer.mask.width
@@ -5673,21 +7034,27 @@ class LayersApp {
                 const ctx = resizedCanvas.getContext('2d')
                 ctx.drawImage(tempCanvas, shiftX, shiftY)
                 layer.mask = ctx.getImageData(0, 0, newWidth, newHeight)
-                this._renderer.uploadMaskTexture(layer.id, layer.mask)
             }
         }
 
-        // Stop renderer before resizing (resize invalidates WebGL state)
-        this._renderer.stop()
+        let candidate
+        try {
+            candidate = await this._prepareLayerSetCandidate(
+                layers, newWidth, newHeight, {
+                    reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
+                })
+        } catch (err) {
+            return { status: 'failed', error: err }
+        }
+        const outcome = await this._commitPreparedLayerMutation(candidate)
+        if (outcome.status !== 'committed') return outcome
 
-        this._resizeCanvas(newWidth, newHeight)
-        await this._rebuild()
-        await new Promise(resolve => requestAnimationFrame(resolve))
-        this._renderer.start()
-        this._markDirty()
-        this._pushUndoState()
-
-        toast.success(`Canvas resized to ${newWidth} x ${newHeight}`)
+        try {
+            toast.success(`Canvas resized to ${newWidth} x ${newHeight}`)
+        } catch (err) {
+            console.error('[Layers] Failed to show canvas resize confirmation:', err)
+        }
+        return { status: 'committed' }
     }
 
 }

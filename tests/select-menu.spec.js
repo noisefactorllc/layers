@@ -110,6 +110,44 @@ test.describe('Select Menu', () => {
         expect(selected).toBe(true)
     })
 
+    test('selection modification dialog holds the mutation lease until confirmation', async ({ page }) => {
+        await setupApp(page)
+        await setRectSelection(page, 100, 100, 100, 100)
+
+        await openSelectMenu(page)
+        await page.click('#expandSelectionMenuItem')
+        await page.waitForSelector('.selection-param-dialog[open]', { timeout: 2000 })
+        await page.evaluate(() => {
+            window.__selectionRaceSettled = false
+            window.__selectionRacePromise = window.LayersAgent.setRectangleSelection({
+                x: 400, y: 400, width: 50, height: 50,
+            }).then(envelope => {
+                window.__selectionRaceSettled = true
+                return envelope
+            })
+        })
+        await page.waitForTimeout(100)
+
+        const whileOpen = await page.evaluate(() => ({
+            settled: window.__selectionRaceSettled,
+            selection: window.layersApp._selectionManager.selectionPath,
+        }))
+        expect(whileOpen.settled).toBe(false)
+        expect(whileOpen.selection).toMatchObject({
+            type: 'rect', x: 100, y: 100, width: 100, height: 100,
+        })
+
+        await page.fill('#selection-param-input', '10')
+        await page.click('#selection-param-ok')
+        const agent = await page.evaluate(() => window.__selectionRacePromise)
+        expect(agent.ok).toBe(true)
+        const finalSelection = await page.evaluate(() =>
+            window.layersApp._selectionManager.selectionPath)
+        expect(finalSelection).toMatchObject({
+            type: 'rect', x: 400, y: 400, width: 50, height: 50,
+        })
+    })
+
     test('contract selection shrinks the mask', async ({ page }) => {
         await setupApp(page)
         await setRectSelection(page, 100, 100, 100, 100)
@@ -200,6 +238,21 @@ test.describe('Select Menu', () => {
             window.layersApp._projectLifecycleActive)).toBe(true)
 
         await page.keyboard.press('Escape')
+
+        await expect.poll(() => page.evaluate(() => ({
+            picking: window.layersApp._colorRangePicking,
+            lifecycle: window.layersApp._projectLifecycleActive,
+        }))).toEqual({ picking: false, lifecycle: false })
+    })
+
+    test('Color Range window blur cancels and releases the lifecycle lease', async ({ page }) => {
+        await setupApp(page)
+        await openSelectMenu(page)
+        await page.click('#colorRangeMenuItem')
+        await expect.poll(() => page.evaluate(() =>
+            window.layersApp._projectLifecycleActive)).toBe(true)
+
+        await page.evaluate(() => window.dispatchEvent(new Event('blur')))
 
         await expect.poll(() => page.evaluate(() => ({
             picking: window.layersApp._colorRangePicking,

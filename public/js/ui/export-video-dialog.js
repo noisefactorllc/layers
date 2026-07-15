@@ -7,6 +7,7 @@
  */
 
 import { runVideoExport } from './video-exporter.js'
+import { MAX_EXPORT_FRAMES } from '../agent/limits.js'
 
 export class ExportVideoDialog {
     constructor(options) {
@@ -16,6 +17,8 @@ export class ExportVideoDialog {
         this.getResolution = options.getResolution
         this.setResolution = options.setResolution
         this.acquireMutation = options.acquireMutation || (() => ({ release() {} }))
+        this.acquireSnapshotOverride = options.acquireSnapshotOverride
+            || (() => ({ release() {} }))
         this.getProjectGeneration = options.getProjectGeneration || (() => 0)
         this.onComplete = options.onComplete || (() => {})
         this.onCancel = options.onCancel || (() => {})
@@ -24,7 +27,6 @@ export class ExportVideoDialog {
         this.currentFrame = 0
         this.totalFrames = 0
         this.abortController = null
-        this.originalResolution = null
         this.wasRunning = false
         this.pausedNormalizedTime = 0
         this.startTime = 0
@@ -102,9 +104,29 @@ export class ExportVideoDialog {
 
     _restoreRendererAfterExport() {
         if (!this._pausedForExport) return
-        this.renderer.restoreLoopFromNormalizedTime(this.pausedNormalizedTime)
-        this.renderer.start()
-        this._pausedForExport = false
+        try {
+            this.renderer.restoreLoopFromNormalizedTime(this.pausedNormalizedTime)
+        } finally {
+            try {
+                this.renderer.start()
+            } finally {
+                this._pausedForExport = false
+            }
+        }
+    }
+
+    _completeSuccessfulExport(format) {
+        try {
+            this.close()
+        } catch (err) {
+            this.state = 'idle'
+            console.error('Failed to close video export dialog:', err)
+        }
+        try {
+            this.onComplete(format)
+        } catch (err) {
+            console.error('Failed to report completed video export:', err)
+        }
     }
 
     async beginExport() {
@@ -114,30 +136,42 @@ export class ExportVideoDialog {
             this.onCancel()
             return
         }
+        let settings
+        try {
+            settings = this._gatherSettings({ reportValidation: true })
+        } catch (err) {
+            console.error('Invalid video export settings:', err)
+            return
+        }
         const mutationToken = this.acquireMutation()
         if (!mutationToken) return
 
-        this.wasRunning = this.renderer.isRunning
-        this._pausedForExport = this.wasRunning
-        if (this.wasRunning) {
-            this.pausedNormalizedTime = this.renderer.getPausedNormalizedTime()
-            this.renderer.stop()
-        }
-
-        this.state = 'preparing'
-        this.abortController = new AbortController()
-
-        const settings = this._gatherSettings()
-        this.totalFrames = Math.ceil(settings.framerate * settings.duration * settings.loopCount)
-        this.currentFrame = 0
-        this.startTime = performance.now()
-
-        this._savePreferences(settings)
-        this._elements.dialogView.style.display = 'none'
-        this._elements.progressView.style.display = 'block'
-        this._updateProgress()
-
+        let completed = false
+        let restoreError = null
+        let snapshotToken = null
         try {
+            snapshotToken = this.acquireSnapshotOverride()
+            this.wasRunning = this.renderer.isRunning
+            this._pausedForExport = false
+            if (this.wasRunning) {
+                const pausedNormalizedTime = this.renderer.getPausedNormalizedTime()
+                this.renderer.stop()
+                this.pausedNormalizedTime = pausedNormalizedTime
+                this._pausedForExport = true
+            }
+
+            this.state = 'preparing'
+            this.abortController = new AbortController()
+
+            this.totalFrames = Math.ceil(settings.framerate * settings.duration * settings.loopCount)
+            this.currentFrame = 0
+            this.startTime = performance.now()
+
+            this._savePreferences(settings)
+            this._elements.dialogView.style.display = 'none'
+            this._elements.progressView.style.display = 'block'
+            this._updateProgress()
+
             this.state = 'exporting'
             await runVideoExport({
                 settings,
@@ -153,8 +187,7 @@ export class ExportVideoDialog {
                     this._updateProgress()
                 }
             })
-            this.close()
-            this.onComplete(settings.format)
+            completed = true
         } catch (err) {
             if (err?.code === 'JOB_CANCELLED') {
                 this.close()
@@ -164,9 +197,25 @@ export class ExportVideoDialog {
                 this._handleExportError(err)
             }
         } finally {
-            this._restoreRendererAfterExport()
-            mutationToken.release()
+            try {
+                this._restoreRendererAfterExport()
+            } catch (err) {
+                restoreError = err
+                console.error('Failed to restore renderer after export:', err)
+            } finally {
+                try {
+                    snapshotToken?.release()
+                } finally {
+                    mutationToken.release()
+                }
+            }
         }
+        if (!completed) return
+        if (restoreError) {
+            this._handleExportError(restoreError)
+            return
+        }
+        this._completeSuccessfulExport(settings.format)
     }
 
     async cancel() {
@@ -184,16 +233,60 @@ export class ExportVideoDialog {
         return Math.max(2, floored - (floored % 2))
     }
 
-    _gatherSettings() {
-        const rawWidth = parseInt(this._elements.widthInput.value, 10) || 1024
-        const rawHeight = parseInt(this._elements.heightInput.value, 10) || 1024
+    _readBoundedNumber(input, label, {
+        min,
+        max,
+        integer = false,
+        step = null,
+        reportValidation = false,
+    }) {
+        const value = Number(input.value)
+        input.setCustomValidity('')
+        const onStep = step === null || Number.isInteger((value - min) / step)
+        if (Number.isFinite(value) && value >= min && value <= max
+            && (!integer || Number.isInteger(value)) && onStep) {
+            return value
+        }
+
+        const qualifier = integer ? 'whole number' : 'number'
+        const message = `${label} must be a ${qualifier} from ${min} to ${max}`
+        input.setCustomValidity(message)
+        if (reportValidation) input.reportValidity()
+        throw new RangeError(message)
+    }
+
+    _gatherSettings({ reportValidation = false } = {}) {
+        const width = this._readBoundedNumber(this._elements.widthInput, 'Width', {
+            min: 64, max: 4096, integer: true, reportValidation,
+        })
+        const height = this._readBoundedNumber(this._elements.heightInput, 'Height', {
+            min: 64, max: 4096, integer: true, reportValidation,
+        })
+        const framerate = this._readBoundedNumber(
+            this._elements.framerateSelect, 'Framerate', {
+                min: 24, max: 60, integer: true, reportValidation,
+            })
+        const duration = this._readBoundedNumber(this._elements.durationInput, 'Duration', {
+            min: 1, max: 300, step: 0.5, reportValidation,
+        })
+        const loopCount = this._readBoundedNumber(
+            this._elements.loopCountInput, 'Loop count', {
+                min: 1, max: 10, integer: true, reportValidation,
+            })
+        const totalFrames = Math.ceil(framerate * duration * loopCount)
+        if (totalFrames > MAX_EXPORT_FRAMES) {
+            const message = `Total frames must not exceed ${MAX_EXPORT_FRAMES}`
+            this._elements.loopCountInput.setCustomValidity(message)
+            if (reportValidation) this._elements.loopCountInput.reportValidity()
+            throw new RangeError(message)
+        }
 
         return {
-            width: this._ensureEven(rawWidth),
-            height: this._ensureEven(rawHeight),
-            framerate: parseInt(this._elements.framerateSelect.value, 10) || 30,
-            duration: parseFloat(this._elements.durationInput.value) || 15,
-            loopCount: parseInt(this._elements.loopCountInput.value, 10) || 1,
+            width: this._ensureEven(width),
+            height: this._ensureEven(height),
+            framerate,
+            duration,
+            loopCount,
             format: this._elements.formatSelect.value || 'mp4',
             quality: this._elements.qualitySelect.value || 'very high',
             playFrom: this._elements.playFromSelect?.value || 'beginning'
@@ -201,7 +294,14 @@ export class ExportVideoDialog {
     }
 
     _updateCalculations() {
-        const settings = this._gatherSettings()
+        let settings
+        try {
+            settings = this._gatherSettings()
+        } catch {
+            this._elements.totalFramesDisplay.textContent = 'Invalid settings'
+            this._elements.estimatedSizeDisplay.textContent = '—'
+            return
+        }
         const totalFrames = Math.ceil(settings.framerate * settings.duration * settings.loopCount)
 
         this._elements.totalFramesDisplay.textContent = `${totalFrames} frames`

@@ -54,6 +54,39 @@ test.describe('LayersAgent.addLayer — effect kind', () => {
         expect(layer.effect.params.color).toEqual([1, 0, 0])
     })
 
+    test('named effect params are one undo step and survive redo', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const beforeCount = app._layers.length
+            const added = await window.LayersAgent.addLayer({
+                kind: 'effect',
+                effectId: 'synth/gradient',
+                name: 'Agent Gradient',
+                params: { type: 3 },
+            })
+            const layerId = added.result.layerId
+            await window.LayersAgent.undo()
+            const countAfterUndo = app._layers.length
+            await window.LayersAgent.redo()
+            const redone = app._layers.find(layer => layer.id === layerId)
+            return {
+                added,
+                beforeCount,
+                countAfterUndo,
+                redone: redone && {
+                    name: redone.name,
+                    effectParams: redone.effectParams,
+                },
+            }
+        })
+
+        expect(result.added.ok).toBe(true)
+        expect(result.countAfterUndo).toBe(result.beforeCount)
+        expect(result.redone.name).toBe('Agent Gradient')
+        expect(result.redone.effectParams.type).toBe(3)
+    })
+
     test('addLayer rejects missing required kind', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() => window.LayersAgent.addLayer({}))
@@ -115,6 +148,35 @@ test.describe('LayersAgent.addLayer — media kind', () => {
         expect(layer.sourceType).toBe('media')
         expect(layer.media.type).toBe('image')
         expect(layer.media.filename).toBe('tiny.png')
+    })
+
+    test('named media layer survives undo and redo exactly', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async (data) => {
+            const app = window.layersApp
+            const beforeCount = app._layers.length
+            const added = await window.LayersAgent.addLayer({
+                kind: 'media',
+                mediaType: 'image',
+                name: 'Agent Media.png',
+                source: { kind: 'base64', data, mimeType: 'image/png' },
+            })
+            const layerId = added.result.layerId
+            await window.LayersAgent.undo()
+            const countAfterUndo = app._layers.length
+            await window.LayersAgent.redo()
+            const redone = app._layers.find(layer => layer.id === layerId)
+            return {
+                added,
+                beforeCount,
+                countAfterUndo,
+                redoneName: redone?.name || null,
+            }
+        }, TINY_PNG_B64)
+
+        expect(result.added.ok).toBe(true)
+        expect(result.countAfterUndo).toBe(result.beforeCount)
+        expect(result.redoneName).toBe('Agent Media.png')
     })
 
     test('decode failure returns RESOURCE_DECODE_FAILED without a ghost layer', async ({ page }) => {

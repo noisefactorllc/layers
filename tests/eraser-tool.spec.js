@@ -49,12 +49,18 @@ test.describe('Eraser tool', () => {
         await page.mouse.click(box.x + 250 * scaleX, box.y + 250 * scaleY)
         await page.waitForTimeout(300)
 
-        const strokeCount = await page.evaluate(() => {
+        const state = await page.evaluate(() => {
             const app = window.layersApp
             const layer = app._layers.find(l => l.sourceType === 'drawing')
-            return layer?.strokes?.length ?? -1
+            return {
+                strokeCount: layer?.strokes?.length ?? -1,
+                resourcePresent: layer
+                    ? Boolean(app._renderer.getMediaInfo(layer.id))
+                    : false,
+            }
         })
 
-        expect(strokeCount).toBe(0)
+        expect(state.strokeCount).toBe(0)
+        expect(state.resourcePresent).toBe(false)
     })
 })

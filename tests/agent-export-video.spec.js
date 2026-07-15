@@ -131,6 +131,101 @@ test.describe('agent: exportVideo', () => {
         expect(result).toEqual({ rendererStayedPaused: true, jobStatus: 'cancelled' })
     })
 
+    test('job polling snapshots hide temporary export resolution and playback state', async ({ page }) => {
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const original = {
+                canvas: { width: app._canvas.width, height: app._canvas.height },
+                isPlaying: app._renderer.isRunning,
+            }
+            const started = await window.LayersAgent.exportVideo({
+                width: 64,
+                height: 66,
+                framerate: 30,
+                duration: 5,
+                loopCount: 1,
+                format: 'zip',
+                quality: 'low',
+            })
+            while (!app._projectLifecycleActive
+                || app._canvas.width !== 64
+                || app._canvas.height !== 66
+                || app._renderer.isRunning) {
+                await new Promise(resolve => setTimeout(resolve, 0))
+            }
+            const polled = await window.LayersAgent.getJob({
+                jobId: started.result.jobId,
+            })
+            const cancelled = await window.LayersAgent.cancelJob({
+                jobId: started.result.jobId,
+            })
+            const settled = await window.LayersAgent.waitForJob({
+                jobId: started.result.jobId,
+                timeoutMs: 5000,
+            })
+            return {
+                original,
+                polled: { canvas: polled.state.canvas, view: polled.state.view },
+                cancelled: { canvas: cancelled.state.canvas, view: cancelled.state.view },
+                settled: { canvas: settled.state.canvas, view: settled.state.view },
+            }
+        })
+
+        for (const envelope of [result.polled, result.cancelled, result.settled]) {
+            expect(envelope.canvas).toEqual(result.original.canvas)
+            expect(envelope.view.isPlaying).toBe(result.original.isPlaying)
+        }
+    })
+
+    for (const restoreFailure of ['resolution', 'clock']) {
+        test(`${restoreFailure} restore failure still restarts playback and releases lifecycle`, async ({ page }) => {
+            const result = await page.evaluate(async (failure) => {
+                const app = window.layersApp
+                app._renderer.start()
+                const original = { width: app._canvas.width, height: app._canvas.height }
+                if (failure === 'resolution') {
+                    const resizeCanvas = app._resizeCanvas.bind(app)
+                    app._resizeCanvas = (width, height) => {
+                        resizeCanvas(width, height)
+                        if (width === original.width && height === original.height) {
+                            throw new Error('resolution restore failed')
+                        }
+                    }
+                } else {
+                    app._renderer.restoreLoopFromNormalizedTime = () => {
+                        throw new Error('clock restore failed')
+                    }
+                }
+                const started = await window.LayersAgent.exportVideo({
+                    width: 64,
+                    height: 66,
+                    framerate: 30,
+                    duration: 0.1,
+                    loopCount: 1,
+                    format: 'zip',
+                    quality: 'low',
+                })
+                const settled = await window.LayersAgent.waitForJob({
+                    jobId: started.result.jobId,
+                    timeoutMs: 30000,
+                })
+                return {
+                    jobStatus: settled.result.status,
+                    lifecycleActive: app._projectLifecycleActive,
+                    rendererRunning: app._renderer.isRunning,
+                    canvas: { width: app._canvas.width, height: app._canvas.height },
+                }
+            }, restoreFailure)
+
+            expect(result).toEqual({
+                jobStatus: 'failed',
+                lifecycleActive: false,
+                rendererRunning: true,
+                canvas: { width: 1024, height: 1024 },
+            })
+        })
+    }
+
     test('default export dimensions are resolved after a failed replacement rolls back', async ({ page }) => {
         const result = await page.evaluate(async () => {
             const app = window.layersApp

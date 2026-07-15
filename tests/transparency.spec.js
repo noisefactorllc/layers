@@ -72,4 +72,57 @@ test.describe('Base layer transparency', () => {
         console.log('Zero alpha:', zeroAlpha)
         expect(zeroAlpha).toBe(0)
     })
+
+    test('one keyboard opacity input emits once and rolls back model and control on rebuild failure', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await page.click('.media-option[data-type="solid"]')
+        await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+        await page.click('.canvas-size-dialog .action-btn.primary')
+        await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
+
+        await page.evaluate(() => {
+            const app = window.layersApp
+            const rebuild = app._rebuild.bind(app)
+            let shouldFail = true
+            app._rebuild = (...args) => {
+                if (shouldFail) {
+                    shouldFail = false
+                    return Promise.resolve({ success: false, error: 'injected opacity rebuild failure' })
+                }
+                return rebuild(...args)
+            }
+
+            window.__opacityLayerChanges = []
+            const layerItem = document.querySelector('layer-item')
+            const parent = layerItem.parentNode
+            const nextSibling = layerItem.nextSibling
+            layerItem.remove()
+            parent.insertBefore(layerItem, nextSibling)
+            layerItem.addEventListener('layer-change', event => {
+                if (event.detail.property === 'opacity') {
+                    window.__opacityLayerChanges.push({
+                        value: event.detail.value,
+                        previousValue: event.detail.previousValue,
+                    })
+                }
+            })
+        })
+
+        await page.locator('layer-item .layer-opacity .slider').focus()
+        await page.keyboard.press('ArrowLeft')
+
+        await expect.poll(() => page.evaluate(() => ({
+            changes: window.__opacityLayerChanges,
+            modelOpacity: window.layersApp._layers[0].opacity,
+            hostOpacity: Number(document.querySelector('layer-item .layer-opacity').value),
+            rangeOpacity: Number(document.querySelector('layer-item .layer-opacity .slider').value),
+        }))).toEqual({
+            changes: [{ value: 99, previousValue: 100 }],
+            modelOpacity: 100,
+            hostOpacity: 100,
+            rangeOpacity: 100,
+        })
+    })
 })

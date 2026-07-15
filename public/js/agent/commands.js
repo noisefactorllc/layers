@@ -25,7 +25,6 @@ import {
     getProject as getProjectStorage
 } from '../utils/project-storage.js'
 import * as effectsModule from './effects.js'
-import { createDrawingLayer } from '../layers/layer-model.js'
 // We use namespace import here because the agent's handler functions
 // (featherMask, expandMask, contractMask, smoothMask) shadow the selection-
 // modify export names — `selectionMods.featherMask(...)` tracks provenance
@@ -50,33 +49,230 @@ import { runVideoExport } from '../ui/video-exporter.js'
 import { toast } from '../ui/toast.js'
 import { setTheme } from '../ui/settings-dialog.js'
 
-/**
- * Reject any param value whose string content contains a literal `"""`.
- *
- * Background: the renderer emits param strings inside `"""..."""` triple-quoted
- * DSL literals so internal `"` characters survive the lexer (font stacks,
- * multi-line text). The DSL lexer has no escape sequences inside triple-quoted
- * strings, so a value that itself contains `"""` would close the literal
- * mid-stream and corrupt emission. The renderer logs a warning when this
- * happens, but warning is informational — the agent layer is the right place
- * to reject the input cleanly before it reaches the renderer.
- *
- * Walks the params object's own enumerable values one level deep. Vec / color
- * arrays of numbers are skipped (they don't go through the triple-quote path).
- *
- * @param {object} params
- * @param {string} fieldPrefix - prepended to the field path in the error details.
- * @throws INVALID_ARGS_TYPE when any string value contains `"""`.
- */
-function rejectTripleQuoteInParams(params, fieldPrefix = 'params') {
-    if (!params || typeof params !== 'object') return
-    for (const [key, value] of Object.entries(params)) {
-        if (typeof value === 'string' && value.includes('"""')) {
+const PARAM_IDENTIFIER_PATTERN = /^[_A-Za-z][_A-Za-z0-9]*$/
+const MEMBER_PATTERN = /^[_A-Za-z][_A-Za-z0-9]*\.[_A-Za-z][_A-Za-z0-9]*$/
+const HEX_COLOR_PATTERN = /^#[\da-f]{6}$/i
+
+function isPlainObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const proto = Object.getPrototypeOf(value)
+    return proto === Object.prototype || proto === null
+}
+
+function paramValueType(value) {
+    if (Array.isArray(value)) return 'array'
+    if (value === null) return 'null'
+    if (typeof value === 'number' && !Number.isFinite(value)) return 'non-finite number'
+    return typeof value
+}
+
+function invalidParamType(field, expected, value) {
+    throw commandError('INVALID_ARGS_TYPE', `${field}: expected ${expected}`, {
+        field,
+        expected,
+        got: paramValueType(value),
+    })
+}
+
+function assertSafeParamStructure(value, field = 'params', seen = new WeakSet()) {
+    if (typeof value === 'string') {
+        if (value.includes('"""')) {
             const preview = value.length > 60 ? value.slice(0, 57) + '...' : value
             throw commandError('INVALID_ARGS_TYPE',
                 `Param value contains '"""' which would corrupt DSL emission`,
-                { field: `${fieldPrefix}.${key}`, got: preview })
+                { field, got: preview })
         }
+        return
+    }
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) invalidParamType(field, 'a finite number', value)
+        return
+    }
+    if (typeof value === 'boolean' || value === null) return
+    if (Array.isArray(value)) {
+        if (seen.has(value)) invalidParamType(field, 'an acyclic array', value)
+        seen.add(value)
+        for (let i = 0; i < value.length; i++) {
+            assertSafeParamStructure(value[i], `${field}[${i}]`, seen)
+        }
+        seen.delete(value)
+        return
+    }
+    if (!isPlainObject(value)) invalidParamType(field, 'a JSON-compatible value', value)
+    if (seen.has(value)) invalidParamType(field, 'an acyclic object', value)
+    seen.add(value)
+    for (const [key, child] of Object.entries(value)) {
+        const childField = `${field}.${key}`
+        if (!PARAM_IDENTIFIER_PATTERN.test(key)) {
+            throw commandError('INVALID_ARGS_TYPE',
+                `${childField}: parameter key is not a safe identifier`, {
+                    field: childField,
+                    expected: 'a safe parameter identifier',
+                    got: key,
+                })
+        }
+        assertSafeParamStructure(child, childField, seen)
+    }
+    seen.delete(value)
+}
+
+function assertParamRange(value, spec, field, index = null) {
+    const min = Array.isArray(spec.min) ? spec.min[index] : spec.min
+    const max = Array.isArray(spec.max) ? spec.max[index] : spec.max
+    if (typeof min === 'number' && value < min) {
+        throw commandError('INVALID_ARGS_RANGE',
+            `${field}: ${value} is below the declared minimum ${min}`, {
+                field, value, min, max,
+            })
+    }
+    if (typeof max === 'number' && value > max) {
+        throw commandError('INVALID_ARGS_RANGE',
+            `${field}: ${value} exceeds the declared maximum ${max}`, {
+                field, value, min, max,
+            })
+    }
+}
+
+function assertParamChoice(value, spec, field, effectId, canonicalName) {
+    if (!isPlainObject(spec.choices)) return
+    if (effectId === 'filter/text' && canonicalName === 'font') return
+    const allowed = Object.values(spec.choices)
+    if (!allowed.some(choice => Object.is(choice, value))) {
+        throw commandError('INVALID_ARGS_ENUM',
+            `${field}: value is not a declared choice`, {
+                field,
+                allowed,
+                got: value,
+            })
+    }
+}
+
+function invalidParamEnum(field, value, allowed) {
+    throw commandError('INVALID_ARGS_ENUM',
+        `${field}: value is outside the declared identifier domain`, {
+            field,
+            allowed,
+            got: value,
+        })
+}
+
+function assertDeclaredParamValue(value, spec, field, effectId, canonicalName, app) {
+    switch (spec.type) {
+        case 'float':
+            if (!Number.isFinite(value)) invalidParamType(field, 'a finite number', value)
+            assertParamRange(value, spec, field)
+            break
+        case 'int':
+            if (!Number.isSafeInteger(value)) invalidParamType(field, 'a safe integer', value)
+            assertParamRange(value, spec, field)
+            break
+        case 'boolean':
+            if (typeof value !== 'boolean') invalidParamType(field, 'boolean', value)
+            break
+        case 'string':
+            if (typeof value !== 'string') invalidParamType(field, 'a string', value)
+            break
+        case 'member':
+            if (typeof value !== 'string' || !MEMBER_PATTERN.test(value)) {
+                invalidParamType(field, 'a declared enum member', value)
+            }
+            if (!app?._renderer?.isDeclaredDslIdentifier?.(spec, value)) {
+                invalidParamEnum(field, value,
+                    app?._renderer?.getDeclaredDslIdentifierValues?.(spec) || [])
+            }
+            break
+        case 'volume':
+            if (typeof value !== 'string') invalidParamType(field, 'a volume identifier', value)
+            if (!app?._renderer?.isDeclaredDslIdentifier?.(spec, value)) {
+                invalidParamEnum(field, value,
+                    app?._renderer?.getDeclaredDslIdentifierValues?.(spec) || [])
+            }
+            break
+        case 'geometry':
+            if (typeof value !== 'string') invalidParamType(field, 'a geometry identifier', value)
+            if (!app?._renderer?.isDeclaredDslIdentifier?.(spec, value)) {
+                invalidParamEnum(field, value,
+                    app?._renderer?.getDeclaredDslIdentifierValues?.(spec) || [])
+            }
+            break
+        case 'surface':
+            invalidParamType(field, 'omitted because surface inputs are not configurable', value)
+            break
+        case 'color':
+            if (typeof value === 'string') {
+                if (effectId === 'synth/solid' && canonicalName === 'color') {
+                    invalidParamType(field, 'an RGB numeric array', value)
+                }
+                if (!HEX_COLOR_PATTERN.test(value)) {
+                    invalidParamType(field, 'a 6-digit hexadecimal color', value)
+                }
+                break
+            }
+            if (!Array.isArray(value) || value.length !== 3
+                || value.some(component => !Number.isFinite(component)
+                    || component < 0 || component > 1)) {
+                invalidParamType(field,
+                    'an RGB array with finite components from 0 to 1', value)
+            }
+            break
+        case 'vec2':
+        case 'vec3':
+        case 'vec4': { // eslint-disable-line no-case-declarations
+            const length = Number(spec.type.slice(3))
+            if (!Array.isArray(value) || value.length !== length
+                || value.some(component => !Number.isFinite(component))) {
+                invalidParamType(field, `a ${spec.type} finite numeric array`, value)
+            }
+            for (let i = 0; i < value.length; i++) {
+                assertParamRange(value[i], spec, `${field}[${i}]`, i)
+            }
+            break
+        }
+        default:
+            if (typeof value === 'number') {
+                if (!Number.isFinite(value)) invalidParamType(field, 'a finite scalar', value)
+                assertParamRange(value, spec, field)
+            } else if (typeof value === 'boolean' || typeof value === 'string') {
+                // Recursive structure validation already rejected unsafe strings.
+            } else if (!Array.isArray(value) || value.length < 2 || value.length > 4
+                || value.some(component => !Number.isFinite(component))) {
+                invalidParamType(field, 'a DSL-safe primitive or finite vector', value)
+            }
+    }
+    assertParamChoice(value, spec, field, effectId, canonicalName)
+}
+
+async function assertEffectParams(effectId, params, app) {
+    if (params == null) return
+    assertSafeParamStructure(params)
+    const entries = Object.entries(params)
+    if (entries.length === 0) return
+
+    const definition = await app?._renderer?.getEffectDefinition?.(effectId)
+    const globals = definition?.globals
+    if (!isPlainObject(globals)) {
+        throw commandError('NOT_FOUND_EFFECT',
+            `Effect definition is unavailable: ${effectId}`, { effectId })
+    }
+    const aliases = isPlainObject(definition.paramAliases)
+        ? definition.paramAliases
+        : {}
+    for (const [key, value] of entries) {
+        const field = `params.${key}`
+        const canonicalName = Object.hasOwn(aliases, key) ? aliases[key] : key
+        const spec = Object.hasOwn(globals, canonicalName)
+            ? globals[canonicalName]
+            : null
+        if (!PARAM_IDENTIFIER_PATTERN.test(canonicalName) || !isPlainObject(spec)
+            || spec.internal || spec.ui?.hidden) {
+            throw commandError('INVALID_ARGS_UNKNOWN',
+                `${field}: parameter is not declared by ${effectId}`, {
+                    field,
+                    effectId,
+                    got: key,
+                })
+        }
+        assertDeclaredParamValue(value, spec, field, effectId, canonicalName, app)
     }
 }
 
@@ -400,6 +596,25 @@ export async function addLayer(args, app, mutationToken = null) {
     throw commandError('INVALID_ARGS_ENUM', `Unknown kind: ${kind}`, { field: 'kind', got: kind })
 }
 
+function requireAddedLayerOutcome(outcome) {
+    if (outcome?.status === 'added') return outcome
+    throw commandError('INTERNAL_ERROR',
+        outcome?.error?.message || 'Failed to render added layer',
+        { phase: 'render' })
+}
+
+function requireCommittedMutationOutcome(outcome, message = 'Failed to render mutation') {
+    if (outcome?.status === 'committed') return outcome
+    throw commandError('INTERNAL_ERROR', outcome?.error?.message || message,
+        { phase: 'render' })
+}
+
+function rejectMediaMutationOnline(app) {
+    if (!app?._onlineAdapter?.isOnline()) return
+    throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
+        'Media layers are not supported while a Layers collaboration session is online', {})
+}
+
 async function addEffectLayer({ effectId, params, name }, app) {
     if (!effectId) {
         throw commandError('INVALID_ARGS_REQUIRED', 'effectId is required for kind=effect',
@@ -409,39 +624,20 @@ async function addEffectLayer({ effectId, params, name }, app) {
     // hidden from getAllEffects() but ARE valid for addLayer; check the renderer's
     // raw manifest instead.
     const manifest = app?._renderer?.manifest || {}
-    if (!manifest[effectId]) {
+    if (!Object.hasOwn(manifest, effectId)) {
         throw commandError('NOT_FOUND_EFFECT', `Effect not found: ${effectId}`, { effectId })
     }
-    // Reject DSL-corrupting `"""` substrings before we touch any state.
-    rejectTripleQuoteInParams(params)
-    await app._handleAddEffectLayer(effectId)
-    const layer = app._layers[app._layers.length - 1]
-    if (name) layer.name = name
-    if (params) {
-        // Defensive deep copy: the agent may hold a reference to `params` and
-        // mutate it after the call returns. Without cloning, those mutations
-        // would leak into the layer's effectParams (including any nested
-        // objects like color tables or vec arrays).
-        const cloned = safeClone(params)
-        await app._handleLayerChange({
-            layerId: layer.id,
-            property: 'effectParams',
-            value: { ...layer.effectParams, ...cloned }
-        })
-    }
-    return { result: { layerId: layer.id } }
+    await assertEffectParams(effectId, params, app)
+    const cloned = params ? safeClone(params) : null
+    const outcome = requireAddedLayerOutcome(
+        await app._handleAddEffectLayer(effectId, { name, params: cloned }))
+    return { result: { layerId: outcome.layerId } }
 }
 
 async function addDrawingLayer({ name }, app) {
-    app._finalizePendingUndo?.()
-    const layer = createDrawingLayer(name)
-    app._layers.push(layer)
-    if (app._layerStack) app._layerStack.selectedLayerId = layer.id
-    app._updateLayerStack?.()
-    await app._rebuild?.()
-    app._markDirty?.()
-    app._pushUndoState?.()
-    return { result: { layerId: layer.id } }
+    const outcome = requireAddedLayerOutcome(
+        await app._handleAddDrawingLayer(name))
+    return { result: { layerId: outcome.layerId } }
 }
 
 async function addMediaLayer({ source, mediaType, name }, app, mutationToken = null) {
@@ -463,7 +659,8 @@ async function addMediaLayer({ source, mediaType, name }, app, mutationToken = n
     const file = await sourceToFile(source, name || 'media')
     let outcome
     try {
-        outcome = await app._handleAddMediaLayer(file, mediaType, { mutationToken })
+        outcome = await app._handleAddMediaLayer(
+            file, mediaType, { mutationToken, name })
     } catch (err) {
         throw commandError('RESOURCE_DECODE_FAILED',
             `Failed to decode media: ${err.message || err}`,
@@ -473,12 +670,11 @@ async function addMediaLayer({ source, mediaType, name }, app, mutationToken = n
         throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
             'Media layers are not supported while a Layers collaboration session is online', {})
     }
-    const layer = app._layers.find(candidate => candidate.id === outcome?.layerId)
-    if (!layer) {
+    outcome = requireAddedLayerOutcome(outcome)
+    if (!app._layers.some(candidate => candidate.id === outcome.layerId)) {
         throw commandError('RESOURCE_DECODE_FAILED', 'Media layer was not added', { mediaType })
     }
-    if (name) layer.name = name
-    return { result: { layerId: layer.id } }
+    return { result: { layerId: outcome.layerId } }
 }
 
 async function sourceToFile(source, defaultName) {
@@ -548,8 +744,13 @@ async function addTextLayer({ text, params, name }, app) {
  * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
  */
 export async function deleteLayer({ layerId }, app) {
-    requireLayer(layerId, app)
-    await app._handleDeleteLayer(layerId)
+    const layer = requireLayer(layerId, app)
+    if (app._layers[0] === layer) {
+        throw commandError('CONFLICT_BASE_LAYER',
+            'The base layer cannot be deleted', { layerId })
+    }
+    requireCommittedMutationOutcome(
+        await app._handleDeleteLayer(layerId), 'Failed to delete layer')
     return { result: { layerId } }
 }
 
@@ -564,12 +765,10 @@ export async function deleteLayer({ layerId }, app) {
  *         (e.g. unsupported layer type).
  */
 export async function duplicateLayer({ layerId }, app) {
-    requireLayer(layerId, app)
-    const prevSelected = app._layerStack?.selectedLayerId
-    if (app._layerStack) app._layerStack.selectedLayerId = layerId
-    const ok = await app._duplicateActiveLayer()
+    const layer = requireLayer(layerId, app)
+    rejectMediaMutationOnline(app)
+    const ok = await app._duplicateActiveLayer(layer)
     if (!ok) {
-        if (app._layerStack && prevSelected) app._layerStack.selectedLayerId = prevSelected
         throw commandError('CONFLICT_DUPLICATE_FAILED',
             `Could not duplicate layer ${layerId}`, { layerId })
     }
@@ -584,24 +783,24 @@ export async function duplicateLayer({ layerId }, app) {
  * @param {{layerId: string, toIndex: number}} args
  * @returns {Promise<{result: {layerId: string, toIndex: number}}>}
  * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
- * @throws INVALID_ARGS_RANGE — when toIndex is outside [0, layers.length).
+ * @throws INVALID_ARGS_RANGE — when toIndex is outside [1, layers.length).
+ * @throws CONFLICT_BASE_LAYER — when moving the base layer or targeting index 0.
  */
 export async function reorderLayer({ layerId, toIndex }, app) {
-    requireLayer(layerId, app)
+    const layer = requireLayer(layerId, app)
     const layers = app._layers
     if (toIndex < 0 || toIndex >= layers.length) {
         throw commandError('INVALID_ARGS_RANGE',
             `toIndex ${toIndex} is out of range (layers.length=${layers.length})`,
-            { field: 'toIndex', value: toIndex, min: 0, max: layers.length - 1 })
+            { field: 'toIndex', value: toIndex, min: 1, max: layers.length - 1 })
     }
-    app._finalizePendingUndo?.()
-    const fromIndex = layers.findIndex(l => l.id === layerId)
-    const [moved] = layers.splice(fromIndex, 1)
-    layers.splice(toIndex, 0, moved)
-    app._updateLayerStack?.()
-    await app._rebuild?.()
-    app._markDirty?.()
-    app._pushUndoState?.()
+    if (layers[0] === layer || toIndex === 0) {
+        throw commandError('CONFLICT_BASE_LAYER',
+            'The base layer must remain at index 0',
+            { layerId, toIndex })
+    }
+    requireCommittedMutationOutcome(
+        await app._reorderLayer(layerId, toIndex), 'Failed to reorder layer')
     return { result: { layerId, toIndex } }
 }
 
@@ -645,7 +844,9 @@ export async function selectLayers({ layerIds }, app) {
  * @returns {Promise<{result: {ok: true}}>}
  */
 export async function flattenImage(_args, app) {
-    await app._flattenImage()
+    rejectMediaMutationOnline(app)
+    requireCommittedMutationOutcome(
+        await app._flattenImage(), 'Failed to flatten image')
     return { result: { ok: true } }
 }
 
@@ -660,12 +861,20 @@ export async function flattenImage(_args, app) {
  */
 export async function flattenLayers({ layerIds }, app) {
     for (const id of layerIds) requireLayer(id, app)
-    if (layerIds.length < 2) {
+    const distinctLayerIds = new Set(layerIds)
+    if (layerIds.length < 2 || distinctLayerIds.size !== layerIds.length) {
         throw commandError('INVALID_ARGS_RANGE',
-            'flattenLayers requires at least 2 layerIds',
-            { field: 'layerIds', value: layerIds.length, min: 2 })
+            'flattenLayers requires at least 2 distinct layerIds with no duplicates',
+            {
+                field: 'layerIds',
+                value: layerIds.length,
+                distinct: distinctLayerIds.size,
+                min: 2,
+            })
     }
-    await app._flattenLayers(layerIds)
+    rejectMediaMutationOnline(app)
+    requireCommittedMutationOutcome(
+        await app._flattenLayers(layerIds), 'Failed to flatten layers')
     return { result: { ok: true } }
 }
 
@@ -680,7 +889,9 @@ export async function flattenLayers({ layerIds }, app) {
  */
 export async function rasterizeLayer({ layerId }, app) {
     requireLayer(layerId, app)
-    await app._rasterizeLayer(layerId)
+    rejectMediaMutationOnline(app)
+    requireCommittedMutationOutcome(
+        await app._rasterizeLayer(layerId), 'Failed to rasterize layer')
     return { result: { layerId } }
 }
 
@@ -700,8 +911,10 @@ export async function flipLayer({ layerId, axis }, app) {
             'flipLayer only supports media layers',
             { layerId, sourceType: layer.sourceType })
     }
-    if (app._layerStack) app._layerStack.selectedLayerId = layerId
-    app._flipActiveLayer(axis === 'h' ? 'horizontal' : 'vertical')
+    requireCommittedMutationOutcome(
+        await app._flipActiveLayer(
+            axis === 'h' ? 'horizontal' : 'vertical', layer),
+        'Failed to flip layer')
     return { result: { layerId, axis } }
 }
 
@@ -718,29 +931,21 @@ const SET_LAYER_PROPS_FIELDS = ['name', 'visible', 'opacity', 'blendMode', 'lock
  */
 export async function setLayerProps({ layerId, props }, app) {
     const layer = requireLayer(layerId, app)
+    const updates = []
     for (const field of SET_LAYER_PROPS_FIELDS) {
         if (props[field] === undefined) continue
-        if (field === 'visible') {
-            // The UI emits 'visibility' as the property name on layer-change
-            // events but the actual layer field is `visible`. _handleLayerChange's
-            // unconditional layer[property] = value assignment would write to a
-            // dead `layer.visibility` field, so we mutate `visible` ourselves
-            // first, then call through for the side effects (rebuild, undo push).
-            layer.visible = props[field]
-            await app._handleLayerChange({
-                layerId,
-                property: 'visibility',
-                value: props[field]
-            })
-        } else {
-            await app._handleLayerChange({
-                layerId,
-                property: field,
-                value: props[field]
-            })
-        }
+        updates.push([field, props[field]])
     }
-    if (app._updateLayerStack) app._updateLayerStack()
+    if (updates.length > 0) {
+        const onlyOpacity = updates.every(([field]) => field === 'opacity')
+        requireCommittedMutationOutcome(await app._commitModelMutation(() => {
+            for (const [field, value] of updates) layer[field] = value
+        }, {
+            updateLayerStack: true,
+            pushUndo: onlyOpacity ? 'debounced' : true,
+            finalizePendingUndo: !onlyOpacity,
+        }), 'Failed to update layer properties')
+    }
     return { result: { layerId } }
 }
 
@@ -754,23 +959,46 @@ const TRANSFORM_FIELDS = ['offsetX', 'offsetY', 'scaleX', 'scaleY', 'rotation', 
  * @param {{layerId: string, transform: object}} args
  * @returns {Promise<{result: {layerId: string}}>}
  * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
+ * @throws CONFLICT_NOT_TRANSFORMABLE_LAYER — when the layer has no raster source.
  */
 export async function setLayerTransform({ layerId, transform }, app) {
     const layer = requireLayer(layerId, app)
-    let touched = false
+    if (layer.sourceType !== 'media' && layer.sourceType !== 'drawing') {
+        throw commandError('CONFLICT_NOT_TRANSFORMABLE_LAYER',
+            `Layer ${layerId} cannot be transformed (sourceType=${layer.sourceType})`,
+            { layerId, sourceType: layer.sourceType })
+    }
+    const allocation = app._validateLayerTransformAllocation?.(layer, transform)
+    if (allocation && !allocation.valid) {
+        throw commandError('INVALID_ARGS_RANGE', allocation.error, {
+            field: 'transform',
+            layerId,
+        })
+    }
+    const updates = []
     for (const field of TRANSFORM_FIELDS) {
         if (transform[field] === undefined) continue
-        layer[field] = transform[field]
-        touched = true
+        updates.push([field, transform[field]])
     }
-    if (touched) {
-        if (app._updateTransformRender) {
-            app._updateTransformRender(layer)
-        } else {
-            await app._rebuild?.()
-        }
-        app._markDirty?.()
-        app._pushUndoStateDebounced?.()
+    if (updates.length > 0) {
+        requireCommittedMutationOutcome(await app._commitModelMutation(() => {
+            for (const [field, value] of updates) layer[field] = value
+        }, {
+            pushUndo: 'debounced',
+            finalizePendingUndo: false,
+            render: async () => {
+                if (app._updateTransformRender) {
+                    await app._updateTransformRender(layer, { strict: true })
+                    return { success: true }
+                }
+                return app._rebuild?.()
+            },
+            restore: async () => {
+                if (app._updateTransformRender) {
+                    await app._updateTransformRender(layer, { strict: true })
+                }
+            },
+        }), 'Failed to update layer transform')
     }
     return { result: { layerId } }
 }
@@ -792,18 +1020,17 @@ export async function setLayerEffectParams({ layerId, params, replace }, app) {
             `Layer ${layerId} is not an effect layer (sourceType=${layer.sourceType})`,
             { layerId, sourceType: layer.sourceType })
     }
-    // Reject DSL-corrupting `"""` before touching state.
-    rejectTripleQuoteInParams(params)
+    await assertEffectParams(layer.effectId, params, app)
     // Deep clone agent-provided params so post-call mutation by the agent
     // can't corrupt the layer's stored effectParams (including any nested
     // arrays/objects).
     const cloned = safeClone(params) || {}
     const next = replace ? { ...cloned } : { ...layer.effectParams, ...cloned }
-    await app._handleLayerChange({
+    requireCommittedMutationOutcome(await app._handleLayerChange({
         layerId,
         property: 'effectParams',
         value: next
-    })
+    }), 'Failed to update layer effect parameters')
     return { result: { layerId, params: next } }
 }
 
@@ -817,27 +1044,17 @@ export async function setLayerEffectParams({ layerId, params, replace }, app) {
  * @throws NOT_FOUND_EFFECT — when effectId isn't in the manifest.
  */
 export async function addChildEffect({ layerId, effectId, params }, app) {
-    const layer = requireLayer(layerId, app)
+    requireLayer(layerId, app)
     const manifest = app?._renderer?.manifest || {}
-    if (!manifest[effectId]) {
+    if (!Object.hasOwn(manifest, effectId)) {
         throw commandError('NOT_FOUND_EFFECT', `Effect not found: ${effectId}`, { effectId })
     }
-    // Reject DSL-corrupting `"""` before touching state.
-    rejectTripleQuoteInParams(params)
-    await app._handleAddChildEffect(layerId, effectId)
-    const newChild = layer.children[layer.children.length - 1]
-    if (params) {
-        // Deep clone before merging into the child's effectParams so the agent
-        // can hold and mutate `params` after the call without corrupting state.
-        const cloned = safeClone(params)
-        await app._handleLayerChange({
-            layerId: newChild.id,
-            parentLayerId: layerId,
-            property: 'effectParams',
-            value: { ...newChild.effectParams, ...cloned }
-        })
-    }
-    return { result: { childId: newChild.id } }
+    await assertEffectParams(effectId, params, app)
+    const outcome = requireCommittedMutationOutcome(
+        await app._handleAddChildEffect(layerId, effectId, {
+            params: params ? safeClone(params) : null,
+        }), 'Failed to add child effect')
+    return { result: { childId: outcome.childId } }
 }
 
 /**
@@ -849,7 +1066,9 @@ export async function addChildEffect({ layerId, effectId, params }, app) {
  */
 export async function removeChildEffect({ layerId, childId }, app) {
     requireChildEffect(layerId, childId, app)
-    await app._handleDeleteLayer(childId, layerId)
+    requireCommittedMutationOutcome(
+        await app._handleDeleteLayer(childId, layerId),
+        'Failed to remove child effect')
     return { result: { childId } }
 }
 
@@ -869,14 +1088,9 @@ export async function reorderChildEffect({ layerId, childId, toIndex }, app) {
             `toIndex ${toIndex} is out of range (children.length=${children.length})`,
             { field: 'toIndex', value: toIndex, min: 0, max: children.length - 1 })
     }
-    app._finalizePendingUndo?.()
-    const fromIndex = children.findIndex(c => c.id === childId)
-    const [moved] = children.splice(fromIndex, 1)
-    children.splice(toIndex, 0, moved)
-    app._updateLayerStack?.()
-    await app._rebuild?.()
-    app._markDirty?.()
-    app._pushUndoState?.()
+    requireCommittedMutationOutcome(
+        await app._reorderChildEffect(layerId, childId, toIndex),
+        'Failed to reorder child effect')
     return { result: { layerId, childId, toIndex } }
 }
 
@@ -890,25 +1104,13 @@ export async function reorderChildEffect({ layerId, childId, toIndex }, app) {
  */
 export async function setChildEffectProps({ layerId, childId, props }, app) {
     const { child } = requireChildEffect(layerId, childId, app)
-    if (props.visible !== undefined) {
-        // Same `visibility`-vs-`visible` rename issue as setLayerProps:
-        // mutate the actual field, then call through for rebuild/undo.
-        child.visible = props.visible
-        await app._handleLayerChange({
-            layerId: childId,
-            parentLayerId: layerId,
-            property: 'visibility',
-            value: props.visible
-        })
-    }
-    if (props.name !== undefined) {
-        child.name = props.name
-        app._updateLayerStack?.()
-        app._markDirty?.()
-        // _handleLayerChange's visibility branch already pushes undo state, but
-        // the name path used to skip it — leaving renames non-undoable. Push
-        // here so an agent rename can be undone like any other edit.
-        app._pushUndoState?.()
+    const updates = []
+    if (props.visible !== undefined) updates.push(['visible', props.visible])
+    if (props.name !== undefined) updates.push(['name', props.name])
+    if (updates.length > 0) {
+        requireCommittedMutationOutcome(await app._commitModelMutation(() => {
+            for (const [field, value] of updates) child[field] = value
+        }, { updateLayerStack: true }), 'Failed to update child properties')
     }
     return { result: { layerId, childId } }
 }
@@ -923,18 +1125,17 @@ export async function setChildEffectProps({ layerId, childId, props }, app) {
  */
 export async function setChildEffectParams({ layerId, childId, params, replace }, app) {
     const { child } = requireChildEffect(layerId, childId, app)
-    // Reject DSL-corrupting `"""` before touching state.
-    rejectTripleQuoteInParams(params)
+    await assertEffectParams(child.effectId, params, app)
     // Deep clone first so any nested objects/arrays in `params` aren't aliased
     // with the agent's input — protects child.effectParams from post-call mutation.
     const cloned = safeClone(params) || {}
     const next = replace ? { ...cloned } : { ...child.effectParams, ...cloned }
-    await app._handleLayerChange({
+    requireCommittedMutationOutcome(await app._handleLayerChange({
         layerId: childId,
         parentLayerId: layerId,
         property: 'effectParams',
         value: next
-    })
+    }), 'Failed to update child effect parameters')
     return { result: { layerId, childId, params: next } }
 }
 
@@ -1069,6 +1270,7 @@ async function canvasToBytes(canvas, format, quality, targetW, targetH) {
 export async function getCanvasImageBytes(args, app) {
     const format = args?.format || 'png'
     const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
+    app._renderCurrentFrame?.()
     const out = await canvasToBytes(app._canvas, format, quality)
     return {
         result: {
@@ -1105,6 +1307,7 @@ export async function getThumbnail(args, app) {
     const maxDim = args?.maxDimension ?? 256
     const format = args?.format || 'jpg'
     const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
+    app._renderCurrentFrame?.()
     const { width: tw, height: th } = thumbnailDimensions(
         app._canvas.width, app._canvas.height, maxDim)
     const out = await canvasToBytes(app._canvas, format, quality, tw, th)
@@ -1215,6 +1418,7 @@ export async function exportImage(args, app) {
     const triggerDownload = !captureOnly && (args?.triggerDownload !== false)
     const filename = timestampedFilename(args?.filename, format)
 
+    app._renderCurrentFrame?.()
     const out = await canvasToBytes(app._canvas, format, quality, width, height)
 
     if (triggerDownload) {
@@ -1402,7 +1606,7 @@ export async function setPolygonSelection({ kind, points }, app) {
     for (let i = 0; i < points.length; i++) {
         const p = points[i]
         if (!Array.isArray(p) || p.length < 2 ||
-            typeof p[0] !== 'number' || typeof p[1] !== 'number') {
+            !Number.isFinite(p[0]) || !Number.isFinite(p[1])) {
             throw commandError('INVALID_ARGS_TYPE',
                 `points[${i}] must be a [number, number] tuple`,
                 { field: `points[${i}]`, expected: '[number, number]' })
@@ -1434,6 +1638,7 @@ export async function setMagicWandSelection({ x, y, tolerance }, app) {
             `Point (${x}, ${y}) is outside canvas (${canvas.width}x${canvas.height})`,
             { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
     }
+    app._renderCurrentFrame?.()
     // Read current canvas pixels into an offscreen 2D context for flood fill.
     const tmp = document.createElement('canvas')
     tmp.width = canvas.width
@@ -1467,6 +1672,7 @@ export async function selectColorRange({ x, y, tolerance }, app) {
             `Point (${x}, ${y}) is outside canvas (${canvas.width}x${canvas.height})`,
             { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
     }
+    app._renderCurrentFrame?.()
     const tmp = document.createElement('canvas')
     tmp.width = canvas.width
     tmp.height = canvas.height
@@ -1560,7 +1766,8 @@ export async function borderSelection({ pixels }, app) {
  */
 export async function cropToSelection(_args, app) {
     requireSelection(app)
-    await app._cropToSelection()
+    requireCommittedMutationOutcome(
+        await app._cropToSelection(), 'Failed to crop to selection')
     return { result: { ok: true } }
 }
 
@@ -1600,25 +1807,11 @@ function requireUnmaskedLayer(layerId, app) {
  * @throws CONFLICT_LAYER_HAS_MASK — when the layer already has a mask.
  */
 export async function addLayerMask({ layerId }, app) {
-    const layer = requireUnmaskedLayer(layerId, app)
-    // Replicate the core of app._addLayerMask but skip _enterMaskEditMode.
-    app._finalizePendingUndo?.()
-    const w = app._canvas.width
-    const h = app._canvas.height
-    const mask = new ImageData(w, h)
-    for (let i = 0; i < mask.data.length; i += 4) {
-        mask.data[i] = 255
-        mask.data[i + 1] = 255
-        mask.data[i + 2] = 255
-        mask.data[i + 3] = 255
-    }
-    layer.mask = mask
-    layer.maskEnabled = true
-    app._renderer?.uploadMaskTexture?.(layerId, mask)
-    app._updateLayerStack?.()
-    await app._rebuild?.()
-    app._markDirty?.()
-    app._pushUndoState?.()
+    requireUnmaskedLayer(layerId, app)
+    requireCommittedMutationOutcome(
+        await toast.suppress(() => app._addLayerMask(
+            layerId, { enterEditMode: false })),
+        'Failed to add layer mask')
     return { result: { layerId } }
 }
 
@@ -1635,7 +1828,9 @@ export async function deleteLayerMask({ layerId }, app) {
     // `_deleteLayerMask` is the same code-path the human menu uses, so it
     // fires a user-facing "Layer mask deleted" toast. Agents have no
     // foreground UI to acknowledge — suppress while the call runs.
-    await toast.suppress(() => app._deleteLayerMask(layerId))
+    requireCommittedMutationOutcome(
+        await toast.suppress(() => app._deleteLayerMask(layerId)),
+        'Failed to delete layer mask')
     return { result: { layerId } }
 }
 
@@ -1653,7 +1848,9 @@ export async function addMaskFromSelection({ layerId }, app) {
     requireSelection(app)   // throws CONFLICT_NO_SELECTION if missing
     // Suppress the "Mask created from selection" toast that the human-UI
     // path fires — agents drive this programmatically.
-    await toast.suppress(() => app._maskFromSelection(layerId))
+    requireCommittedMutationOutcome(
+        await toast.suppress(() => app._maskFromSelection(layerId)),
+        'Failed to create mask from selection')
     return { result: { layerId } }
 }
 
@@ -1668,7 +1865,9 @@ export async function addMaskFromSelection({ layerId }, app) {
 export async function invertLayerMask({ layerId }, app) {
     requireMaskedLayer(layerId, app)
     // Suppress the "Mask inverted" toast that the human-UI path fires.
-    await toast.suppress(() => app._invertLayerMask(layerId))
+    requireCommittedMutationOutcome(
+        await toast.suppress(() => app._invertLayerMask(layerId)),
+        'Failed to invert layer mask')
     return { result: { layerId } }
 }
 
@@ -1687,12 +1886,9 @@ export async function setMaskEnabled({ layerId, enabled }, app) {
         // No-op: already in requested state.
         return { result: { layerId, enabled } }
     }
-    app._finalizePendingUndo?.()
-    layer.maskEnabled = enabled
-    app._updateLayerStack?.()
-    await app._rebuild?.()
-    app._markDirty?.()
-    app._pushUndoState?.()
+    requireCommittedMutationOutcome(
+        await app._setMaskEnabled(layerId, enabled),
+        'Failed to update mask enabled state')
     return { result: { layerId, enabled } }
 }
 
@@ -1704,15 +1900,10 @@ export async function setMaskEnabled({ layerId, enabled }, app) {
  * and app._selectionFormatToMask.
  */
 async function applyMaskTransform(app, layerId, fn) {
-    const layer = requireMaskedLayer(layerId, app)
-    app._finalizePendingUndo?.()
-    const converted = app._maskToSelectionFormat(layer.mask)
-    layer.mask = app._selectionFormatToMask(fn(converted))
-    app._renderer?.uploadMaskTexture?.(layerId, layer.mask)
-    if (app._maskEditMode) app._renderMaskOverlay?.(layer)
-    await app._rebuild?.()
-    app._markDirty?.()
-    app._pushUndoState?.()
+    requireMaskedLayer(layerId, app)
+    requireCommittedMutationOutcome(
+        await app._applyLayerMaskTransform(layerId, fn),
+        'Failed to transform layer mask')
 }
 
 /**
@@ -1795,9 +1986,9 @@ function normalizePoints(points, fieldName, minCount = 2) {
     for (let i = 0; i < points.length; i++) {
         const p = points[i]
         if (Array.isArray(p) && p.length >= 2 &&
-            typeof p[0] === 'number' && typeof p[1] === 'number') {
+            Number.isFinite(p[0]) && Number.isFinite(p[1])) {
             out.push({ x: p[0], y: p[1] })
-        } else if (p && typeof p.x === 'number' && typeof p.y === 'number') {
+        } else if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
             out.push({ x: p.x, y: p.y })
         } else {
             throw commandError('INVALID_ARGS_TYPE',
@@ -1823,13 +2014,7 @@ function normalizePoints(points, fieldName, minCount = 2) {
  */
 export async function paintStroke({ layerId, points, size, opacity, color, mode }, app) {
     const sanitized = normalizePoints(points, 'points', 2)
-    let layer
-    if (layerId) {
-        layer = requireDrawingLayer(layerId, app)
-    } else {
-        layer = app._ensureDrawingLayer()
-    }
-    app._finalizePendingUndo?.()
+    const layer = layerId ? requireDrawingLayer(layerId, app) : null
     const stroke = createPathStroke({
         color,
         size,
@@ -1837,12 +2022,9 @@ export async function paintStroke({ layerId, points, size, opacity, color, mode 
         points: sanitized,
         mode: mode ?? 'brush'
     })
-    layer.strokes.push(stroke)
-    await app._rasterizeDrawingLayer(layer)
-    await app._rebuild?.({ force: true })
-    app._markDirty?.()
-    app._pushUndoState?.()
-    return { result: { layerId: layer.id, strokeId: stroke.id } }
+    const outcome = await app._commitDrawingStroke(stroke, layer)
+    if (outcome.status !== 'committed') throw outcome.error
+    return { result: { layerId: outcome.layerId, strokeId: outcome.strokeId } }
 }
 
 /**
@@ -1864,12 +2046,9 @@ export async function eraseStroke({ layerId, strokeId }, app) {
             `Stroke not found: ${strokeId}`,
             { layerId, strokeId })
     }
-    app._finalizePendingUndo?.()
-    layer.strokes.splice(idx, 1)
-    await app._rasterizeDrawingLayer(layer)
-    await app._rebuild?.({ force: true })
-    app._markDirty?.()
-    app._pushUndoState?.()
+    const outcome = await app._commitDrawingLayerMutation(
+        layer, targetLayer => targetLayer.strokes.splice(idx, 1))
+    if (outcome.status !== 'committed') throw outcome.error
     return { result: { layerId, strokeId } }
 }
 
@@ -1885,12 +2064,9 @@ export async function eraseStroke({ layerId, strokeId }, app) {
 export async function clearDrawingLayer({ layerId }, app) {
     const layer = requireDrawingLayer(layerId, app)
     const clearedCount = (layer.strokes || []).length
-    app._finalizePendingUndo?.()
-    layer.strokes = []
-    await app._rasterizeDrawingLayer(layer)
-    await app._rebuild?.({ force: true })
-    app._markDirty?.()
-    app._pushUndoState?.()
+    const outcome = await app._commitDrawingLayerMutation(
+        layer, targetLayer => { targetLayer.strokes = [] })
+    if (outcome.status !== 'committed') throw outcome.error
     return { result: { layerId, clearedCount } }
 }
 
@@ -1904,13 +2080,7 @@ export async function clearDrawingLayer({ layerId }, app) {
  * @throws CONFLICT_NOT_DRAWING_LAYER — when layerId names a non-drawing layer.
  */
 export async function drawShape({ layerId, shape, x, y, width, height, color, size, opacity, filled }, app) {
-    let layer
-    if (layerId) {
-        layer = requireDrawingLayer(layerId, app)
-    } else {
-        layer = app._ensureDrawingLayer()
-    }
-    app._finalizePendingUndo?.()
+    const layer = layerId ? requireDrawingLayer(layerId, app) : null
     const stroke = createShapeStroke({
         type: shape,
         color,
@@ -1919,12 +2089,9 @@ export async function drawShape({ layerId, shape, x, y, width, height, color, si
         x, y, width, height,
         filled: !!filled
     })
-    layer.strokes.push(stroke)
-    await app._rasterizeDrawingLayer(layer)
-    await app._rebuild?.({ force: true })
-    app._markDirty?.()
-    app._pushUndoState?.()
-    return { result: { layerId: layer.id, strokeId: stroke.id } }
+    const outcome = await app._commitDrawingStroke(stroke, layer)
+    if (outcome.status !== 'committed') throw outcome.error
+    return { result: { layerId: outcome.layerId, strokeId: outcome.strokeId } }
 }
 
 /**
@@ -1944,6 +2111,7 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
             { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
     }
     const tol = tolerance ?? 32
+    app._renderCurrentFrame?.()
 
     // Read composited pixels from the render canvas (mirrors FillTool._onClick).
     const w = canvas.width, h = canvas.height
@@ -1982,12 +2150,13 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
     }
     ctx.putImageData(fillData, 0, 0)
 
-    app._finalizePendingUndo?.()
-    await app._addMediaLayerFromCanvas(fillCanvas, 'Fill')
-    app._markDirty?.()
-    app._pushUndoState?.()
-    const newLayer = app._layers[app._layers.length - 1]
-    return { result: { layerId: newLayer.id } }
+    const outcome = await app._addMediaLayerFromCanvas(fillCanvas, 'Fill')
+    if (outcome.status === 'blocked-online') {
+        throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
+            'Media layers are not supported while a Layers collaboration session is online', {})
+    }
+    const added = requireAddedLayerOutcome(outcome)
+    return { result: { layerId: added.layerId } }
 }
 
 /**
@@ -2146,7 +2315,7 @@ export async function deleteProject({ projectId }, app) {
  * @returns {Promise<{result: {ok: true}}>}
  */
 export async function undo(_args, app) {
-    await app._undo()
+    requireCommittedMutationOutcome(await app._undo(), 'Failed to undo')
     return { result: { ok: true } }
 }
 
@@ -2156,7 +2325,7 @@ export async function undo(_args, app) {
  * @returns {Promise<{result: {ok: true}}>}
  */
 export async function redo(_args, app) {
-    await app._redo()
+    requireCommittedMutationOutcome(await app._redo(), 'Failed to redo')
     return { result: { ok: true } }
 }
 
@@ -2281,7 +2450,8 @@ export async function setSettings(args = {}, _app) {
  * @returns {Promise<{result: {width: number, height: number}}>}
  */
 export async function resizeImage({ width, height }, app) {
-    await app._resizeImage(width, height)
+    requireCommittedMutationOutcome(
+        await app._resizeImage(width, height), 'Failed to resize image')
     return { result: { width, height } }
 }
 
@@ -2298,7 +2468,9 @@ export async function resizeImage({ width, height }, app) {
  * @returns {Promise<{result: {width: number, height: number, anchor: string}}>}
  */
 export async function resizeCanvas({ width, height, anchor }, app) {
-    await app._changeCanvasSize(width, height, anchor || 'center')
+    requireCommittedMutationOutcome(
+        await app._changeCanvasSize(width, height, anchor || 'center'),
+        'Failed to resize canvas')
     return { result: { width, height, anchor: anchor || 'center' } }
 }
 
@@ -2309,6 +2481,11 @@ export async function resizeCanvas({ width, height, anchor }, app) {
  * lets agents distinguish "no work needed" from a successful adjustment.
  */
 function autoCorrectionResult(addedLayer) {
+    if (addedLayer?.status === 'failed') {
+        throw commandError('INTERNAL_ERROR',
+            addedLayer.error?.message || 'Failed to apply auto correction',
+            { phase: 'render' })
+    }
     return {
         result: {
             applied: !!addedLayer,
@@ -2532,7 +2709,7 @@ export async function exportVideo(args, app) {
     let jobId
     try {
         const { id } = jobsRegistry.createJob(JOB_KINDS.EXPORT_VIDEO, async (api) => {
-            const result = await app._runProjectLifecycle(null, () => {
+            const result = await app._runProjectLifecycle(null, async () => {
                 const exportSettings = {
                     ...settings,
                     width: Math.max(2, Math.floor(
@@ -2540,17 +2717,31 @@ export async function exportVideo(args, app) {
                     height: Math.max(2, Math.floor(
                         (settings.height ?? app._canvas.height) / 2) * 2),
                 }
-                return runVideoExport({
-                    settings: exportSettings,
-                    canvas: app._canvas,
-                    renderer: app._renderer,
-                    files: app._files,
-                    getResolution: () => ({ width: app._canvas.width, height: app._canvas.height }),
-                    setResolution: (w, h) => app._resizeCanvas(w, h),
-                    abortSignal: api.abortSignal,
-                    onProgress: (current, total, phase) =>
-                        api.reportProgress(phase, current, total)
+                const previousSnapshotOverride = app._projectSnapshotCanvasOverride
+                const snapshotOverride = app._captureProjectSnapshotOverride({
+                    canvasOnly: true,
                 })
+                app._projectSnapshotCanvasOverride = snapshotOverride
+                try {
+                    return await runVideoExport({
+                        settings: exportSettings,
+                        canvas: app._canvas,
+                        renderer: app._renderer,
+                        files: app._files,
+                        getResolution: () => ({
+                            width: app._canvas.width,
+                            height: app._canvas.height,
+                        }),
+                        setResolution: (w, h) => app._resizeCanvas(w, h),
+                        abortSignal: api.abortSignal,
+                        onProgress: (current, total, phase) =>
+                            api.reportProgress(phase, current, total)
+                    })
+                } finally {
+                    if (app._projectSnapshotCanvasOverride === snapshotOverride) {
+                        app._projectSnapshotCanvasOverride = previousSnapshotOverride
+                    }
+                }
             })
 
             // Recorded only on success — cancelled jobs leave partial bytes

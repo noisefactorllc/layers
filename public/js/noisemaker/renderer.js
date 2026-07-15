@@ -7,7 +7,33 @@
  * @module noisemaker/renderer
  */
 
-import { CanvasRenderer, extractEffectNamesFromDsl, getAllEffects, formatDslError } from './bundle.js'
+import {
+    CanvasRenderer,
+    extractEffectNamesFromDsl,
+    getAllEffects,
+    formatDslError,
+    _bundle,
+} from './bundle.js'
+
+const DSL_IDENTIFIER_PATTERN = /^[_A-Za-z][_A-Za-z0-9]*$/
+const VOLUME_IDENTIFIERS = Array.from({ length: 8 }, (_, index) => `vol${index}`)
+const GEOMETRY_IDENTIFIERS = Array.from({ length: 8 }, (_, index) => `geo${index}`)
+
+function getDeclaredDslIdentifierValues(spec) {
+    if (spec?.type === 'member') {
+        if (typeof spec.enum !== 'string' || !DSL_IDENTIFIER_PATTERN.test(spec.enum)) {
+            return []
+        }
+        const declaredEnum = _bundle.stdEnums?.[spec.enum]
+        if (!declaredEnum || typeof declaredEnum !== 'object') return []
+        return Object.keys(declaredEnum)
+            .filter(member => DSL_IDENTIFIER_PATTERN.test(member))
+            .map(member => `${spec.enum}.${member}`)
+    }
+    if (spec?.type === 'volume') return VOLUME_IDENTIFIERS
+    if (spec?.type === 'geometry') return GEOMETRY_IDENTIFIERS
+    return []
+}
 
 export class LayersRenderer {
     constructor(canvas, options = {}) {
@@ -39,6 +65,7 @@ export class LayersRenderer {
         this._maskTextures = new Map()
         this._textCanvases = new Map()
         this._videoUpdateRAF = null
+        this._pausedNormalizedTime = null
         this._layerStepMap = new Map()
         // Serial queue for pipeline mutations (rebuild/tryCompile). The app
         // has fire-and-forget rebuild call sites, so overlapping calls would
@@ -48,6 +75,15 @@ export class LayersRenderer {
         // app synchronously commits or explicitly rolls it back. Ordinary
         // setLayers() calls wait here so they cannot overwrite a staged map.
         this._stageBarrier = Promise.resolve()
+    }
+
+    getDeclaredDslIdentifierValues(spec) {
+        return getDeclaredDslIdentifierValues(spec)
+    }
+
+    isDeclaredDslIdentifier(spec, value) {
+        return typeof value === 'string'
+            && getDeclaredDslIdentifierValues(spec).includes(value)
     }
 
     get canvas() {
@@ -79,11 +115,24 @@ export class LayersRenderer {
     }
 
     start() {
+        let restoreError = null
+        if (this._pausedNormalizedTime !== null) {
+            try {
+                this.restoreLoopFromNormalizedTime(this._pausedNormalizedTime)
+            } catch (err) {
+                restoreError = err
+            }
+            this._pausedNormalizedTime = null
+        }
         this._startVideoUpdateLoop()
         this._renderer.start()
+        if (restoreError) throw restoreError
     }
 
     stop() {
+        if (this.isRunning || this._pausedNormalizedTime === null) {
+            this._pausedNormalizedTime = this._computeNormalizedLoopTime()
+        }
         this._stopVideoUpdateLoop()
         this._renderer.stop()
     }
@@ -236,6 +285,14 @@ export class LayersRenderer {
      * @returns {number} normalized loop position in [0, 1)
      */
     getPausedNormalizedTime() {
+        if (!this.isRunning && this._pausedNormalizedTime !== null) {
+            return this._pausedNormalizedTime
+        }
+        return this._computeNormalizedLoopTime()
+    }
+
+    /** @private */
+    _computeNormalizedLoopTime() {
         const inner = this._renderer
         const loopDuration = inner._loopDuration
         if (!loopDuration || !isFinite(loopDuration) || loopDuration <= 0) return 0
@@ -311,28 +368,45 @@ export class LayersRenderer {
         this._stageBarrier = waitForTurn.then(() => stageGate)
         await waitForTurn
 
-        const previous = {
-            layers: this._layers,
-            mediaTextures: this._mediaTextures,
-            maskTextures: this._maskTextures,
-            textCanvases: this._textCanvases
-        }
+        let previous
         const staged = {
             layers,
             mediaTextures,
             maskTextures,
             textCanvases: new Map()
         }
-
-        this._layers = staged.layers
-        this._mediaTextures = staged.mediaTextures
-        this._maskTextures = staged.maskTextures
-        this._textCanvases = staged.textCanvases
+        const retireMap = (retired, surviving, dispose = null) => {
+            const survivingResources = new Set(surviving.values())
+            const disposedResources = new Set()
+            for (const [key, resource] of retired) {
+                if (survivingResources.has(resource)) continue
+                if (dispose && !disposedResources.has(resource)) {
+                    try {
+                        dispose(resource)
+                    } catch (err) {
+                        console.error('[Layers] Failed to retire staged renderer resource:', err)
+                    }
+                    disposedResources.add(resource)
+                }
+                retired.delete(key)
+            }
+        }
 
         let result
         try {
-            result = await this._serializeCompileOp(
-                () => this._rebuildNow({ force: true, strictTextures: true }))
+            result = await this._serializeCompileOp(() => {
+                previous = {
+                    layers: this._layers,
+                    mediaTextures: this._mediaTextures,
+                    maskTextures: this._maskTextures,
+                    textCanvases: this._textCanvases
+                }
+                this._layers = staged.layers
+                this._mediaTextures = staged.mediaTextures
+                this._maskTextures = staged.maskTextures
+                this._textCanvases = staged.textCanvases
+                return this._rebuildNow({ force: true, strictTextures: true })
+            })
         } catch (err) {
             result = { success: false, error: err.message || String(err) }
         }
@@ -349,9 +423,10 @@ export class LayersRenderer {
             ...result,
             commit: () => {
                 if (!release()) return { success: true }
-                this.disposeMediaResources(previous.mediaTextures)
-                previous.maskTextures.clear()
-                previous.textCanvases.clear()
+                retireMap(previous.mediaTextures, staged.mediaTextures,
+                    resource => this.disposeMediaResource(resource))
+                retireMap(previous.maskTextures, staged.maskTextures)
+                retireMap(previous.textCanvases, staged.textCanvases)
                 return { success: true }
             },
             rollback: async () => {
@@ -365,9 +440,10 @@ export class LayersRenderer {
                     restoreResult = await this._serializeCompileOp(
                         () => this._rebuildNow({ force: true, strictTextures: true }))
                 } finally {
-                    this.disposeMediaResources(staged.mediaTextures)
-                    staged.maskTextures.clear()
-                    staged.textCanvases.clear()
+                    retireMap(staged.mediaTextures, previous.mediaTextures,
+                        resource => this.disposeMediaResource(resource))
+                    retireMap(staged.maskTextures, previous.maskTextures)
+                    retireMap(staged.textCanvases, previous.textCanvases)
                     release()
                 }
                 return restoreResult
@@ -1225,6 +1301,10 @@ export class LayersRenderer {
      * @private
      */
     async _registerFontaineFont(layerId, params) {
+        const layers = this._layers
+        const textCanvases = this._textCanvases
+        const layer = layers.find(candidate => candidate.id === layerId)
+        const textCanvas = textCanvases.get(layerId)
         const font = params.font || 'Nunito'
 
         try {
@@ -1236,12 +1316,12 @@ export class LayersRenderer {
 
             const registered = await loader.registerFontByName(font)
             if (registered) {
-                // Re-check visibility: the layer may have been hidden while
-                // the font loaded, making its cached stepIndex stale (see
-                // updateTextParams). A deleted layer is already safe — its
-                // canvas is pruned on rebuild and _renderTextCanvas no-ops.
-                const layer = this._layers.find(l => l.id === layerId)
-                if (!layer?.visible) return
+                if (this._layers !== layers
+                    || this._textCanvases !== textCanvases
+                    || layers.find(candidate => candidate.id === layerId) !== layer
+                    || textCanvases.get(layerId) !== textCanvas
+                    || layer?.effectParams !== params
+                    || !layer.visible) return
                 this._renderTextCanvas(layerId, params)
             }
         } catch {
@@ -1401,6 +1481,10 @@ export class LayersRenderer {
                 const canonicalKey = aliases[key] || key
                 const spec = globals[canonicalKey] || globals[key]
                 const isColor = spec?.type === 'color'
+
+                if (this.isDeclaredDslIdentifier(spec, value)) {
+                    return `${key}: ${value}`
+                }
 
                 if (isColor) {
                     // Emit as unquoted DSL color literal (#rrggbb)

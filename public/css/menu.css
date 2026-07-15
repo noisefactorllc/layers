@@ -274,20 +274,36 @@
     }
 }
 
-.menu-items div {
+.menu-items div,
+#logoMenu > .menu-items > button {
     padding: 8px 16px;
     cursor: pointer;
     font-size: 0.875rem;
 }
 
-.menu-items div:hover {
+.menu-items div:hover,
+#logoMenu > .menu-items > button:hover {
     background-color: rgba(255, 255, 255, 0.08);
     color: var(--hf-accent-4);
 }
 
-.menu-items div:focus-visible {
+.menu-items div:focus-visible,
+#logoMenu > .menu-items > button:focus-visible {
     outline: none;
     box-shadow: 0 0 0 2px var(--hf-accent-3);
+}
+
+#logoMenu > .menu-title,
+#logoMenu > .menu-items > button {
+    font: inherit;
+}
+
+#logoMenu > .menu-items > button {
+    box-sizing: border-box;
+    width: 100%;
+    height: auto;
+    justify-content: flex-start;
+    text-align: left;
 }
 
 .menu-shortcut {

@@ -18,7 +18,8 @@ async function createProjectFromWelcome(page, type = 'solid') {
 }
 
 async function reopenWelcome(page) {
-    await page.evaluate(() => document.getElementById('welcomeMenuItem').click())
+    await page.getByRole('button', { name: 'Layers menu', exact: true }).click()
+    await page.getByRole('button', { name: 'welcome to Layers...', exact: true }).click()
     await page.locator('.welcome-dialog[open]').waitFor()
 }
 
@@ -295,11 +296,20 @@ test.describe('Welcome dialog', () => {
         })
     }
 
-    test('re-opens from the logo menu', async ({ page }) => {
+    test('re-opens from the logo menu with keyboard-accessible controls', async ({ page }) => {
         await boot(page, '?welcome=1')
         await page.locator('.welcome-dialog[open]').waitFor()
         await page.locator('.welcome-close').click()
-        await page.evaluate(() => document.getElementById('welcomeMenuItem').click())
+
+        const logoMenuButton = page.getByRole('button', { name: 'Layers menu', exact: true })
+        await logoMenuButton.focus()
+        await page.keyboard.press('Enter')
+        await expect(page.locator('#logoMenu > .menu-items')).toBeVisible()
+
+        const welcomeButton = page.getByRole('button', { name: 'welcome to Layers...', exact: true })
+        await page.keyboard.press('Tab')
+        await expect(welcomeButton).toBeFocused()
+        await page.keyboard.press('Enter')
         await expect(page.locator('.welcome-dialog[open]')).toBeVisible()
     })
 

@@ -91,4 +91,40 @@ test.describe('Brush tool', () => {
         expect(result.layerCount).toBe(1)
         expect(result.strokeCount).toBe(2)
     })
+
+    test('reports a failed stroke commit outcome', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+        await page.click('#brushToolBtn')
+
+        await page.evaluate(() => {
+            const app = window.layersApp
+            window.__brushCommitErrors = []
+            window.__brushOriginalConsoleError = console.error
+            console.error = (...args) => {
+                window.__brushCommitErrors.push(args.map(String).join(' '))
+            }
+            app._brushTool._commitStroke = async () => ({
+                status: 'failed',
+                error: new Error('injected brush commit failure'),
+            })
+        })
+
+        const overlay = await page.$('#selectionOverlay')
+        const box = await overlay.boundingBox()
+        await page.mouse.move(box.x + 100, box.y + 100)
+        await page.mouse.down()
+        await page.mouse.move(box.x + 180, box.y + 180)
+        await page.mouse.up()
+        await page.waitForTimeout(100)
+
+        const errors = await page.evaluate(() => {
+            console.error = window.__brushOriginalConsoleError
+            return window.__brushCommitErrors
+        })
+        expect(errors.some(message => message.includes(
+            '[BrushTool] Failed to commit stroke: Error: injected brush commit failure')))
+            .toBe(true)
+    })
 })

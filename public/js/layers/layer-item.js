@@ -22,11 +22,15 @@ class LayerItem extends HTMLElement {
         this._dragFromHandle = false
         this._isChild = false
         this._parentLayerId = null
+        this._listenersAttached = false
     }
 
     connectedCallback() {
         this._render()
-        this._setupEventListeners()
+        if (!this._listenersAttached) {
+            this._setupEventListeners()
+            this._listenersAttached = true
+        }
     }
 
     /**
@@ -154,15 +158,6 @@ class LayerItem extends HTMLElement {
             }))
             blendSelect.setOptions(opts)
             blendSelect.value = layer.blendMode || 'mix'
-        }
-
-        // Direct listener on opacity slider — delegated listener may miss events
-        // when browser drag system interferes with event propagation
-        const opacitySlider = this.querySelector('.layer-opacity')
-        if (opacitySlider) {
-            opacitySlider.addEventListener('input', () => {
-                this._handleOpacityChange(parseInt(opacitySlider.value, 10))
-            })
         }
 
         this._initEffectParams()
@@ -312,7 +307,7 @@ class LayerItem extends HTMLElement {
         // Opacity change
         this.addEventListener('input', (e) => {
             const opacitySlider = e.target.closest('.layer-opacity')
-            if (opacitySlider) {
+            if (opacitySlider && e.target === opacitySlider) {
                 this._handleOpacityChange(parseInt(opacitySlider.value, 10))
             }
         })
@@ -382,11 +377,11 @@ class LayerItem extends HTMLElement {
     _handleParamChange(detail) {
         if (!this._layer) return
 
-        // Update layer's effectParams
-        this._layer.effectParams = { ...detail.params }
+        const previousValue = this._layer.effectParams
+        const value = { ...detail.params }
 
         // Emit as a standard layer-change event
-        this._emitChange('effectParams', this._layer.effectParams)
+        this._emitChange('effectParams', value, previousValue)
     }
 
     /**
@@ -395,9 +390,8 @@ class LayerItem extends HTMLElement {
      */
     _toggleVisibility() {
         if (!this._layer) return
-        this._layer.visible = !this._layer.visible
-        this._render()
-        this._emitChange('visibility', this._layer.visible)
+        const previousValue = this._layer.visible
+        this._emitChange('visibility', !previousValue, previousValue)
     }
 
     /**
@@ -439,8 +433,8 @@ class LayerItem extends HTMLElement {
             const newName = nameEl.textContent.trim() || 'Untitled'
             nameEl.textContent = newName
             if (this._layer && this._layer.name !== newName) {
-                this._layer.name = newName
-                this._emitChange('name', newName)
+                const previousValue = this._layer.name
+                this._emitChange('name', newName, previousValue)
             }
         }
 
@@ -460,8 +454,8 @@ class LayerItem extends HTMLElement {
      */
     _handleBlendModeChange(mode) {
         if (!this._layer) return
-        this._layer.blendMode = mode
-        this._emitChange('blendMode', mode)
+        const previousValue = this._layer.blendMode
+        this._emitChange('blendMode', mode, previousValue)
     }
 
     /**
@@ -471,9 +465,8 @@ class LayerItem extends HTMLElement {
      */
     _handleOpacityChange(opacity) {
         if (!this._layer) return
-        this._layer.opacity = opacity
-
-        this._emitChange('opacity', opacity)
+        const previousValue = this._layer.opacity
+        this._emitChange('opacity', opacity, previousValue)
     }
 
     /**
@@ -482,11 +475,12 @@ class LayerItem extends HTMLElement {
      * @param {*} value - New value
      * @private
      */
-    _emitChange(property, value) {
+    _emitChange(property, value, previousValue) {
         const detail = {
             layerId: this._layer.id,
             property,
             value,
+            previousValue,
             layer: this._layer
         }
         if (this._parentLayerId) {

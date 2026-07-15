@@ -13,6 +13,41 @@ async function bootApp(page) {
     }
 }
 
+async function prepareHiddenSplitDrawing(page) {
+    return page.evaluate(async () => {
+        const app = window.layersApp
+        const width = app._canvas.width
+        const height = app._canvas.height
+        const added = await window.LayersAgent.addLayer({ kind: 'drawing' })
+        const layerId = added.result.layerId
+        await window.LayersAgent.drawShape({
+            layerId,
+            shape: 'rect',
+            x: 0,
+            y: 0,
+            width: width / 2,
+            height,
+            color: '#ff0000',
+            size: 1,
+            filled: true,
+        })
+        await window.LayersAgent.drawShape({
+            layerId,
+            shape: 'rect',
+            x: width / 2,
+            y: 0,
+            width: width / 2,
+            height,
+            color: '#0000ff',
+            size: 1,
+            filled: true,
+        })
+        await window.LayersAgent.setLayerProps({ layerId, props: { visible: false } })
+        app._renderCurrentFrame()
+        return { layerId, width, height }
+    })
+}
+
 test.describe('selectAll / selectNone / selectInverse', () => {
     test('selectAll covers the whole canvas', async ({ page }) => {
         await bootApp(page)
@@ -136,6 +171,24 @@ test.describe('setPolygonSelection', () => {
         expect(env.ok).toBe(false)
         expect(env.error.code).toBe('INVALID_ARGS_TYPE')
     })
+
+    test('rejects non-finite points without changing selection', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            app._selectionManager.clearSelection()
+            const envelope = await window.LayersAgent.setPolygonSelection({
+                points: [[0, 0], [Infinity, 50], [100, 100]],
+            })
+            return {
+                envelope,
+                hasSelection: app._selectionManager.hasSelection(),
+            }
+        })
+        expect(result.envelope.ok).toBe(false)
+        expect(result.envelope.error.code).toBe('INVALID_ARGS_TYPE')
+        expect(result.hasSelection).toBe(false)
+    })
 })
 
 test.describe('setMagicWandSelection', () => {
@@ -147,6 +200,55 @@ test.describe('setMagicWandSelection', () => {
         expect(env.state.selection).not.toBeNull()
         expect(env.state.selection.kind).toBe('wand')
         expect(env.state.selection.bounds.width).toBeGreaterThan(0)
+    })
+
+    test('samples a split layer made visible by the immediately preceding command', async ({ page }) => {
+        await bootApp(page)
+        const setup = await prepareHiddenSplitDrawing(page)
+        const result = await page.evaluate(async ({ layerId, width, height }) => {
+            const app = window.layersApp
+            const preceding = await window.LayersAgent.setLayerProps({
+                layerId,
+                props: { visible: true },
+            })
+            const renderCurrentFrame = app._renderCurrentFrame
+            let freshFrameCalls = 0
+            app._renderCurrentFrame = (...args) => {
+                freshFrameCalls += 1
+                return renderCurrentFrame.apply(app, args)
+            }
+            let wand
+            try {
+                wand = await window.LayersAgent.setMagicWandSelection({
+                    x: Math.floor(width / 4),
+                    y: Math.floor(height / 2),
+                    tolerance: 0,
+                })
+            } finally {
+                app._renderCurrentFrame = renderCurrentFrame
+            }
+            const mask = app._selectionManager.rasterizeSelection()
+            const alphaAt = (x, y) => mask.data[(y * width + x) * 4 + 3]
+            return {
+                preceding,
+                wand,
+                freshFrameCalls,
+                leftAlpha: alphaAt(Math.floor(width / 4), Math.floor(height / 2)),
+                rightAlpha: alphaAt(Math.floor(3 * width / 4), Math.floor(height / 2)),
+            }
+        }, setup)
+
+        expect(result.preceding.ok).toBe(true)
+        expect(result.wand.ok).toBe(true)
+        expect(result.freshFrameCalls).toBe(1)
+        expect(result.wand.state.selection.bounds).toEqual({
+            x: 0,
+            y: 0,
+            width: setup.width / 2,
+            height: setup.height,
+        })
+        expect(result.leftAlpha).toBe(255)
+        expect(result.rightAlpha).toBe(0)
     })
 
     test('rejects out-of-canvas coords', async ({ page }) => {
@@ -175,6 +277,55 @@ test.describe('selectColorRange', () => {
         expect(env.state.selection).not.toBeNull()
         expect(env.state.selection.kind).toBe('color-range')
         expect(env.state.selection.bounds.width).toBeGreaterThan(0)
+    })
+
+    test('samples a split layer made visible by the immediately preceding command', async ({ page }) => {
+        await bootApp(page)
+        const setup = await prepareHiddenSplitDrawing(page)
+        const result = await page.evaluate(async ({ layerId, width, height }) => {
+            const app = window.layersApp
+            const preceding = await window.LayersAgent.setLayerProps({
+                layerId,
+                props: { visible: true },
+            })
+            const renderCurrentFrame = app._renderCurrentFrame
+            let freshFrameCalls = 0
+            app._renderCurrentFrame = (...args) => {
+                freshFrameCalls += 1
+                return renderCurrentFrame.apply(app, args)
+            }
+            let range
+            try {
+                range = await window.LayersAgent.selectColorRange({
+                    x: Math.floor(width / 4),
+                    y: Math.floor(height / 2),
+                    tolerance: 0,
+                })
+            } finally {
+                app._renderCurrentFrame = renderCurrentFrame
+            }
+            const mask = app._selectionManager.rasterizeSelection()
+            const alphaAt = (x, y) => mask.data[(y * width + x) * 4 + 3]
+            return {
+                preceding,
+                range,
+                freshFrameCalls,
+                leftAlpha: alphaAt(Math.floor(width / 4), Math.floor(height / 2)),
+                rightAlpha: alphaAt(Math.floor(3 * width / 4), Math.floor(height / 2)),
+            }
+        }, setup)
+
+        expect(result.preceding.ok).toBe(true)
+        expect(result.range.ok).toBe(true)
+        expect(result.freshFrameCalls).toBe(1)
+        expect(result.range.state.selection.bounds).toEqual({
+            x: 0,
+            y: 0,
+            width: setup.width / 2,
+            height: setup.height,
+        })
+        expect(result.leftAlpha).toBe(255)
+        expect(result.rightAlpha).toBe(0)
     })
 
     test('rejects out-of-canvas coords', async ({ page }) => {

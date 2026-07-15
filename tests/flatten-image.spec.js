@@ -53,4 +53,80 @@ test.describe('Layer menu - Flatten Image', () => {
         const layerType = await page.evaluate(() => window.layersApp._layers[0]?.sourceType)
         expect(layerType).toBe('media')
     })
+
+    test('flatten captures an effect parameter update made in the same command turn', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+        const backdrop = page.locator('.open-dialog-backdrop.visible')
+        await backdrop.waitFor()
+        await page.locator('.media-option[data-type="solid"]').click()
+        await page.locator('.canvas-size-dialog .action-btn.primary').click()
+        await backdrop.waitFor({ state: 'hidden' })
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const layer = app._layers[0]
+            await window.LayersAgent.setLayerEffectParams({
+                layerId: layer.id,
+                params: { color: [1, 0, 0], alpha: 1 },
+                replace: true,
+            })
+            const outcome = await app._flattenImage()
+            const flattened = app._layers[0]
+            const bitmap = await createImageBitmap(flattened.mediaFile)
+            const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+            const context = canvas.getContext('2d')
+            context.drawImage(bitmap, 0, 0)
+            const pixel = [...context.getImageData(
+                Math.floor(bitmap.width / 2), Math.floor(bitmap.height / 2), 1, 1).data]
+            bitmap.close()
+            return { status: outcome.status, pixel }
+        })
+
+        expect(result.status).toBe('committed')
+        expect(result.pixel[0]).toBeGreaterThan(240)
+        expect(result.pixel[1]).toBeLessThan(15)
+        expect(result.pixel[2]).toBeLessThan(15)
+        expect(result.pixel[3]).toBeGreaterThan(240)
+    })
+
+    test('readback renders the current animation phase instead of frame zero', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+
+        const renderedPhase = await page.evaluate(() => {
+            const renderer = window.layersApp._renderer
+            renderer.getPausedNormalizedTime = () => 0.375
+            renderer.render = (phase) => { window.__readbackPhase = phase }
+            window.layersApp._renderCurrentFrame()
+            return window.__readbackPhase
+        })
+
+        expect(renderedPhase).toBe(0.375)
+    })
+
+    test('readback preserves the displayed phase while animation is paused', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const renderer = app._renderer
+            renderer.stop()
+            const stoppedPhase = renderer.getPausedNormalizedTime()
+            await new Promise(resolve => setTimeout(resolve, 100))
+            const laterPhase = renderer.getPausedNormalizedTime()
+            const render = renderer.render.bind(renderer)
+            let capturedPhase = null
+            renderer.render = (phase) => {
+                capturedPhase = phase
+                return render(phase)
+            }
+            app._renderCurrentFrame()
+            return { stoppedPhase, laterPhase, capturedPhase }
+        })
+
+        expect(result.laterPhase).toBe(result.stoppedPhase)
+        expect(result.capturedPhase).toBe(result.stoppedPhase)
+    })
 })
