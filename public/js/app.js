@@ -3954,6 +3954,7 @@ class LayersApp {
                     const submenu = filterMenu.querySelector(
                         `:scope > .submenu[data-submenu-id="${trigger.dataset.submenu}"]`)
                     if (submenu) showSubmenu(trigger, submenu, { focusFirst: true })
+                    else trigger.click()
                     return
                 }
                 if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -4242,6 +4243,9 @@ class LayersApp {
 
         // Add layer button
         document.getElementById('addLayerBtn')?.addEventListener('click', () => {
+            this._showAddLayerDialog()
+        })
+        document.getElementById('filterMoreMenuItem')?.addEventListener('click', () => {
             this._showAddLayerDialog()
         })
 

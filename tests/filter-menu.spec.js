@@ -604,4 +604,86 @@ test.describe('Filter menu', () => {
             effects: group.effects.map(([effectId, label]) => ({ effectId, label })),
         })))
     })
+
+    test('ends with the conventional divider and more menuitem', async ({ page }) => {
+        await bootBlank(page)
+        const actual = await page.evaluate(() => {
+            const items = document.getElementById('filterMenuItems')
+            const categories = [...items.querySelectorAll(':scope > .has-submenu')]
+            const divider = categories.at(-1).nextElementSibling
+            const more = divider?.nextElementSibling
+            return {
+                divider: {
+                    tagName: divider?.tagName,
+                    className: divider?.className,
+                    role: divider?.getAttribute('role'),
+                },
+                more: {
+                    tagName: more?.tagName,
+                    id: more?.id,
+                    text: more?.textContent.trim(),
+                    role: more?.getAttribute('role'),
+                    tabIndex: more?.getAttribute('tabindex'),
+                    isLast: more === items.lastElementChild,
+                },
+            }
+        })
+
+        expect(actual).toEqual({
+            divider: { tagName: 'HR', className: 'menu-seperator', role: null },
+            more: {
+                tagName: 'BUTTON',
+                id: 'filterMoreMenuItem',
+                text: 'more...',
+                role: 'menuitem',
+                tabIndex: '-1',
+                isLast: true,
+            },
+        })
+    })
+
+    test('clicking more closes Filter and opens the add-layer dialog', async ({ page }) => {
+        await bootBlank(page)
+        const title = page.getByRole('button', { name: 'filter', exact: true })
+        const dropdown = page.locator('#filterMenuItems')
+
+        await title.click()
+        await page.locator('#filterMoreMenuItem').click()
+
+        await expect(page.locator('.add-layer-dialog')).toBeVisible()
+        await expect(dropdown).toBeHidden()
+        await expect(title).toHaveAttribute('aria-expanded', 'false')
+        await expect(title).not.toBeFocused()
+    })
+
+    test('more participates in Filter keyboard navigation and activation', async ({ page }) => {
+        await bootBlank(page)
+        const title = page.getByRole('button', { name: 'filter', exact: true })
+        const dropdown = page.locator('#filterMenuItems')
+        const texture = dropdown.getByRole('menuitem', { name: 'texture', exact: true })
+        const more = dropdown.getByRole('menuitem', { name: 'more...', exact: true })
+
+        for (const activationKey of ['Enter', 'Space']) {
+            await title.focus()
+            await page.keyboard.press('ArrowUp')
+            await expect(more).toBeFocused()
+            await page.keyboard.press('ArrowUp')
+            await expect(texture).toBeFocused()
+            await page.keyboard.press('ArrowDown')
+            await expect(more).toBeFocused()
+
+            await page.keyboard.press('ArrowRight')
+            await expect(more).toBeFocused()
+            await expect(dropdown).toBeVisible()
+            await expect(page.locator('.add-layer-dialog')).not.toBeVisible()
+
+            await page.keyboard.press(activationKey)
+            const dialog = page.locator('.add-layer-dialog')
+            await expect(dialog).toBeVisible()
+            await expect(dropdown).toBeHidden()
+            await expect(title).not.toBeFocused()
+            await dialog.getByRole('button', { name: 'Close' }).click()
+            await expect(dialog).toBeHidden()
+        }
+    })
 })
