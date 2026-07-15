@@ -3137,11 +3137,14 @@ class LayersApp {
         // Handle child-specific property changes
         if (detail.property === 'effectParams') {
             const previousParams = layer.effectParams
-            const outcome = await this._commitModelMutation(() => {
-                layer.effectParams = detail.value
-            }, {
-                pushUndo: 'debounced',
-                finalizePendingUndo: false,
+            // Params declared with `define:` (e.g. halftone mode/pattern, noise
+            // noiseType) are compile-time #define constants, not runtime uniforms:
+            // applyStepParameterValues() can't touch them, so a uniform-only update
+            // is a no-op. Route their changes through a recompile instead. Every
+            // other param keeps the cheap uniform-only fast path.
+            const needsRecompile = this._renderer.layerParamsNeedRecompile(
+                detail.layerId, previousParams, detail.value)
+            const fastPath = {
                 render: () => {
                     this._renderer.updateLayerParams(detail.layerId, detail.value)
                     this._renderer.syncDsl()
@@ -3151,6 +3154,18 @@ class LayersApp {
                     this._renderer.updateLayerParams(detail.layerId, previousParams)
                     this._renderer.syncDsl()
                 },
+            }
+            const outcome = await this._commitModelMutation(() => {
+                layer.effectParams = detail.value
+            }, {
+                pushUndo: 'debounced',
+                finalizePendingUndo: false,
+                // Recompile path: the default render (_rebuild) rebuilds the DSL
+                // from the mutated layer and recompiles, baking in the new define
+                // value; rollback already force-rebuilds, so no custom restore is
+                // needed. force:true guarantees the recompile fires even if a prior
+                // syncDsl() left _currentDsl string-equal to the new DSL.
+                ...(needsRecompile ? { rebuildOptions: { force: true } } : fastPath),
             })
             if (outcome.status === 'committed') {
                 this._onlineAdapter?.schedulePublish()

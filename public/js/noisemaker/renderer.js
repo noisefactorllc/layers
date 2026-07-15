@@ -664,6 +664,60 @@ export class LayersRenderer {
         }
     }
 
+    /**
+     * Find a layer by id, searching both top-level layers and their nested
+     * child effects. Child effects live under a parent's `children`, not in the
+     * top-level list, so a plain `_layers.find` misses them.
+     * @param {string} layerId
+     * @returns {object|null}
+     * @private
+     */
+    _findLayerOrChild(layerId) {
+        const top = this._layers.find(l => l.id === layerId)
+        if (top) return top
+        for (const parent of this._layers) {
+            const child = parent.children?.find(c => c.id === layerId)
+            if (child) return child
+        }
+        return null
+    }
+
+    /**
+     * Whether changing a layer's effect params from `prevParams` to `nextParams`
+     * alters any compile-time parameter — a global declared with `define:`, which
+     * the engine bakes into the shader as a GLSL `#define` / WGSL const at compile
+     * time instead of a runtime uniform. Such params are absent from pass.uniforms,
+     * so applyStepParameterValues() silently skips them; only a recompile (rebuild)
+     * can change them. The value is part of the DSL, so a rebuild picks it up and
+     * the engine caches one compiled variant per define value.
+     *
+     * General across every effect: keys off the effect definition, never param
+     * names, so halftone mode/pattern, noise noiseType, and any future
+     * define-backed control are all covered. Returns false when the layer/effect
+     * is unknown or only runtime-uniform params changed.
+     *
+     * @param {string} layerId
+     * @param {object} prevParams - effect params before the change
+     * @param {object} nextParams - effect params after the change
+     * @returns {boolean}
+     */
+    layerParamsNeedRecompile(layerId, prevParams = {}, nextParams = {}) {
+        const layer = this._findLayerOrChild(layerId)
+        if (!layer?.effectId) return false
+        // Slash-keyed registry, same lookup as _buildEffectCall().
+        const globals = getAllEffects().get(layer.effectId)?.globals
+        if (!globals) return false
+        for (const [name, spec] of Object.entries(globals)) {
+            if (!spec?.define) continue
+            // ?? (not ||) so a legitimate falsy value like mode 0 isn't treated
+            // as unset and replaced by the default.
+            const prev = prevParams?.[name] ?? spec.default
+            const next = nextParams?.[name] ?? spec.default
+            if (!Object.is(prev, next)) return true
+        }
+        return false
+    }
+
     updateLayerOffset(layerId, x, y) {
         const stepIndex = this._layerStepMap.get(layerId)
         if (stepIndex === undefined) return
