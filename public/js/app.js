@@ -2214,6 +2214,7 @@ class LayersApp {
         // Submenu state — hoisted so menu title handlers can access it
         let activeSubmenu = null
         let activeSubmenuTrigger = null
+        let activeSubmenuKeyboardControlled = false
         const setTitleExpanded = (title, expanded) => {
             if (title?.hasAttribute('aria-expanded')) {
                 title.setAttribute('aria-expanded', String(expanded))
@@ -2228,6 +2229,7 @@ class LayersApp {
                 const triggerToRestore = activeSubmenuTrigger
                 activeSubmenu = null
                 activeSubmenuTrigger = null
+                activeSubmenuKeyboardControlled = false
                 if (restoreFocus) triggerToRestore?.focus()
             }
         }
@@ -2271,8 +2273,7 @@ class LayersApp {
             const top = Math.min(Math.max(titleRect.top, viewportInset), maxTop)
             items.style.setProperty('--toolbar-flyout-top', `${top}px`)
         }
-        const showSubmenu = (trigger, submenu, { focusFirst = false } = {}) => {
-            hideSubmenu()
+        const positionSubmenu = (trigger, submenu) => {
             const menuEl = trigger.closest('.menu')
             const menuRect = menuEl.getBoundingClientRect()
             const triggerRect = trigger.getBoundingClientRect()
@@ -2286,7 +2287,6 @@ class LayersApp {
             // Position relative to .menu (position: relative).
             submenu.style.top = `${triggerRect.top - menuRect.top}px`
             submenu.style.left = `${menuItemsRect.right - menuRect.left}px`
-            submenu.classList.remove('hide')
 
             let submenuRect = submenu.getBoundingClientRect()
             if (submenuRect.right > window.innerWidth - viewportInset) {
@@ -2309,9 +2309,16 @@ class LayersApp {
                 top += viewportInset - adjustedTop
             }
             submenu.style.top = `${top}px`
+        }
+
+        const showSubmenu = (trigger, submenu, { focusFirst = false } = {}) => {
+            hideSubmenu()
+            submenu.classList.remove('hide')
+            positionSubmenu(trigger, submenu)
 
             activeSubmenu = submenu
             activeSubmenuTrigger = trigger
+            activeSubmenuKeyboardControlled = focusFirst
             if (trigger.hasAttribute('aria-expanded')) {
                 trigger.setAttribute('aria-expanded', 'true')
             }
@@ -2341,14 +2348,23 @@ class LayersApp {
                 })
             }
         })
-        const repositionOpenToolbarFlyouts = () => {
+        const repositionOpenMenus = () => {
             document.querySelectorAll('#toolbar .menu-items:not(.hide)').forEach(items => {
                 const menu = items.closest('.menu')
                 const title = menu?.querySelector(':scope > .menu-title')
                 if (menu && title) positionToolbarFlyout(menu, title, items)
             })
+
+            const currentFilterMenu = document.getElementById('filterMenu')
+            const currentFilterItems = currentFilterMenu?.querySelector(':scope > .menu-items')
+            if (currentFilterItems && !currentFilterItems.classList.contains('hide')) {
+                clampFilterDropdown(currentFilterMenu, currentFilterItems)
+            }
+            if (activeSubmenu?.closest('#filterMenu') && activeSubmenuTrigger) {
+                positionSubmenu(activeSubmenuTrigger, activeSubmenu)
+            }
         }
-        window.addEventListener('resize', repositionOpenToolbarFlyouts)
+        window.addEventListener('resize', repositionOpenMenus)
 
         document.querySelectorAll('.has-submenu[data-submenu]').forEach(trigger => {
             const submenuId = trigger.dataset.submenu
@@ -2357,6 +2373,7 @@ class LayersApp {
             if (!submenu) return
 
             trigger.addEventListener('mouseenter', () => {
+                if (activeSubmenu === submenu && activeSubmenuKeyboardControlled) return
                 showSubmenu(trigger, submenu)
             })
 
@@ -2368,11 +2385,13 @@ class LayersApp {
             }
 
             trigger.addEventListener('mouseleave', (e) => {
+                if (activeSubmenuKeyboardControlled) return
                 if (e.relatedTarget && submenu.contains(e.relatedTarget)) return
                 hideSubmenu()
             })
 
             submenu.addEventListener('mouseleave', (e) => {
+                if (activeSubmenuKeyboardControlled) return
                 if (e.relatedTarget && trigger.contains(e.relatedTarget)) return
                 hideSubmenu()
             })

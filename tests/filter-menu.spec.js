@@ -314,6 +314,70 @@ test.describe('Filter menu', () => {
         }))).toEqual({ shapeType: 'ellipse', filled: true })
     })
 
+    test('reclamps an open Filter dropdown when the viewport narrows', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+
+        await page.getByRole('button', { name: 'filter', exact: true }).click()
+        const dropdown = page.locator('#filterMenu > .menu-items')
+        await expect(dropdown).toBeVisible()
+
+        await page.setViewportSize({ width: 320, height: 320 })
+        await expect.poll(async () => {
+            const rect = await dropdown.boundingBox()
+            return rect.x >= 0 && rect.x + rect.width <= 320
+        }).toBe(true)
+        await expect(page.getByRole('button', { name: 'filter', exact: true }))
+            .toHaveAttribute('aria-expanded', 'true')
+    })
+
+    test('repositions an open Filter submenu when the viewport shortens', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+        await page.locator('.toast-visible').waitFor({ state: 'hidden' })
+
+        const title = page.getByRole('button', { name: 'filter', exact: true })
+        await title.focus()
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowDown')
+        const stylize = page.locator(
+            '#filterMenu > .menu-items > [data-submenu="stylize"]')
+        await expect(stylize).toBeFocused()
+        await page.keyboard.press('ArrowRight')
+
+        const submenu = page.locator(
+            '#filterMenu > .submenu[data-submenu-id="stylize"]')
+        const wind = submenu.getByRole('menuitem', { name: 'wind', exact: true })
+        await expect(submenu).toBeVisible()
+        await page.keyboard.press('ArrowUp')
+        await expect(wind).toBeFocused()
+        await expect(stylize).toHaveAttribute('aria-expanded', 'true')
+
+        await page.setViewportSize({ width: 390, height: 240 })
+        await expect.poll(async () => {
+            const rect = await submenu.boundingBox()
+            return Boolean(rect && rect.y >= 8 && rect.y + rect.height <= 232)
+        }).toBe(true)
+        await expect(stylize).toHaveAttribute('aria-expanded', 'true')
+        await expect(wind).toBeFocused()
+
+        const optionHit = await wind.evaluate(element => {
+            const rect = element.getBoundingClientRect()
+            const hit = document.elementFromPoint(
+                rect.left + rect.width / 2, rect.top + rect.height / 2)
+            return element.contains(hit)
+        })
+        expect(optionHit).toBe(true)
+        const before = await page.evaluate(() => window.layersApp._layers.length)
+        await wind.click()
+        await expect.poll(() => page.evaluate(() => ({
+            count: window.layersApp._layers.length,
+            effectId: window.layersApp._layers.at(-1)?.effectId,
+        }))).toEqual({ count: before + 1, effectId: 'filter/wind' })
+    })
+
     test('clamps the filter dropdown and keeps every submenu effect reachable', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 320 })
         await bootBlank(page)
