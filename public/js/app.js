@@ -2375,7 +2375,9 @@ class LayersApp {
 
         filterTitle?.addEventListener('keydown', (e) => {
             if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault()
                 e.stopPropagation()
+                openFilterMenu(0)
                 return
             }
             if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -2392,7 +2394,11 @@ class LayersApp {
         filterTriggers.forEach((trigger, index) => {
             trigger.addEventListener('keydown', (e) => {
                 if (e.key === ' ' || e.key === 'Enter') {
+                    e.preventDefault()
                     e.stopPropagation()
+                    const submenu = filterMenu.querySelector(
+                        `:scope > .submenu[data-submenu-id="${trigger.dataset.submenu}"]`)
+                    if (submenu) showSubmenu(trigger, submenu, { focusFirst: true })
                     return
                 }
                 if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -2421,7 +2427,10 @@ class LayersApp {
             effects.forEach((effect, index) => {
                 effect.addEventListener('keydown', (e) => {
                     if (e.key === ' ' || e.key === 'Enter') {
+                        e.preventDefault()
                         e.stopPropagation()
+                        effect.click()
+                        closeFilterMenu({ restoreFocus: true })
                         return
                     }
                     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {

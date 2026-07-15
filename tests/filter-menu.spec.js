@@ -192,6 +192,52 @@ test.describe('Filter menu', () => {
         }
     })
 
+    for (const width of [390, 320]) {
+        test(`keeps top-menu hit targets and toolbar controls usable at ${width}x320`, async ({ page }) => {
+            await page.setViewportSize({ width, height: 320 })
+            await bootBlank(page)
+
+            const blockedControls = await page.locator(
+                '#menuLeft > .menu > .menu-title, #playPauseBtn').evaluateAll(elements =>
+                elements.flatMap(element => {
+                    const rect = element.getBoundingClientRect()
+                    const hit = document.elementFromPoint(
+                        rect.left + rect.width / 2, rect.top + rect.height / 2)
+                    return element.contains(hit)
+                        ? []
+                        : [element.textContent.trim() || element.getAttribute('title') || 'logo']
+                }))
+            expect(blockedControls).toEqual([])
+
+            const fileTitle = page.locator('#menuLeft > .menu').nth(1).locator(':scope > .menu-title')
+            await fileTitle.click()
+            await expect(page.locator('#newMenuItem')).toBeVisible()
+
+            const toolbar = page.locator('#toolbar')
+            const toolbarRect = await toolbar.boundingBox()
+            const titlebarBottom = await page.locator('#menu').evaluate(element =>
+                element.getBoundingClientRect().bottom)
+            expect(toolbarRect.y).toBeGreaterThanOrEqual(titlebarBottom)
+            expect(toolbarRect.y + toolbarRect.height).toBeLessThanOrEqual(320)
+
+            const toolbarControls = toolbar.locator('.menu-icon-btn, #colorWell')
+            for (let index = 0; index < await toolbarControls.count(); index += 1) {
+                const control = toolbarControls.nth(index)
+                await control.scrollIntoViewIfNeeded()
+                const reachable = await control.evaluate(element => {
+                    const rect = element.getBoundingClientRect()
+                    const hit = document.elementFromPoint(
+                        rect.left + rect.width / 2, rect.top + rect.height / 2)
+                    const toolbarRect = element.closest('#toolbar').getBoundingClientRect()
+                    return rect.top >= toolbarRect.top
+                        && rect.bottom <= toolbarRect.bottom + 1
+                        && element.contains(hit)
+                })
+                expect(reachable, await control.getAttribute('id')).toBe(true)
+            }
+        })
+    }
+
     test('clamps the filter dropdown and keeps every submenu effect reachable', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 320 })
         await bootBlank(page)
@@ -250,13 +296,16 @@ test.describe('Filter menu', () => {
         await page.keyboard.press('Enter')
         await expect(dropdown).toBeVisible()
         await expect(title).toHaveAttribute('aria-expanded', 'true')
+        await expect(blurGroup).toBeFocused()
         await page.keyboard.press('Escape')
         await expect(dropdown).toBeHidden()
         await expect(title).toBeFocused()
 
         await page.keyboard.press('Space')
         await expect(dropdown).toBeVisible()
+        await expect(blurGroup).toBeFocused()
         await page.keyboard.press('Escape')
+        await expect(title).toBeFocused()
 
         await page.keyboard.press('ArrowDown')
         await expect(dropdown).toBeVisible()
@@ -294,17 +343,21 @@ test.describe('Filter menu', () => {
         await expect(title).toHaveAttribute('aria-expanded', 'false')
         await expect(title).toBeFocused()
 
-        const before = await page.evaluate(() => window.layersApp._layers.length)
-        await page.keyboard.press('ArrowDown')
-        await page.keyboard.press('ArrowRight')
-        await expect(blurEffect).toBeFocused()
-        await page.keyboard.press('Space')
-        await expect.poll(() => page.evaluate(() => ({
-            count: window.layersApp._layers.length,
-            effectId: window.layersApp._layers.at(-1)?.effectId,
-        })), { timeout: 10000 }).toEqual({ count: before + 1, effectId: 'filter/blur' })
-        await expect(dropdown).toBeHidden()
-        await expect(title).toHaveAttribute('aria-expanded', 'false')
+        for (const activationKey of ['Enter', 'Space']) {
+            const before = await page.evaluate(() => window.layersApp._layers.length)
+            await page.keyboard.press(activationKey)
+            await expect(blurGroup).toBeFocused()
+            await page.keyboard.press('ArrowRight')
+            await expect(blurEffect).toBeFocused()
+            await page.keyboard.press(activationKey)
+            await expect.poll(() => page.evaluate(() => ({
+                count: window.layersApp._layers.length,
+                effectId: window.layersApp._layers.at(-1)?.effectId,
+            })), { timeout: 10000 }).toEqual({ count: before + 1, effectId: 'filter/blur' })
+            await expect(dropdown).toBeHidden()
+            await expect(title).toHaveAttribute('aria-expanded', 'false')
+            await expect(title).toBeFocused()
+        }
     })
 
     test('clicking filter > stylize > oil paint adds its effect layer', async ({ page }) => {

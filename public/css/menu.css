@@ -238,6 +238,35 @@
     height: auto;
 }
 
+@media (max-height: 520px) {
+    #toolbar {
+        top: var(--ui-titlebar-height);
+        bottom: 0;
+        transform: none;
+        box-sizing: border-box;
+        max-height: calc(100vh - var(--ui-titlebar-height));
+        justify-content: flex-start;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+        --ui-titlebar-base: color-mix(in srgb,
+                var(--hf-color-2) 65%,
+                transparent 35%);
+        --ui-titlebar-gradient: linear-gradient(180deg,
+                var(--ui-gradient-top) 0%,
+                var(--ui-gradient-bottom) 100%);
+        background-color: var(--ui-titlebar-base);
+        background-image: var(--ui-titlebar-gradient);
+        backdrop-filter: var(--glass-blur-strength);
+        -webkit-backdrop-filter: var(--glass-blur-strength);
+    }
+
+    #toolbarBackdrop {
+        display: none;
+    }
+}
+
 .menu-items div {
     padding: 8px 16px;
     cursor: pointer;
