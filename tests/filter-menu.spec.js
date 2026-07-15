@@ -220,7 +220,7 @@ test.describe('Filter menu', () => {
             expect(toolbarRect.y).toBeGreaterThanOrEqual(titlebarBottom)
             expect(toolbarRect.y + toolbarRect.height).toBeLessThanOrEqual(320)
 
-            const toolbarControls = toolbar.locator('.menu-icon-btn, #colorWell')
+            const toolbarControls = toolbar.locator('.menu-icon-btn, .tool-caret, #colorWell')
             for (let index = 0; index < await toolbarControls.count(); index += 1) {
                 const control = toolbarControls.nth(index)
                 await control.scrollIntoViewIfNeeded()
@@ -233,8 +233,48 @@ test.describe('Filter menu', () => {
                         && rect.bottom <= toolbarRect.bottom + 1
                         && element.contains(hit)
                 })
-                expect(reachable, await control.getAttribute('id')).toBe(true)
+                const label = await control.getAttribute('id') || await control.textContent()
+                expect(reachable, label.trim()).toBe(true)
             }
+
+            await page.locator('.toast-visible').waitFor({ state: 'hidden' })
+
+            const chooseFlyoutOption = async (menuId, optionSelector) => {
+                const menu = page.locator(`#${menuId}`)
+                const caret = menu.locator(':scope > .tool-caret')
+                await caret.scrollIntoViewIfNeeded()
+                await caret.click()
+
+                const flyout = menu.locator(':scope > .menu-items')
+                await expect(flyout).toBeVisible()
+                const flyoutRect = await flyout.boundingBox()
+                expect(flyoutRect.x).toBeGreaterThanOrEqual(toolbarRect.x + toolbarRect.width)
+                expect(flyoutRect.x + flyoutRect.width).toBeLessThanOrEqual(width)
+                expect(flyoutRect.y).toBeGreaterThanOrEqual(8)
+                expect(flyoutRect.y + flyoutRect.height).toBeLessThanOrEqual(312)
+
+                const option = flyout.locator(optionSelector)
+                const optionHit = await option.evaluate(element => {
+                    const rect = element.getBoundingClientRect()
+                    const hit = document.elementFromPoint(
+                        rect.left + rect.width / 2, rect.top + rect.height / 2)
+                    return element.contains(hit)
+                })
+                expect(optionHit).toBe(true)
+                await option.click()
+                await expect(option).toHaveClass(/checked/)
+            }
+
+            await chooseFlyoutOption('selectionMenu', '[data-shape="oval"]')
+            await expect(page.locator('#selectionToolIcon ellipse')).toHaveCount(1)
+
+            await chooseFlyoutOption(
+                'shapeMenu', '[data-shape="ellipse"][data-filled="true"]')
+            await expect(page.locator('#shapeToolBtn .icon-material')).toHaveText('lens')
+            await expect.poll(() => page.evaluate(() => ({
+                shapeType: window.layersApp._shapeTool.shapeType,
+                filled: window.layersApp._shapeTool.filled,
+            }))).toEqual({ shapeType: 'ellipse', filled: true })
         })
     }
 

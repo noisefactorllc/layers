@@ -2255,6 +2255,22 @@ class LayersApp {
             }
             items.style.left = `${left}px`
         }
+        const positionToolbarFlyout = (menu, title, items) => {
+            if (!menu.closest('#toolbar')
+                || !window.matchMedia('(max-height: 520px)').matches) return
+
+            const viewportInset = 8
+            const toolbarRect = document.getElementById('toolbar').getBoundingClientRect()
+            const titleRect = title.getBoundingClientRect()
+            items.style.setProperty('--toolbar-flyout-left', `${toolbarRect.right + 4}px`)
+            items.style.setProperty('--toolbar-flyout-top', `${viewportInset}px`)
+
+            const flyoutHeight = items.getBoundingClientRect().height
+            const maxTop = Math.max(
+                viewportInset, window.innerHeight - viewportInset - flyoutHeight)
+            const top = Math.min(Math.max(titleRect.top, viewportInset), maxTop)
+            items.style.setProperty('--toolbar-flyout-top', `${top}px`)
+        }
         const showSubmenu = (trigger, submenu, { focusFirst = false } = {}) => {
             hideSubmenu()
             const menuEl = trigger.closest('.menu')
@@ -2318,7 +2334,10 @@ class LayersApp {
                     closeDropdowns(items)
                     items.classList.toggle('hide', !shouldOpen)
                     setTitleExpanded(title, shouldOpen)
-                    if (shouldOpen) clampFilterDropdown(menu, items)
+                    if (shouldOpen) {
+                        clampFilterDropdown(menu, items)
+                        positionToolbarFlyout(menu, title, items)
+                    }
                 })
             }
         })

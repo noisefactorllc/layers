@@ -258,12 +258,19 @@
                 var(--ui-gradient-bottom) 100%);
         background-color: var(--ui-titlebar-base);
         background-image: var(--ui-titlebar-gradient);
-        backdrop-filter: var(--glass-blur-strength);
-        -webkit-backdrop-filter: var(--glass-blur-strength);
     }
 
     #toolbarBackdrop {
         display: none;
+    }
+
+    #toolbar .menu-items {
+        position: fixed;
+        top: var(--toolbar-flyout-top, 8px);
+        left: var(--toolbar-flyout-left, 44px);
+        margin-left: 0;
+        max-height: calc(100vh - 16px);
+        overflow-y: auto;
     }
 }
 
