@@ -31,10 +31,12 @@ const CURATED_GROUPS = [
         id: 'blur',
         label: 'blur',
         effects: [
-            { effectId: 'filter/blur',       label: 'blur' },
-            { effectId: 'filter/motionBlur', label: 'motion blur' },
-            { effectId: 'filter/zoomBlur',   label: 'zoom blur' },
-            { effectId: 'filter/spinBlur',   label: 'spin blur' }
+            { effectId: 'filter/blur',            label: 'blur' },
+            { effectId: 'filter/directionalBlur', label: 'motion blur' },
+            { effectId: 'filter/zoomBlur',        label: 'zoom blur' },
+            { effectId: 'filter/spinBlur',        label: 'spin blur' },
+            { effectId: 'filter/median',          label: 'median' },
+            { effectId: 'filter/vaseline',        label: 'soft focus' }
         ]
     },
     {
@@ -42,28 +44,71 @@ const CURATED_GROUPS = [
         label: 'sharpen',
         effects: [
             { effectId: 'filter/sharpen',     label: 'sharpen' },
-            { effectId: 'filter/unsharpMask', label: 'unsharp mask' }
+            { effectId: 'filter/unsharpMask', label: 'unsharp mask' },
+            { effectId: 'filter/highPass',    label: 'high pass' }
         ]
     },
     {
         id: 'pixelate',
         label: 'pixelate',
         effects: [
+            { effectId: 'filter/pixels',   label: 'pixelate' },
             { effectId: 'filter/halftone', label: 'halftone' },
-            { effectId: 'filter/dither',   label: 'dither' }
+            { effectId: 'filter/dither',   label: 'dither' },
+            { effectId: 'filter/lowPoly',  label: 'low poly' },
+            { effectId: 'filter/glyphMap', label: 'glyph map' },
+            { effectId: 'filter/stipple',  label: 'stipple' }
+        ]
+    },
+    {
+        id: 'distort',
+        label: 'distort',
+        effects: [
+            { effectId: 'filter/warp',        label: 'warp' },
+            { effectId: 'filter/bulge',       label: 'bulge' },
+            { effectId: 'filter/pinch',       label: 'pinch' },
+            { effectId: 'filter/skew',        label: 'skew' },
+            { effectId: 'filter/waves',       label: 'waves' },
+            { effectId: 'filter/pondRipples', label: 'ripples' },
+            { effectId: 'filter/spiral',      label: 'twirl' },
+            { effectId: 'filter/polar',       label: 'polar coordinates' },
+            { effectId: 'filter/tunnel',      label: 'tunnel' },
+            { effectId: 'filter/wormhole',    label: 'wormhole' }
+        ]
+    },
+    {
+        id: 'glitch',
+        label: 'glitch',
+        effects: [
+            // Initial params where the effect's spec defaults would render as
+            // a no-op — the menu must never add a do-nothing layer.
+            { effectId: 'classicNoisedeck/glitch',    label: 'glitch',
+                params: { glitchiness: 50, aberration: 30 } },
+            { effectId: 'filter/corrupt',             label: 'corrupt' },
+            { effectId: 'filter/pixelSort',           label: 'pixel sort' },
+            { effectId: 'filter/scanlineError',       label: 'scanline error' },
+            { effectId: 'filter/crt',                 label: 'crt' },
+            { effectId: 'filter/snow',                label: 'tv snow' },
+            { effectId: 'filter/degauss',             label: 'degauss' },
+            { effectId: 'filter/chromaticAberration', label: 'chromatic aberration' },
+            { effectId: 'filter/convolutionFeedback', label: 'feedback' },
+            { effectId: 'filter/reverb',              label: 'echo trails' },
+            { effectId: 'filter/feedback',            label: 'video feedback',
+                params: { mix: 50, scaleAmt: 97, rotation: 2 } }
         ]
     },
     {
         id: 'stylize',
         label: 'stylize',
         effects: [
-            { effectId: 'filter/bloom',    label: 'bloom' },
-            { effectId: 'filter/vignette', label: 'vignette' },
-            { effectId: 'filter/edge',     label: 'edge detect' },
-            { effectId: 'filter/emboss',   label: 'emboss' },
-            { effectId: 'filter/extrude',  label: 'extrude' },
-            { effectId: 'filter/oilPaint', label: 'oil paint' },
-            { effectId: 'filter/wind',     label: 'wind' }
+            { effectId: 'filter/edge',        label: 'edge detect' },
+            { effectId: 'filter/glowingEdge', label: 'glowing edge' },
+            { effectId: 'filter/emboss',      label: 'emboss' },
+            { effectId: 'filter/extrude',     label: 'extrude' },
+            { effectId: 'filter/celShading',  label: 'cel shading' },
+            { effectId: 'filter/oilPaint',    label: 'oil paint' },
+            { effectId: 'filter/wind',        label: 'wind' },
+            { effectId: 'filter/scatter',     label: 'scatter' }
         ]
     },
     {
@@ -72,7 +117,8 @@ const CURATED_GROUPS = [
         effects: [
             { effectId: 'filter/chrome',    label: 'chrome' },
             { effectId: 'filter/photocopy', label: 'photocopy' },
-            { effectId: 'filter/stamp',     label: 'stamp' }
+            { effectId: 'filter/stamp',     label: 'stamp' },
+            { effectId: 'filter/relief',    label: 'relief' }
         ]
     },
     {
@@ -80,15 +126,18 @@ const CURATED_GROUPS = [
         label: 'brush strokes',
         effects: [
             { effectId: 'filter/hatch',   label: 'hatch' },
-            { effectId: 'filter/strokes', label: 'strokes' }
+            { effectId: 'filter/strokes', label: 'strokes' },
+            { effectId: 'filter/spatter', label: 'spatter' },
+            { effectId: 'filter/outline', label: 'outline' }
         ]
     },
     {
         id: 'artistic',
         label: 'artistic',
         effects: [
-            { effectId: 'filter/watercolor',  label: 'watercolor' },
-            { effectId: 'filter/plasticWrap', label: 'plastic wrap' }
+            { effectId: 'filter/watercolor',      label: 'watercolor' },
+            { effectId: 'filter/plasticWrap',     label: 'plastic wrap' },
+            { effectId: 'filter/historicPalette', label: 'historic palette' }
         ]
     },
     {
@@ -98,13 +147,41 @@ const CURATED_GROUPS = [
             { effectId: 'filter/grain',       label: 'grain' },
             { effectId: 'filter/craquelure',  label: 'craquelure' },
             { effectId: 'filter/mosaicTiles', label: 'mosaic tiles' },
-            { effectId: 'filter/patchwork',   label: 'patchwork' }
+            { effectId: 'filter/patchwork',   label: 'patchwork' },
+            { effectId: 'filter/texture',     label: 'texturizer' },
+            { effectId: 'filter/grime',       label: 'grime' }
+        ]
+    },
+    {
+        id: 'lightLens',
+        label: 'light & lens',
+        effects: [
+            { effectId: 'filter/bloom',     label: 'bloom' },
+            { effectId: 'filter/vignette',  label: 'vignette' },
+            { effectId: 'filter/lensFlare', label: 'lens flare' },
+            { effectId: 'filter/lightLeak', label: 'light leak' },
+            { effectId: 'filter/lighting',  label: 'lighting' },
+            { effectId: 'filter/lens',      label: 'lens distortion',
+                params: { displacement: 0.3 } },
+            { effectId: 'filter/clouds',    label: 'clouds' }
+        ]
+    },
+    {
+        id: 'tile',
+        label: 'tile',
+        effects: [
+            { effectId: 'filter/tile',       label: 'kaleidoscope' },
+            { effectId: 'filter/repeat',     label: 'repeat' },
+            { effectId: 'filter/seamless',   label: 'seamless' },
+            { effectId: 'filter/flipMirror', label: 'flip mirror' }
         ]
     }
 ]
 
 export function listCurated() {
-    return { groups: CURATED_GROUPS.map(g => ({ ...g, effects: g.effects.slice() })) }
+    // Deep clone: entries may carry nested `params` objects, and a shallow
+    // copy would let callers mutate the shared catalog for the whole session.
+    return structuredClone({ groups: CURATED_GROUPS })
 }
 
 /**

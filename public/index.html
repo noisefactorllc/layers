@@ -237,6 +237,10 @@
                             data-submenu="sharpen" aria-haspopup="menu" aria-controls="filterSharpenMenu" aria-expanded="false">sharpen</button>
                         <button class="has-submenu" id="filterPixelateTrigger" type="button" role="menuitem" tabindex="-1"
                             data-submenu="pixelate" aria-haspopup="menu" aria-controls="filterPixelateMenu" aria-expanded="false">pixelate</button>
+                        <button class="has-submenu" id="filterDistortTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="distort" aria-haspopup="menu" aria-controls="filterDistortMenu" aria-expanded="false">distort</button>
+                        <button class="has-submenu" id="filterGlitchTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="glitch" aria-haspopup="menu" aria-controls="filterGlitchMenu" aria-expanded="false">glitch</button>
                         <button class="has-submenu" id="filterStylizeTrigger" type="button" role="menuitem" tabindex="-1"
                             data-submenu="stylize" aria-haspopup="menu" aria-controls="filterStylizeMenu" aria-expanded="false">stylize</button>
                         <button class="has-submenu" id="filterSketchTrigger" type="button" role="menuitem" tabindex="-1"
@@ -247,50 +251,111 @@
                             data-submenu="artistic" aria-haspopup="menu" aria-controls="filterArtisticMenu" aria-expanded="false">artistic</button>
                         <button class="has-submenu" id="filterTextureTrigger" type="button" role="menuitem" tabindex="-1"
                             data-submenu="texture" aria-haspopup="menu" aria-controls="filterTextureMenu" aria-expanded="false">texture</button>
+                        <button class="has-submenu" id="filterLightLensTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="light-lens" aria-haspopup="menu" aria-controls="filterLightLensMenu" aria-expanded="false">light &amp; lens</button>
+                        <button class="has-submenu" id="filterTileTrigger" type="button" role="menuitem" tabindex="-1"
+                            data-submenu="tile" aria-haspopup="menu" aria-controls="filterTileMenu" aria-expanded="false">tile</button>
                         <hr class="menu-seperator">
                         <button id="filterMoreMenuItem" type="button" role="menuitem" tabindex="-1">more...</button>
                     </div>
                     <div class="submenu hide" id="filterBlurMenu" role="menu" aria-labelledby="filterBlurTrigger" data-submenu-id="blur">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/blur">blur</button>
-                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/motionBlur">motion blur</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/directionalBlur">motion blur</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/zoomBlur">zoom blur</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/spinBlur">spin blur</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/median">median</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/vaseline">soft focus</button>
                     </div>
                     <div class="submenu hide" id="filterSharpenMenu" role="menu" aria-labelledby="filterSharpenTrigger" data-submenu-id="sharpen">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/sharpen">sharpen</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/unsharpMask">unsharp mask</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/highPass">high pass</button>
                     </div>
                     <div class="submenu hide" id="filterPixelateMenu" role="menu" aria-labelledby="filterPixelateTrigger" data-submenu-id="pixelate">
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/pixels">pixelate</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/halftone">halftone</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/dither">dither</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/lowPoly">low poly</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/glyphMap">glyph map</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/stipple">stipple</button>
+                    </div>
+                    <div class="submenu hide" id="filterDistortMenu" role="menu" aria-labelledby="filterDistortTrigger" data-submenu-id="distort">
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/warp">warp</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/bulge">bulge</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/pinch">pinch</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/skew">skew</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/waves">waves</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/pondRipples">ripples</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/spiral">twirl</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/polar">polar coordinates</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/tunnel">tunnel</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/wormhole">wormhole</button>
+                    </div>
+                    <div class="submenu hide" id="filterGlitchMenu" role="menu" aria-labelledby="filterGlitchTrigger" data-submenu-id="glitch">
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="classicNoisedeck/glitch"
+                            data-params='{"glitchiness":50,"aberration":30}'>glitch</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/corrupt">corrupt</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/pixelSort">pixel sort</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/scanlineError">scanline error</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/crt">crt</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/snow">tv snow</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/degauss">degauss</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/chromaticAberration">chromatic aberration</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/convolutionFeedback">feedback</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/reverb">echo trails</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/feedback"
+                            data-params='{"mix":50,"scaleAmt":97,"rotation":2}'>video feedback</button>
                     </div>
                     <div class="submenu hide" id="filterStylizeMenu" role="menu" aria-labelledby="filterStylizeTrigger" data-submenu-id="stylize">
-                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/bloom">bloom</button>
-                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/vignette">vignette</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/edge">edge detect</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/glowingEdge">glowing edge</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/emboss">emboss</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/extrude">extrude</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/celShading">cel shading</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/oilPaint">oil paint</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/wind">wind</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/scatter">scatter</button>
                     </div>
                     <div class="submenu hide" id="filterSketchMenu" role="menu" aria-labelledby="filterSketchTrigger" data-submenu-id="sketch">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/chrome">chrome</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/photocopy">photocopy</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/stamp">stamp</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/relief">relief</button>
                     </div>
                     <div class="submenu hide" id="filterBrushStrokesMenu" role="menu" aria-labelledby="filterBrushStrokesTrigger" data-submenu-id="brush-strokes">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/hatch">hatch</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/strokes">strokes</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/spatter">spatter</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/outline">outline</button>
                     </div>
                     <div class="submenu hide" id="filterArtisticMenu" role="menu" aria-labelledby="filterArtisticTrigger" data-submenu-id="artistic">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/watercolor">watercolor</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/plasticWrap">plastic wrap</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/historicPalette">historic palette</button>
                     </div>
                     <div class="submenu hide" id="filterTextureMenu" role="menu" aria-labelledby="filterTextureTrigger" data-submenu-id="texture">
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/grain">grain</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/craquelure">craquelure</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/mosaicTiles">mosaic tiles</button>
                         <button type="button" role="menuitem" tabindex="-1" data-effect="filter/patchwork">patchwork</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/texture">texturizer</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/grime">grime</button>
+                    </div>
+                    <div class="submenu hide" id="filterLightLensMenu" role="menu" aria-labelledby="filterLightLensTrigger" data-submenu-id="light-lens">
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/bloom">bloom</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/vignette">vignette</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/lensFlare">lens flare</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/lightLeak">light leak</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/lighting">lighting</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/lens"
+                            data-params='{"displacement":0.3}'>lens distortion</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/clouds">clouds</button>
+                    </div>
+                    <div class="submenu hide" id="filterTileMenu" role="menu" aria-labelledby="filterTileTrigger" data-submenu-id="tile">
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/tile">kaleidoscope</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/repeat">repeat</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/seamless">seamless</button>
+                        <button type="button" role="menuitem" tabindex="-1" data-effect="filter/flipMirror">flip mirror</button>
                     </div>
                 </div>
 

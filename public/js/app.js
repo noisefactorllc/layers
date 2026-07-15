@@ -3873,6 +3873,12 @@ class LayersApp {
             }
             if (activeSubmenu?.closest('#filterMenu') && activeSubmenuTrigger) {
                 positionSubmenu(activeSubmenuTrigger, activeSubmenu)
+                // Reclamping can shrink the submenu's scroll viewport; keep the
+                // keyboard-focused item visible (focus alone only auto-scrolls
+                // at focus time, not when the container later resizes).
+                if (activeSubmenu.contains(document.activeElement)) {
+                    document.activeElement.scrollIntoView({ block: 'nearest' })
+                }
             }
         }
         window.addEventListener('resize', repositionOpenMenus)
@@ -4147,14 +4153,35 @@ class LayersApp {
             this._showCanvasSizeDialog()
         })
 
-        // Image + Filter menus - Effect items (data-driven)
+        // Image + Filter menus - Effect items (data-driven). An optional
+        // data-params JSON attribute supplies initial params for effects whose
+        // spec defaults would be a visual no-op (e.g. glitchiness: 0) — a menu
+        // item must never add a layer that appears to do nothing.
+        //
+        // The layer is named after the clicked menu label, not the effect's
+        // camelCase short name: several curated labels diverge from the effect
+        // name ('twirl' is filter/spiral, 'feedback' is convolutionFeedback),
+        // and auto-naming would cross those wires.
         for (const menuId of ['imageMenu', 'filterMenu']) {
             document.getElementById(menuId)?.addEventListener('click', (e) => {
                 const effectItem = e.target.closest('[data-effect]')
                 if (!effectItem) return
                 if (this._layers.length === 0) return
+                let params = null
+                if (effectItem.dataset.params) {
+                    try {
+                        params = JSON.parse(effectItem.dataset.params)
+                    } catch (err) {
+                        console.error('[Layers] Invalid data-params on menu item:',
+                            effectItem.dataset.effect, err)
+                    }
+                }
+                const name = effectItem.textContent.trim() || null
                 this._runPointerMutation(() =>
-                    this._handleAddEffectLayer(effectItem.dataset.effect))
+                    this._handleAddEffectLayer(effectItem.dataset.effect, {
+                        name,
+                        ...(params ? { params } : {}),
+                    }))
             })
         }
 

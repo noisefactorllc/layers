@@ -34,9 +34,11 @@ const EXPECTED_GROUPS = [
         label: 'blur',
         effects: [
             ['filter/blur', 'blur'],
-            ['filter/motionBlur', 'motion blur'],
+            ['filter/directionalBlur', 'motion blur'],
             ['filter/zoomBlur', 'zoom blur'],
             ['filter/spinBlur', 'spin blur'],
+            ['filter/median', 'median'],
+            ['filter/vaseline', 'soft focus'],
         ],
     },
     {
@@ -47,6 +49,7 @@ const EXPECTED_GROUPS = [
         effects: [
             ['filter/sharpen', 'sharpen'],
             ['filter/unsharpMask', 'unsharp mask'],
+            ['filter/highPass', 'high pass'],
         ],
     },
     {
@@ -55,8 +58,49 @@ const EXPECTED_GROUPS = [
         curatedId: 'pixelate',
         label: 'pixelate',
         effects: [
+            ['filter/pixels', 'pixelate'],
             ['filter/halftone', 'halftone'],
             ['filter/dither', 'dither'],
+            ['filter/lowPoly', 'low poly'],
+            ['filter/glyphMap', 'glyph map'],
+            ['filter/stipple', 'stipple'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'distort',
+        curatedId: 'distort',
+        label: 'distort',
+        effects: [
+            ['filter/warp', 'warp'],
+            ['filter/bulge', 'bulge'],
+            ['filter/pinch', 'pinch'],
+            ['filter/skew', 'skew'],
+            ['filter/waves', 'waves'],
+            ['filter/pondRipples', 'ripples'],
+            ['filter/spiral', 'twirl'],
+            ['filter/polar', 'polar coordinates'],
+            ['filter/tunnel', 'tunnel'],
+            ['filter/wormhole', 'wormhole'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'glitch',
+        curatedId: 'glitch',
+        label: 'glitch',
+        effects: [
+            ['classicNoisedeck/glitch', 'glitch', { glitchiness: 50, aberration: 30 }],
+            ['filter/corrupt', 'corrupt'],
+            ['filter/pixelSort', 'pixel sort'],
+            ['filter/scanlineError', 'scanline error'],
+            ['filter/crt', 'crt'],
+            ['filter/snow', 'tv snow'],
+            ['filter/degauss', 'degauss'],
+            ['filter/chromaticAberration', 'chromatic aberration'],
+            ['filter/convolutionFeedback', 'feedback'],
+            ['filter/reverb', 'echo trails'],
+            ['filter/feedback', 'video feedback', { mix: 50, scaleAmt: 97, rotation: 2 }],
         ],
     },
     {
@@ -65,13 +109,14 @@ const EXPECTED_GROUPS = [
         curatedId: 'stylize',
         label: 'stylize',
         effects: [
-            ['filter/bloom', 'bloom'],
-            ['filter/vignette', 'vignette'],
             ['filter/edge', 'edge detect'],
+            ['filter/glowingEdge', 'glowing edge'],
             ['filter/emboss', 'emboss'],
             ['filter/extrude', 'extrude'],
+            ['filter/celShading', 'cel shading'],
             ['filter/oilPaint', 'oil paint'],
             ['filter/wind', 'wind'],
+            ['filter/scatter', 'scatter'],
         ],
     },
     {
@@ -83,6 +128,7 @@ const EXPECTED_GROUPS = [
             ['filter/chrome', 'chrome'],
             ['filter/photocopy', 'photocopy'],
             ['filter/stamp', 'stamp'],
+            ['filter/relief', 'relief'],
         ],
     },
     {
@@ -93,6 +139,8 @@ const EXPECTED_GROUPS = [
         effects: [
             ['filter/hatch', 'hatch'],
             ['filter/strokes', 'strokes'],
+            ['filter/spatter', 'spatter'],
+            ['filter/outline', 'outline'],
         ],
     },
     {
@@ -103,6 +151,7 @@ const EXPECTED_GROUPS = [
         effects: [
             ['filter/watercolor', 'watercolor'],
             ['filter/plasticWrap', 'plastic wrap'],
+            ['filter/historicPalette', 'historic palette'],
         ],
     },
     {
@@ -115,6 +164,35 @@ const EXPECTED_GROUPS = [
             ['filter/craquelure', 'craquelure'],
             ['filter/mosaicTiles', 'mosaic tiles'],
             ['filter/patchwork', 'patchwork'],
+            ['filter/texture', 'texturizer'],
+            ['filter/grime', 'grime'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'light-lens',
+        curatedId: 'lightLens',
+        label: 'light & lens',
+        effects: [
+            ['filter/bloom', 'bloom'],
+            ['filter/vignette', 'vignette'],
+            ['filter/lensFlare', 'lens flare'],
+            ['filter/lightLeak', 'light leak'],
+            ['filter/lighting', 'lighting'],
+            ['filter/lens', 'lens distortion', { displacement: 0.3 }],
+            ['filter/clouds', 'clouds'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'tile',
+        curatedId: 'tile',
+        label: 'tile',
+        effects: [
+            ['filter/tile', 'kaleidoscope'],
+            ['filter/repeat', 'repeat'],
+            ['filter/seamless', 'seamless'],
+            ['filter/flipMirror', 'flip mirror'],
         ],
     },
 ]
@@ -342,28 +420,28 @@ test.describe('Filter menu', () => {
         await page.keyboard.press('ArrowDown')
         await page.keyboard.press('ArrowDown')
         await page.keyboard.press('ArrowDown')
-        const stylize = page.locator(
-            '#filterMenu > .menu-items > [data-submenu="stylize"]')
-        await expect(stylize).toBeFocused()
+        const distort = page.locator(
+            '#filterMenu > .menu-items > [data-submenu="distort"]')
+        await expect(distort).toBeFocused()
         await page.keyboard.press('ArrowRight')
 
         const submenu = page.locator(
-            '#filterMenu > .submenu[data-submenu-id="stylize"]')
-        const wind = submenu.getByRole('menuitem', { name: 'wind', exact: true })
+            '#filterMenu > .submenu[data-submenu-id="distort"]')
+        const wormhole = submenu.getByRole('menuitem', { name: 'wormhole', exact: true })
         await expect(submenu).toBeVisible()
         await page.keyboard.press('ArrowUp')
-        await expect(wind).toBeFocused()
-        await expect(stylize).toHaveAttribute('aria-expanded', 'true')
+        await expect(wormhole).toBeFocused()
+        await expect(distort).toHaveAttribute('aria-expanded', 'true')
 
         await page.setViewportSize({ width: 390, height: 240 })
         await expect.poll(async () => {
             const rect = await submenu.boundingBox()
             return Boolean(rect && rect.y >= 8 && rect.y + rect.height <= 232)
         }).toBe(true)
-        await expect(stylize).toHaveAttribute('aria-expanded', 'true')
-        await expect(wind).toBeFocused()
+        await expect(distort).toHaveAttribute('aria-expanded', 'true')
+        await expect(wormhole).toBeFocused()
 
-        const optionHit = await wind.evaluate(element => {
+        const optionHit = await wormhole.evaluate(element => {
             const rect = element.getBoundingClientRect()
             const hit = document.elementFromPoint(
                 rect.left + rect.width / 2, rect.top + rect.height / 2)
@@ -371,14 +449,17 @@ test.describe('Filter menu', () => {
         })
         expect(optionHit).toBe(true)
         const before = await page.evaluate(() => window.layersApp._layers.length)
-        await wind.click()
+        await wormhole.click()
         await expect.poll(() => page.evaluate(() => ({
             count: window.layersApp._layers.length,
             effectId: window.layersApp._layers.at(-1)?.effectId,
-        }))).toEqual({ count: before + 1, effectId: 'filter/wind' })
+        }))).toEqual({ count: before + 1, effectId: 'filter/wormhole' })
     })
 
     test('clamps the filter dropdown and keeps every submenu effect reachable', async ({ page }) => {
+        // Sweeps all 12 submenus (hover + geometry each); parallel-worker
+        // contention can push it past the default 30s budget.
+        test.slow()
         await page.setViewportSize({ width: 390, height: 320 })
         await bootBlank(page)
 
@@ -568,6 +649,54 @@ test.describe('Filter menu', () => {
         })), { timeout: 10000 }).toEqual({ count: before + 1, effectId: 'filter/oilPaint' })
     })
 
+    test('clicking a data-params entry applies its params and menu-label name', async ({ page }) => {
+        await bootBlank(page)
+        const before = await page.evaluate(() => window.layersApp._layers.length)
+        await page.locator('#filterMenu > .menu-title').click()
+        await page.locator('#filterMenu > .menu-items > [data-submenu="glitch"]').hover()
+        const glitch = page.locator(
+            '#filterMenu > .submenu[data-submenu-id="glitch"] > [data-effect="classicNoisedeck/glitch"]')
+        await expect(glitch).toBeVisible()
+        await glitch.click()
+        await expect.poll(() => page.evaluate(() => {
+            const layer = window.layersApp._layers.at(-1)
+            return {
+                count: window.layersApp._layers.length,
+                effectId: layer?.effectId,
+                name: layer?.name,
+                glitchiness: layer?.effectParams?.glitchiness,
+                aberration: layer?.effectParams?.aberration,
+            }
+        }), { timeout: 10000 }).toEqual({
+            count: before + 1,
+            effectId: 'classicNoisedeck/glitch',
+            name: 'glitch',
+            glitchiness: 50,
+            aberration: 30,
+        })
+    })
+
+    test('curated initial params satisfy the agent validation contract', async ({ page }) => {
+        // Guard: a curated `params` value outside the effect definition's
+        // declared range would brick saved-project reload and collab join
+        // (both run assertRemoteParamRange). Replaying each tuned entry
+        // through the agent's addLayer exercises that same range validation.
+        await bootBlank(page)
+        const tuned = EXPECTED_GROUPS.flatMap(group =>
+            group.effects
+                .filter(([, , params]) => params)
+                .map(([effectId, label, params]) => ({ effectId, label, params })))
+        expect(tuned.length).toBeGreaterThan(0)
+        for (const entry of tuned) {
+            const env = await page.evaluate(({ effectId, params }) =>
+                window.LayersAgent.addLayer({ kind: 'effect', effectId, params }),
+            entry)
+            expect(env.ok,
+                `${entry.label} (${entry.effectId}) params rejected: ${JSON.stringify(env.error || env)}`
+            ).toBe(true)
+        }
+    })
+
     test('curated groups exactly mirror the ordered image and filter taxonomy', async ({ page }) => {
         await bootBlank(page)
         const actual = await page.evaluate(async () => {
@@ -585,6 +714,11 @@ test.describe('Filter menu', () => {
                         effects: [...submenu.querySelectorAll(':scope > [data-effect]')].map(item => ({
                             effectId: item.dataset.effect,
                             label: item.textContent.trim(),
+                            // Initial params for effects whose spec defaults are a
+                            // visual no-op; must mirror between DOM and agent list.
+                            ...(item.dataset.params
+                                ? { params: JSON.parse(item.dataset.params) }
+                                : {}),
                         })),
                     }
                 })
@@ -592,16 +726,18 @@ test.describe('Filter menu', () => {
             return { curatedGroups: env.result.groups, menuGroups }
         })
 
+        const expectedEffect = ([effectId, label, params]) =>
+            (params ? { effectId, label, params } : { effectId, label })
         expect(actual.menuGroups).toEqual(EXPECTED_GROUPS.map(group => ({
             menuId: group.menuId,
             submenuId: group.submenuId,
             label: group.label,
-            effects: group.effects.map(([effectId, label]) => ({ effectId, label })),
+            effects: group.effects.map(expectedEffect),
         })))
         expect(actual.curatedGroups).toEqual(EXPECTED_GROUPS.map(group => ({
             id: group.curatedId,
             label: group.label,
-            effects: group.effects.map(([effectId, label]) => ({ effectId, label })),
+            effects: group.effects.map(expectedEffect),
         })))
     })
 
@@ -660,7 +796,7 @@ test.describe('Filter menu', () => {
         await bootBlank(page)
         const title = page.getByRole('button', { name: 'filter', exact: true })
         const dropdown = page.locator('#filterMenuItems')
-        const texture = dropdown.getByRole('menuitem', { name: 'texture', exact: true })
+        const tile = dropdown.getByRole('menuitem', { name: 'tile', exact: true })
         const more = dropdown.getByRole('menuitem', { name: 'more...', exact: true })
 
         for (const activationKey of ['Enter', 'Space']) {
@@ -668,7 +804,7 @@ test.describe('Filter menu', () => {
             await page.keyboard.press('ArrowUp')
             await expect(more).toBeFocused()
             await page.keyboard.press('ArrowUp')
-            await expect(texture).toBeFocused()
+            await expect(tile).toBeFocused()
             await page.keyboard.press('ArrowDown')
             await expect(more).toBeFocused()
 
