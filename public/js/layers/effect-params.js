@@ -8,7 +8,7 @@
 import { getEffect } from '../noisemaker/bundle.js'
 import './font-select.js'
 import { getFontaineLoader, BASE_FONTS } from './fontaine-loader.js'
-import { SliderValue, SelectDropdown, ToggleSwitch, ColorPicker } from 'handfish'
+import { SliderValue, SelectDropdown, ToggleSwitch, ColorPicker, Vector3dPicker } from 'handfish'
 
 // Static effect loader function (set by app after renderer init)
 let effectLoader = null
@@ -116,7 +116,10 @@ class EffectParams extends HTMLElement {
 
         const globals = this._effectDef.globals || {}
 
-        const unsupportedTypes = ['vec2', 'vec3']
+        // surface: engine-managed texture handles (e.g. lighting heightMap in
+        // newer shader bundles) — _inferControlType would fall through to a
+        // slider holding a texture name string, a broken control.
+        const unsupportedTypes = ['vec2', 'surface']
         const isVisible = spec =>
             !spec.ui?.hidden && !spec.internal && !unsupportedTypes.includes(spec.type)
 
@@ -197,7 +200,16 @@ class EffectParams extends HTMLElement {
             return this._createFontSelect(paramName, spec, currentValue)
         }
 
-        const controlType = spec.ui?.control || this._inferControlType(spec)
+        let controlType = spec.ui?.control || this._inferControlType(spec)
+
+        // vec3 params render as 3D vector pickers regardless of a declared
+        // slider control — mirrors noisedeck's type-first dispatch (e.g.
+        // filter/grade's tint/wheel params are vec3 with control: "slider",
+        // which would break a scalar slider). An explicit color control
+        // still wins, as in noisedeck.
+        if (spec.type === 'vec3' && controlType !== 'color') {
+            controlType = 'vector3'
+        }
 
         switch (controlType) {
             case 'slider':
@@ -209,6 +221,8 @@ class EffectParams extends HTMLElement {
                 return this._createToggle(paramName, spec, currentValue)
             case 'color':
                 return this._createColorPicker(paramName, spec, currentValue)
+            case 'vector3':
+                return this._createVec3(paramName, spec, currentValue)
             case 'button':
                 return this._createButton(paramName, spec)
             case 'text':
@@ -229,6 +243,7 @@ class EffectParams extends HTMLElement {
         if (spec.choices) return 'dropdown'
         if (spec.type === 'boolean') return 'toggle'
         if (spec.type === 'color' || spec.type === 'vec4') return 'color'
+        if (spec.type === 'vec3') return 'vector3'
         if (spec.type === 'string') return 'text'
         if (spec.type === 'float' || spec.type === 'int') return 'slider'
         return 'slider'
@@ -379,6 +394,51 @@ class EffectParams extends HTMLElement {
             getValue: () => this._hexToArray(colorPicker.value),
             setValue: (v) => {
                 colorPicker.value = this._arrayToHex(v)
+            }
+        }
+    }
+
+    /**
+     * Create a 3D vector picker control (vec3 params)
+     * Mirrors noisedeck's controlGroupBuilder wiring: min/max/step from the
+     * spec (picker defaults -1..1 step 0.01), normalized mode for direction
+     * vectors, params stored as [x, y, z] arrays.
+     * @private
+     */
+    _createVec3(paramName, spec, currentValue) {
+        const picker = document.createElement('vector3d-picker')
+        picker.className = 'control-vector3d'
+
+        if (spec.min !== undefined) picker.setAttribute('min', spec.min)
+        if (spec.max !== undefined) picker.setAttribute('max', spec.max)
+        if (spec.step !== undefined) picker.setAttribute('step', spec.step)
+
+        const lowerName = paramName.toLowerCase()
+        if (lowerName.includes('dir') || spec.normalized === true) {
+            picker.setAttribute('normalized', '')
+        }
+
+        const toArray = (v) => {
+            if (Array.isArray(v) && v.length >= 3) return v.slice(0, 3)
+            if (v && typeof v === 'object') return [v.x ?? 0, v.y ?? 0, v.z ?? 0]
+            return null
+        }
+        picker.value = toArray(currentValue) ?? toArray(spec.default) ?? [0, 1, 0]
+
+        picker.addEventListener('input', () => {
+            const v = picker.value
+            this._handleValueChange(paramName, [v.x, v.y, v.z], spec)
+        })
+
+        return {
+            element: picker,
+            getValue: () => {
+                const v = picker.value
+                return [v.x, v.y, v.z]
+            },
+            setValue: (v) => {
+                const arr = toArray(v)
+                if (arr) picker.value = arr
             }
         }
     }

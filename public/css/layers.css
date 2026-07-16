@@ -511,6 +511,11 @@ effect-params {
     grid-column: 2 / -1;
 }
 
+.control-group vector3d-picker {
+    grid-column: 2 / -1;
+    min-width: 0;
+}
+
 .control-group slider-value {
     display: flex;
     align-items: center;
