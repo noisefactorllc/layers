@@ -1518,7 +1518,9 @@ export class LayersRenderer {
     }
 
     _buildEffectCall(layer) {
-        if (!layer.effectId) return 'noise()'
+        // Qualified so a future manifest collision on another short name can't
+        // silently repoint this fallback (same hazard class as noise itself).
+        if (!layer.effectId) return 'from(synth, noise())'
 
         const effectName = layer.effectId.split('/').pop()
         const params = layer.effectParams || {}
@@ -1575,9 +1577,51 @@ export class LayersRenderer {
                 return `${key}: ${value}`
             })
 
-        return paramPairs.length > 0
+        const call = paramPairs.length > 0
             ? `${effectName}(${paramPairs.join(', ')})`
             : `${effectName}()`
+        return this._qualifyEffectCall(layer.effectId, effectName, call)
+    }
+
+    /**
+     * Wrap an effect call in the DSL's `from(namespace, call)` qualifier when
+     * the short name is claimed by more than one namespace in the manifest.
+     *
+     * DSL calls are unqualified short names resolved first-match-wins over the
+     * program's `search` order, and _buildDsl always lists `synth` first — so
+     * an unqualified `noise()` from a classicNoisedeck/noise layer silently
+     * renders synth/noise instead. `from()` pins resolution to the layer's own
+     * namespace. Only ambiguous short names get wrapped (currently noise and
+     * noise3d), so DSL output for everything else is unchanged.
+     * @private
+     */
+    _qualifyEffectCall(effectId, effectName, call) {
+        const namespace = effectId?.split('/')[0]
+        if (!namespace || !this._isAmbiguousShortName(effectName)) return call
+        return `from(${namespace}, ${call})`
+    }
+
+    /**
+     * Whether more than one manifest namespace defines this effect short name.
+     * Memoized per manifest object; an unloaded manifest reports not-ambiguous
+     * (matching the pre-qualifier behavior) without memoizing, and a manifest
+     * swap (identity change) recomputes rather than serving a stale map.
+     * @private
+     */
+    _isAmbiguousShortName(effectName) {
+        const manifest = this._renderer.manifest
+        if (this._shortNameCountsFor !== manifest) {
+            if (!manifest || Object.keys(manifest).length === 0) return false
+            const counts = new Map()
+            for (const id of Object.keys(manifest)) {
+                const short = id.split('/')[1]
+                if (!short) continue
+                counts.set(short, (counts.get(short) || 0) + 1)
+            }
+            this._shortNameCounts = counts
+            this._shortNameCountsFor = manifest
+        }
+        return (this._shortNameCounts.get(effectName) || 0) > 1
     }
 
     /**
