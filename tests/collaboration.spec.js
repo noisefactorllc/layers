@@ -418,9 +418,21 @@ test('transform sync: a layer transform (move/scale) converges to the joined pag
     await joinById(pageB, sessionId)
     await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
 
-    const baseId = await pageA.evaluate(() => window.layersApp._layers[0].id)
+    // Transforms only apply to media/drawing layers — the 0.11 mutation
+    // hardening makes _applyLayerTransform reject effect layers, matching the
+    // transform tool's own gating — and media layers can't go online. So the
+    // transformable kind a live session supports is a drawing layer.
+    const drawingId = await pageA.evaluate(async () => {
+        const app = window.layersApp
+        const res = await app._handleAddDrawingLayer()
+        return res.value ?? app._layers.find(l => l.sourceType === 'drawing').id
+    })
+    await expect.poll(async () =>
+        (await layersState(pageB)).filter(l => l.sourceType === 'drawing').length,
+    { timeout: 60000 }).toBe(1)
+
     const transformOf = (target) => target.evaluate(() => {
-        const l = window.layersApp._layers[0]
+        const l = window.layersApp._layers.find(x => x.sourceType === 'drawing')
         return { offsetX: l.offsetX, offsetY: l.offsetY, scaleX: l.scaleX }
     })
 
@@ -435,7 +447,7 @@ test('transform sync: a layer transform (move/scale) converges to the joined pag
         const app = window.layersApp
         app._layerStack.selectedLayerId = id
         app._applyLayerTransform({ offsetX: 37, offsetY: -21, scaleX: 1.4 })
-    }, baseId)
+    }, drawingId)
 
     await expect.poll(async () => (await transformOf(pageB)).offsetX, { timeout: 60000 }).toBe(37)
     expect(await transformOf(pageB)).toEqual({ offsetX: 37, offsetY: -21, scaleX: 1.4 })
