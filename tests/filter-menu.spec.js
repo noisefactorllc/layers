@@ -166,6 +166,9 @@ const EXPECTED_GROUPS = [
             ['filter/patchwork', 'patchwork'],
             ['filter/texture', 'texturizer'],
             ['filter/grime', 'grime'],
+            ['filter/fibers', 'fibers'],
+            ['filter/scratches', 'scratches'],
+            ['filter/strayHair', 'stray hair'],
         ],
     },
     {

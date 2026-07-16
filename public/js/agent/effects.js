@@ -149,7 +149,10 @@ const CURATED_GROUPS = [
             { effectId: 'filter/mosaicTiles', label: 'mosaic tiles' },
             { effectId: 'filter/patchwork',   label: 'patchwork' },
             { effectId: 'filter/texture',     label: 'texturizer' },
-            { effectId: 'filter/grime',       label: 'grime' }
+            { effectId: 'filter/grime',       label: 'grime' },
+            { effectId: 'filter/fibers',      label: 'fibers' },
+            { effectId: 'filter/scratches',   label: 'scratches' },
+            { effectId: 'filter/strayHair',   label: 'stray hair' }
         ]
     },
     {

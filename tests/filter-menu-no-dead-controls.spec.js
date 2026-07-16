@@ -104,9 +104,19 @@ test('every filter menu entry visibly changes the render', async ({ page }) => {
             continue
         }
 
+        // Async-overlay effects (fibers/scratches/strayHair) render their
+        // texture via CPU tracing that lands a beat after the layer compiles
+        // (~600ms observed), so an unchanged first capture gets bounded
+        // retries before the entry is declared dead. Alive entries exit on
+        // the first differing capture, so only genuinely dead controls pay
+        // the full retry cost.
         await page.waitForTimeout(200)
-        const sig = await capture()
-        if (sig === baseline) {
+        let changed = false
+        for (let attempt = 0; attempt < 8; attempt++) {
+            if ((await capture()) !== baseline) { changed = true; break }
+            await page.waitForTimeout(500)
+        }
+        if (!changed) {
             dead.push(`${entry.label} (${entry.effectId})`)
         }
         const errs = consoleErrors.slice(errBefore)
