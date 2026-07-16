@@ -10,7 +10,6 @@
 
 export { LayersRenderer } from './renderer.js'
 export {
-    extractEffectNamesFromDsl,
     extractEffectsFromDsl,
     getAllEffects,
     parse,

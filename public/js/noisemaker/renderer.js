@@ -9,13 +9,106 @@
 
 import {
     CanvasRenderer,
-    extractEffectNamesFromDsl,
     getAllEffects,
     formatDslError,
     _bundle,
 } from './bundle.js'
 
 const DSL_IDENTIFIER_PATTERN = /^[_A-Za-z][_A-Za-z0-9]*$/
+
+/**
+ * Extract manifest-known effect ids referenced by a DSL program, WITHOUT
+ * compiling it. Used to discover which effects to load before compile — a
+ * compile-based extractor (the engine's extractEffectsFromDsl) resolves
+ * against the registered-effects registry and silently drops exactly the
+ * unregistered effects this discovery step exists to find.
+ *
+ * Ported verbatim from the engine's legacy extractEffectNamesFromDsl, whose
+ * export is being retired upstream; layers only ever parses DSL it emits
+ * itself (plus tryCompile input built the same way), so owning the extractor
+ * pins discovery behavior to our own emission grammar. Handles the
+ * `from(namespace, call(...))` qualifier this renderer emits for colliding
+ * short names, dotted `ns.name(...)` calls, and unqualified calls resolved
+ * through the program's `search` line. Over-approximation is safe (loading
+ * an extra effect is harmless); under-approximation breaks compile.
+ *
+ * @param {string} dsl - DSL source
+ * @param {object} manifest - effectId → manifest entry
+ * @returns {Array<{effectId: string, namespace: string, name: string}>}
+ */
+function extractEffectIdsFromDsl(dsl, manifest) {
+    const effects = []
+    if (!dsl || typeof dsl !== 'string') return effects
+    const lines = dsl.split('\n')
+    let searchNamespaces = []
+    for (const line of lines) {
+        const trimmed = line.trim()
+        const statements = trimmed.split(';').map(s => s.trim()).filter(s => s)
+        for (const stmt of statements) {
+            if (stmt.startsWith('search ')) {
+                searchNamespaces = stmt.slice(7).split(',').map(s => s.trim())
+                continue
+            }
+            if (!stmt || stmt.startsWith('//')) continue
+
+            // from(namespace, call(...)) — explicit per-call qualification
+            const fromPattern = /\bfrom\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*,\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g
+            let fromMatch
+            while ((fromMatch = fromPattern.exec(stmt)) !== null) {
+                const namespace = fromMatch[1]
+                const name = fromMatch[2]
+                const effectId = `${namespace}/${name}`
+                if (manifest[effectId] && !effects.find(e => e.effectId === effectId)) {
+                    effects.push({ effectId, namespace, name })
+                }
+            }
+
+            const callPattern = /\b([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)\s*\(/g
+            let match
+            while ((match = callPattern.exec(stmt)) !== null) {
+                const fullName = match[1]
+                let namespace = null
+                let name = fullName
+                if (fullName.includes('.')) {
+                    const parts = fullName.split('.')
+                    namespace = parts[0]
+                    name = parts[1]
+                }
+                const builtins = ['read', 'out', 'vec2', 'vec3', 'vec4', 'from']
+                if (builtins.includes(name)) continue
+                if (!namespace && searchNamespaces.length > 0) {
+                    for (const ns of searchNamespaces) {
+                        const testId = `${ns}/${name}`
+                        if (manifest[testId]) {
+                            namespace = ns
+                            break
+                        }
+                    }
+                }
+                if (!namespace) {
+                    // Legacy discovery fallback for calls the search line
+                    // doesn't resolve (including search-less programs); kept
+                    // for parity with the engine implementation. Discovery
+                    // order is unrelated to compile-time resolution order.
+                    for (const ns of ['classicNoisedeck', 'filter', 'mixer', 'synth']) {
+                        const testId = `${ns}/${name}`
+                        if (manifest[testId]) {
+                            namespace = ns
+                            break
+                        }
+                    }
+                }
+                if (namespace) {
+                    const effectId = `${namespace}/${name}`
+                    if (!effects.find(e => e.effectId === effectId)) {
+                        effects.push({ effectId, namespace, name })
+                    }
+                }
+            }
+        }
+    }
+    return effects
+}
 const VOLUME_IDENTIFIERS = Array.from({ length: 8 }, (_, index) => `vol${index}`)
 const GEOMETRY_IDENTIFIERS = Array.from({ length: 8 }, (_, index) => `geo${index}`)
 
@@ -569,7 +662,7 @@ export class LayersRenderer {
      * @private
      */
     async _loadAndCompile(dsl) {
-        const effectData = extractEffectNamesFromDsl(dsl, this._renderer.manifest || {})
+        const effectData = extractEffectIdsFromDsl(dsl, this._renderer.manifest || {})
         const registeredEffects = getAllEffects()
 
         const effectIdsToLoad = effectData

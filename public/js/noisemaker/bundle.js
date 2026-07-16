@@ -37,7 +37,6 @@ export const {
     lex,
     parse,
     unparse,
-    extractEffectNamesFromDsl,
     extractEffectsFromDsl,
     formatDslError,
     cloneParamValue,
