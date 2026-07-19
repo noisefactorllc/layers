@@ -504,6 +504,13 @@ effect-params {
     white-space: nowrap;
 }
 
+/* A control whose ui.enabledBy condition is not met: inert in the shader, so
+   greyed out and non-interactive rather than silently doing nothing. */
+.control-group.disabled {
+    opacity: 0.4;
+    pointer-events: none;
+}
+
 /* Handfish components span the control column */
 .control-group select-dropdown,
 .control-group toggle-switch,

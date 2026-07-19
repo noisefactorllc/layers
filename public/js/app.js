@@ -1216,6 +1216,11 @@ class LayersApp {
             EffectParams.setEffectLoader((effectId) =>
                 this._renderer.getEffectDefinition(effectId)
             )
+            // Resolver for dropdowns of member/volume/geometry enum params that
+            // declare no explicit choices (e.g. filter/palette `index`).
+            EffectParams.setDeclaredValuesResolver((spec) =>
+                this._renderer.getDeclaredDslIdentifierValues?.(spec) || []
+            )
         } catch (err) {
             console.error('[Layers] Failed to initialize renderer:', err)
             toast.error('Failed to initialize renderer')

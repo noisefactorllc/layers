@@ -13,6 +13,11 @@ import { SliderValue, SelectDropdown, ToggleSwitch, ColorPicker, Vector3dPicker 
 // Static effect loader function (set by app after renderer init)
 let effectLoader = null
 
+// Resolves a param spec to its declared DSL identifier values (member/volume/
+// geometry enums), for dropdowns that declare no explicit `choices`. Injected
+// by the app so this component stays engine-agnostic.
+let declaredValuesResolver = null
+
 /**
  * EffectParams - Web component for effect parameter editing
  * Single-column layout inspired by noisedeck controls
@@ -25,6 +30,16 @@ class EffectParams extends HTMLElement {
      */
     static setEffectLoader(loader) {
         effectLoader = loader
+    }
+
+    /**
+     * Set the declared-values resolver (spec => string[] of DSL identifiers).
+     * Used to populate dropdowns for member/volume/geometry enum params that
+     * declare no explicit `choices`.
+     * @param {function} resolver
+     */
+    static setDeclaredValuesResolver(resolver) {
+        declaredValuesResolver = resolver
     }
 
     constructor() {
@@ -148,6 +163,9 @@ class EffectParams extends HTMLElement {
                 controlsContainer.appendChild(controlGroup)
             }
         }
+
+        // Grey out any control whose ui.enabledBy condition is not currently met.
+        this._applyEnabledStates()
     }
 
     /**
@@ -282,24 +300,45 @@ class EffectParams extends HTMLElement {
     _createDropdown(paramName, spec, currentValue) {
         const select = document.createElement('select-dropdown')
 
-        const choices = spec.choices || {}
-        const opts = Object.entries(choices).map(([name, value]) => ({
-            value: String(value),
-            text: name
-        }))
+        // Options come from the explicit `choices` map when present, otherwise
+        // from the param's declared enum members (member/volume/geometry types
+        // such as filter/palette `index` — a 50+ member enum with no `choices`,
+        // which would otherwise render an empty, useless dropdown).
+        const choices = spec.choices
+        let opts
+        let typedByString
+        if (choices && Object.keys(choices).length > 0) {
+            opts = Object.entries(choices).map(([name, value]) => ({
+                value: String(value),
+                text: name
+            }))
+            typedByString = new Map(Object.values(choices).map(v => [String(v), v]))
+        } else {
+            const declared = declaredValuesResolver ? declaredValuesResolver(spec) : []
+            opts = declared.map(id => ({
+                value: String(id),
+                text: String(id).includes('.') ? String(id).split('.').pop() : String(id)
+            }))
+            typedByString = new Map(declared.map(id => [String(id), id]))
+        }
+
+        // The handfish select-dropdown only round-trips strings, so map the
+        // selected option string back to its original typed choice value. A
+        // numeric choice (e.g. a float `rotation` {none:0,fwd:1,back:-1}) must
+        // emit the Number 1, not the string "1" — which _buildEffectCall would
+        // serialize as a broken triple-quoted "1" the shader can't read.
+        const coerce = (raw) => typedByString.has(raw) ? typedByString.get(raw) : raw
+
         select.setOptions(opts)
         select.value = String(currentValue ?? '')
 
         select.addEventListener('change', () => {
-            const value = spec.type === 'int'
-                ? parseInt(select.value, 10)
-                : select.value
-            this._handleValueChange(paramName, value, spec)
+            this._handleValueChange(paramName, coerce(select.value), spec)
         })
 
         return {
             element: select,
-            getValue: () => spec.type === 'int' ? parseInt(select.value, 10) : select.value,
+            getValue: () => coerce(select.value),
             setValue: (v) => { select.value = String(v) }
         }
     }
@@ -513,6 +552,11 @@ class EffectParams extends HTMLElement {
     _handleValueChange(paramName, value, spec) {
         this._params[paramName] = value
 
+        // A change may flip another param's enabledBy condition (e.g. halftone
+        // `mode` toggles pattern/ink/paper vs the CMYK screen angles), so
+        // re-evaluate the whole panel's enabled states.
+        this._applyEnabledStates()
+
         // Emit event for layer to handle
         this.dispatchEvent(new CustomEvent('param-change', {
             bubbles: true,
@@ -523,6 +567,62 @@ class EffectParams extends HTMLElement {
                 params: this.getParams()
             }
         }))
+    }
+
+    /**
+     * Apply each control's ui.enabledBy condition to the current param values,
+     * greying out (and disabling) controls whose condition is not met. A
+     * disabled control is inert in the shader, so leaving it interactive is a
+     * dropdown/slider that silently does nothing.
+     * @private
+     */
+    _applyEnabledStates() {
+        if (!this._effectDef) return
+        const globals = this._effectDef.globals || {}
+        this.querySelectorAll('.control-group').forEach(group => {
+            const spec = globals[group.dataset.paramKey]
+            if (!spec) return
+            const enabled = this._evalEnabledBy(spec.ui?.enabledBy, this._params, globals)
+            group.classList.toggle('disabled', !enabled)
+            const control = this._controls.get(group.dataset.paramKey)
+            if (control?.element && 'disabled' in control.element) {
+                control.element.disabled = !enabled
+            }
+        })
+    }
+
+    /**
+     * Evaluate a ui.enabledBy condition against the current param values.
+     * Supported forms (mirroring the effect manifest): a bare param name
+     * (truthy), `{param, eq|neq|gt|gte|lt|lte}`, `{param, in|notIn}`, and the
+     * compound `{and:[...]}` / `{or:[...]}`. Absent condition = always enabled.
+     * @private
+     */
+    _evalEnabledBy(cond, params, globals) {
+        if (cond == null) return true
+        if (typeof cond === 'string') return !!this._resolveParamValue(cond, params, globals)
+        if (Array.isArray(cond.and)) return cond.and.every(c => this._evalEnabledBy(c, params, globals))
+        if (Array.isArray(cond.or)) return cond.or.some(c => this._evalEnabledBy(c, params, globals))
+        const actual = this._resolveParamValue(cond.param, params, globals)
+        if ('eq' in cond) return actual === cond.eq
+        if ('neq' in cond) return actual !== cond.neq
+        if ('gt' in cond) return actual > cond.gt
+        if ('gte' in cond) return actual >= cond.gte
+        if ('lt' in cond) return actual < cond.lt
+        if ('lte' in cond) return actual <= cond.lte
+        if (Array.isArray(cond.in)) return cond.in.includes(actual)
+        if (Array.isArray(cond.notIn)) return !cond.notIn.includes(actual)
+        return true
+    }
+
+    /**
+     * Resolve a param's effective value: the current value if set, else the
+     * spec default (an enabledBy dependency may not be in _params yet).
+     * @private
+     */
+    _resolveParamValue(name, params, globals) {
+        if (params && params[name] !== undefined) return params[name]
+        return globals?.[name]?.default
     }
 
     /**
