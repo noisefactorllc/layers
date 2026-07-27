@@ -8,7 +8,7 @@
     "test": "npx playwright test"
   },
   "devDependencies": {
-    "playwright": "^1.61.1"
+    "playwright": "^1.62.0"
   },
   "engines": {
     "node": ">=18.0.0"
