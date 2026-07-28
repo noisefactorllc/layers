@@ -1404,7 +1404,7 @@ export class LayersRenderer {
         // slant have to be stated or the browser just takes whichever face was
         // registered at 400/normal. Quote specific families; CSS generic
         // keywords (sans-serif, monospace…) must stay unquoted to keep meaning.
-        const { weight, style } = this._resolveFontStyle(font, params.fontStyle)
+        const { weight, style } = this._resolveFontStyle(font, params.style)
         ctx.font = `${style} ${weight} ${fontSize}px ${cssFontFamily(font)}`
         ctx.textAlign = justify
         ctx.textBaseline = 'middle'
@@ -1529,7 +1529,7 @@ export class LayersRenderer {
 
             // Register the selected cut, not just "the family" — registering by
             // name alone only ever provides one face at weight 400.
-            const result = await loader.registerFontWithStyle(font, params.fontStyle || null)
+            const result = await loader.registerFontWithStyle(font, params.style || null)
             const registered = result?.success
             if (registered) {
                 if (this._layers !== layers

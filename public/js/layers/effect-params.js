@@ -381,7 +381,7 @@ class EffectParams extends HTMLElement {
             styleSelect.setOptions(styles.map(s => ({ value: s.label, text: s.label })))
             // Resolve rather than match: a layer saved before an entry was split
             // per typeface carries the old bare label ("Regular").
-            const resolved = loader.resolveStyle(font.id, this._params.fontStyle) || styles[0]
+            const resolved = loader.resolveStyle(font.id, this._params.style) || styles[0]
             styleSelect.value = resolved.label
             return resolved
         }
@@ -394,17 +394,17 @@ class EffectParams extends HTMLElement {
 
         this._loadFontOptions(fontSelect).then(async () => {
             const resolved = await syncStyles()
-            if (resolved && resolved.label !== this._params.fontStyle) {
-                this._handleValueChange('fontStyle', resolved.label, { type: 'string' })
+            if (resolved && resolved.label !== this._params.style) {
+                this._handleValueChange('style', resolved.label, { type: 'string' })
             }
             await applyStyle(resolved)
         })
 
         fontSelect.addEventListener('change', async () => {
-            this._params.fontStyle = null
+            this._params.style = null
             const resolved = await syncStyles()
             await applyStyle(resolved)
-            if (resolved) this._handleValueChange('fontStyle', resolved.label, { type: 'string' })
+            if (resolved) this._handleValueChange('style', resolved.label, { type: 'string' })
             this._handleValueChange(paramName, fontSelect.value, spec)
         })
 
@@ -415,7 +415,7 @@ class EffectParams extends HTMLElement {
                 : null
             const resolved = font ? loader.resolveStyle(font.id, styleSelect.value) : null
             await applyStyle(resolved)
-            this._handleValueChange('fontStyle', resolved ? resolved.label : styleSelect.value, { type: 'string' })
+            this._handleValueChange('style', resolved ? resolved.label : styleSelect.value, { type: 'string' })
         })
 
         return {
