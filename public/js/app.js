@@ -46,7 +46,7 @@ import { selectionParamDialog } from './ui/selection-param-dialog.js'
 import { Files } from './utils/files.js'
 import { ExportImageDialog } from './ui/export-image-dialog.js'
 import { ExportVideoDialog } from './ui/export-video-dialog.js'
-import { getFontaineLoader, BASE_FONTS } from './layers/fontaine-loader.js'
+import { getFontaineLoader, BASE_FONTS, previewFamilyFor } from './layers/fontaine-loader.js'
 import * as strokeModel from './drawing/stroke-model.js'
 import { StrokeRenderer } from './drawing/stroke-renderer.js'
 import { autoLevels, autoContrast, autoWhiteBalance } from './utils/auto-adjust.js'
@@ -7021,6 +7021,8 @@ class LayersApp {
             options = loader.getAllFonts().map(f => ({
                 value: f.name,
                 text: f.name,
+                // Preview under a dedicated family; see previewFamilyFor.
+                previewFamily: previewFamilyFor(f.name),
                 category: f.category || 'other',
                 tags: f.tags || []
             }))

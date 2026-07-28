@@ -7,7 +7,7 @@
 
 import { getEffect } from '../noisemaker/bundle.js'
 import './font-select.js'
-import { getFontaineLoader, BASE_FONTS } from './fontaine-loader.js'
+import { getFontaineLoader, BASE_FONTS, previewFamilyFor } from './fontaine-loader.js'
 import { SliderValue, SelectDropdown, ToggleSwitch, ColorPicker, Vector3dPicker } from 'handfish'
 
 // Static effect loader function (set by app after renderer init)
@@ -348,25 +348,80 @@ class EffectParams extends HTMLElement {
      * @private
      */
     _createFontSelect(paramName, spec, currentValue) {
+        const wrapper = document.createElement('div')
+        wrapper.className = 'font-control-stack'
+
         const fontSelect = document.createElement('font-select')
         fontSelect.value = currentValue || spec.default || 'Nunito'
+        wrapper.appendChild(fontSelect)
 
-        // Build options: base fonts + fontaine fonts
-        this._loadFontOptions(fontSelect)
+        // Companion style picker. A bundled family ships many cuts — Monaspace
+        // alone is five typefaces across three widths and seven weights — and
+        // without this the layer could only ever render whichever face got
+        // registered at weight 400.
+        const styleSelect = document.createElement('select-dropdown')
+        styleSelect.setAttribute('aria-label', 'font style')
+        wrapper.appendChild(styleSelect)
+
+        const syncStyles = async () => {
+            const loader = getFontaineLoader()
+            const font = loader.fontsLoaded
+                ? loader.getAllFonts().find(f => f.name === fontSelect.value)
+                : null
+
+            if (!font) {
+                styleSelect.setOptions([{ value: 'Regular', text: 'Regular' }])
+                styleSelect.value = 'Regular'
+                styleSelect.disabled = true
+                return null
+            }
+
+            const styles = loader.getStylesForFont(font.id)
+            styleSelect.disabled = styles.length <= 1
+            styleSelect.setOptions(styles.map(s => ({ value: s.label, text: s.label })))
+            // Resolve rather than match: a layer saved before an entry was split
+            // per typeface carries the old bare label ("Regular").
+            const resolved = loader.resolveStyle(font.id, this._params.fontStyle) || styles[0]
+            styleSelect.value = resolved.label
+            return resolved
+        }
+
+        const applyStyle = async (resolved) => {
+            const loader = getFontaineLoader()
+            if (!resolved || !loader.fontsLoaded) return
+            await loader.registerFontWithStyle(fontSelect.value, resolved.label)
+        }
+
+        this._loadFontOptions(fontSelect).then(async () => {
+            const resolved = await syncStyles()
+            if (resolved && resolved.label !== this._params.fontStyle) {
+                this._handleValueChange('fontStyle', resolved.label, { type: 'string' })
+            }
+            await applyStyle(resolved)
+        })
 
         fontSelect.addEventListener('change', async () => {
-            // Register the font if it's a fontaine font (not a base font)
-            const loader = getFontaineLoader()
-            if (loader.fontsLoaded) {
-                await loader.registerFontByName(fontSelect.value)
-            }
+            this._params.fontStyle = null
+            const resolved = await syncStyles()
+            await applyStyle(resolved)
+            if (resolved) this._handleValueChange('fontStyle', resolved.label, { type: 'string' })
             this._handleValueChange(paramName, fontSelect.value, spec)
         })
 
+        styleSelect.addEventListener('change', async () => {
+            const loader = getFontaineLoader()
+            const font = loader.fontsLoaded
+                ? loader.getAllFonts().find(f => f.name === fontSelect.value)
+                : null
+            const resolved = font ? loader.resolveStyle(font.id, styleSelect.value) : null
+            await applyStyle(resolved)
+            this._handleValueChange('fontStyle', resolved ? resolved.label : styleSelect.value, { type: 'string' })
+        })
+
         return {
-            element: fontSelect,
+            element: wrapper,
             getValue: () => fontSelect.value,
-            setValue: (v) => { fontSelect.value = v }
+            setValue: (v) => { fontSelect.value = v; syncStyles() }
         }
     }
 
@@ -387,6 +442,8 @@ class EffectParams extends HTMLElement {
         const bundleFonts = loader.getAllFonts().map(f => ({
             value: f.name,
             text: f.name,
+            // Preview under a dedicated family; see previewFamilyFor.
+            previewFamily: previewFamilyFor(f.name),
             category: f.category || 'other',
             tags: f.tags || []
         }))

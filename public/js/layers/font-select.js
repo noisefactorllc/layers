@@ -349,6 +349,23 @@ function normalizeForSearch(str) {
  * FontSelect - Web component for font selection with preview and search
  * @extends HTMLElement
  */
+/**
+ * CSS font stack for showing a font name in its own typeface.
+ *
+ * Bundled fonts register their preview face under a dedicated family (see
+ * `previewFamilyFor`) so it cannot outrank the weight/style a text layer
+ * selected. Base/system fonts have no preview registration, so the real family
+ * is kept as the fallback and they still preview correctly.
+ *
+ * @param {{value: string, previewFamily?: string}} option
+ * @returns {string} CSS font-family value
+ */
+function previewFontStack(option) {
+    const family = option?.previewFamily
+    const name = option?.value || ''
+    return family ? `"${family}", ${name}` : name
+}
+
 class FontSelect extends HTMLElement {
     static get observedAttributes() {
         return ['value', 'disabled', 'name']
@@ -715,7 +732,9 @@ class FontSelect extends HTMLElement {
         const nameSpan = document.createElement('span')
         nameSpan.className = 'option-name'
         nameSpan.textContent = opt.text || opt.value
-        nameSpan.style.fontFamily = opt.value
+        // Previews are registered under their own family so they cannot shadow
+        // the weight/style the text layer actually selected.
+        nameSpan.style.fontFamily = previewFontStack(opt)
         option.appendChild(nameSpan)
 
         const tagsSpan = document.createElement('span')
@@ -770,7 +789,8 @@ class FontSelect extends HTMLElement {
 
         const selected = this._allOptions.find(o => o.value === this._value)
         triggerText.textContent = selected ? (selected.text || selected.value) : (this._value || 'select...')
-        triggerText.style.fontFamily = this._value || ''
+        triggerText.style.fontFamily = previewFontStack(
+            this._allOptions?.find(o => o.value === this._value) || { value: this._value })
 
         this._updateSelectedOption()
     }

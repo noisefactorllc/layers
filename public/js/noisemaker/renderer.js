@@ -17,6 +17,21 @@ import {
 const DSL_IDENTIFIER_PATTERN = /^[_A-Za-z][_A-Za-z0-9]*$/
 
 /**
+ * CSS generic families, which must NOT be quoted in a canvas font string —
+ * quoting turns them into a literal family name nothing matches.
+ */
+const GENERIC_FONT_FAMILIES = new Set([
+    'serif', 'sans-serif', 'monospace', 'cursive', 'fantasy',
+    'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded'
+])
+
+/** Quote a family name for `ctx.font`, leaving generic keywords bare. */
+function cssFontFamily(fontName) {
+    const name = String(fontName || '')
+    return GENERIC_FONT_FAMILIES.has(name.toLowerCase()) ? name : `"${name}"`
+}
+
+/**
  * Extract manifest-known effect ids referenced by a DSL program, WITHOUT
  * compiling it. Used to discover which effects to load before compile — a
  * compile-based extractor (the engine's extractEffectsFromDsl) resolves
@@ -365,6 +380,24 @@ export class LayersRenderer {
         this.width = width
         this.height = height
         this._renderer.resize?.(width, height)
+        // Text rasterizes onto a CPU canvas sized to the render target and is
+        // sampled as a full-frame overlay, so a canvas left at the previous
+        // size gets stretched across the new one.
+        this._refreshTextCanvases()
+    }
+
+    /**
+     * Redraw any text canvas whose size no longer matches the render target.
+     * @private
+     */
+    _refreshTextCanvases() {
+        if (!this._textCanvases?.size) return
+        for (const [layerId, state] of this._textCanvases) {
+            if (state?.canvas?.width === this.width && state?.canvas?.height === this.height) continue
+            const layer = this._layers.find(candidate => candidate.id === layerId)
+            if (!layer) continue
+            this._renderTextCanvas(layerId, layer.effectParams || {})
+        }
     }
 
     render(normalizedTime) {
@@ -1367,7 +1400,12 @@ export class LayersRenderer {
         const fontSize = Math.round(size * canvas.height)
         const lineHeight = fontSize * 1.2
 
-        ctx.font = `${fontSize}px ${font}`
+        // A bundled family ships many cuts under one name, so the weight and
+        // slant have to be stated or the browser just takes whichever face was
+        // registered at 400/normal. Quote specific families; CSS generic
+        // keywords (sans-serif, monospace…) must stay unquoted to keep meaning.
+        const { weight, style } = this._resolveFontStyle(font, params.fontStyle)
+        ctx.font = `${style} ${weight} ${fontSize}px ${cssFontFamily(font)}`
         ctx.textAlign = justify
         ctx.textBaseline = 'middle'
         ctx.fillStyle = this._rgbToCss(this._hexToRgb(color), 1)
@@ -1388,6 +1426,31 @@ export class LayersRenderer {
         } catch (err) {
             if (strict) throw err
             console.warn(`[LayersRenderer] Failed to upload text texture textTex_step_${state.stepIndex}:`, err)
+        }
+    }
+
+    /**
+     * Resolve a stored style label to the CSS weight and slant to rasterize at.
+     *
+     * Falls back to 400/normal for base fonts and for anything the bundle does
+     * not know, which is the behaviour text layers had before styles existed.
+     * @private
+     */
+    _resolveFontStyle(fontName, styleLabel) {
+        const fallback = { weight: '400', style: 'normal' }
+        const loader = this._fontaineLoader
+        if (!loader?.fontsLoaded) return fallback
+
+        const font = loader.getAllFonts().find(f => f.name === fontName)
+        if (!font) return fallback
+
+        const resolved = loader.resolveStyle(font.id, styleLabel || null)
+        if (!resolved) return fallback
+        return {
+            // A variable face covers the axis; ask for the label's weight, or
+            // 400 when the label itself is just "Variable".
+            weight: resolved.weight === 'variable' ? '400' : resolved.weight,
+            style: resolved.style || 'normal'
         }
     }
 
@@ -1459,9 +1522,15 @@ export class LayersRenderer {
             if (BASE_FONT_NAMES.has(font)) return
 
             const loader = getFontaineLoader()
+            // Cached so _renderTextCanvas can resolve weight/slant synchronously
+            // while rasterizing; it cannot await a dynamic import mid-draw.
+            this._fontaineLoader = loader
             if (!loader.fontsLoaded) return
 
-            const registered = await loader.registerFontByName(font)
+            // Register the selected cut, not just "the family" — registering by
+            // name alone only ever provides one face at weight 400.
+            const result = await loader.registerFontWithStyle(font, params.fontStyle || null)
+            const registered = result?.success
             if (registered) {
                 if (this._layers !== layers
                     || this._textCanvases !== textCanvases

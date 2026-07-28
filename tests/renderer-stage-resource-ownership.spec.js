@@ -323,15 +323,17 @@ for (const transition of ['commit', 'rollback']) {
             const { getFontaineLoader } = await import('/js/layers/fontaine-loader.js')
             const loader = getFontaineLoader()
             const previousFontsLoaded = loader.fontsLoaded
-            const previousRegister = loader.registerFontByName
+            // The renderer registers the layer's selected cut, not just the
+            // family, so this stubs registerFontWithStyle.
+            const previousRegister = loader.registerFontWithStyle
             loader.fontsLoaded = true
 
             let registrationStarted = false
             let releaseRegistration
-            loader.registerFontByName = async () => {
+            loader.registerFontWithStyle = async () => {
                 registrationStarted = true
                 return new Promise(resolve => {
-                    releaseRegistration = () => resolve(true)
+                    releaseRegistration = () => resolve({ success: true, label: 'Regular', weight: '400', style: 'normal' })
                 })
             }
 
@@ -388,7 +390,7 @@ for (const transition of ['commit', 'rollback']) {
             releaseRegistration()
             await delayed
             loader.fontsLoaded = previousFontsLoaded
-            loader.registerFontByName = previousRegister
+            loader.registerFontWithStyle = previousRegister
 
             return {
                 renders,
