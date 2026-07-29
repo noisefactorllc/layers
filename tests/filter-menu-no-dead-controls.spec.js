@@ -48,7 +48,7 @@ test('every filter menu entry visibly changes the render', async ({ page }) => {
 
     // Collect the menu's entries exactly as the click handler sees them.
     const entries = await page.evaluate(() =>
-        [...document.querySelectorAll('#filterMenu .submenu [data-effect]')].map(item => ({
+        [...document.querySelectorAll('#filterMenu .hf-menubar-subpanel [data-effect]')].map(item => ({
             effectId: item.dataset.effect,
             label: item.textContent.trim(),
             params: item.dataset.params ? JSON.parse(item.dataset.params) : null,

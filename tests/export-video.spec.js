@@ -31,7 +31,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('opens via menu and shows current canvas dimensions', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         const dialog = page.locator('#exportModal')
@@ -44,7 +44,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('shows settings view initially, not progress', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         await expect(page.locator('#exportDialogView')).toBeVisible()
@@ -52,7 +52,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('updates total frames when settings change', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         // Default: 30fps * 15s * 1 loop = 450 frames
@@ -68,7 +68,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('invalid settings are rejected before acquiring a mutation lease', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         const result = await page.evaluate(async () => {
@@ -110,7 +110,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('closes on cancel button', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         await expect(page.locator('#exportModal')).toBeVisible()
@@ -120,7 +120,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('closes on Escape key', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         await expect(page.locator('#exportModal')).toBeVisible()
@@ -133,7 +133,7 @@ test.describe('Export Video Dialog', () => {
         const runningBefore = await page.evaluate(() => window.layersApp._renderer.isRunning)
         expect(runningBefore).toBe(true)
 
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
         await expect(page.locator('#exportModal')).toBeVisible()
         expect(await page.evaluate(() => window.layersApp._renderer.isRunning)).toBe(true)
@@ -173,7 +173,7 @@ test.describe('Export Video Dialog', () => {
             }
             return readCenterPixel()
         })
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
         await beginTinyZipExport(page)
 
@@ -200,7 +200,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('job polling hides temporary video export resolution and playback', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
         await page.fill('#exportWidth', '64')
         await page.fill('#exportHeight', '66')
@@ -241,7 +241,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('setup failure restores rendering and releases the lifecycle lease', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         const result = await page.evaluate(async () => {
@@ -269,7 +269,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('resize setup failure restores the original canvas dimensions', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
         await page.fill('#exportWidth', '64')
         await page.fill('#exportHeight', '66')
@@ -302,7 +302,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('paused-time capture failure does not restore or restart a renderer that was never paused', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         const result = await page.evaluate(async () => {
@@ -342,7 +342,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('renderer restore failure still restarts and releases the lifecycle lease', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
         await page.evaluate(() => {
             const app = window.layersApp
@@ -380,7 +380,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('successful encoding is not reported complete when renderer restoration fails', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         const result = await page.evaluate(async () => {
@@ -426,7 +426,7 @@ test.describe('Export Video Dialog', () => {
     })
 
     test('post-export UI callback failures do not report a completed export as failed', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
 
         const result = await page.evaluate(async () => {

@@ -602,3 +602,361 @@
     cursor: default !important;
     pointer-events: none;
 }
+
+/* ============================================================================
+ * handfish <menu-bar> parity — the original menu-bar look retargeted onto the
+ * component DOM. Everything here is scoped to #menu; the class rules above
+ * still serve #toolbar and the layer context menu, which keep the original
+ * markup. Values are transcribed from the rules above (and the original
+ * inherited chain: body line-height 1.5, .icon-material 20px glyphs).
+ * ============================================================================ */
+
+/* Bar grid — analog of the original #menu (1fr auto, backdrop overlay) */
+#menu .hf-menubar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: stretch;
+    position: relative;
+    height: 100%;
+    font-family: Nunito, 'Nunito Block';
+    font-size: 16px;
+    font-weight: bold;
+    color: inherit;
+}
+
+#menu .hf-menubar-center {
+    display: none; /* the original bar has no center cluster */
+}
+
+/* #menuBackdrop analog */
+#menu .hf-menubar-backdrop {
+    position: absolute;
+    inset: 0;
+    --ui-titlebar-base: color-mix(in srgb,
+            var(--hf-color-2) 65%,
+            transparent 35%);
+    --ui-titlebar-gradient: linear-gradient(180deg,
+            var(--ui-gradient-top) 0%,
+            var(--ui-gradient-bottom) 100%);
+    background-color: var(--ui-titlebar-base);
+    background-image: var(--ui-titlebar-gradient);
+    opacity: 1;
+    backdrop-filter: var(--glass-blur-strength);
+    -webkit-backdrop-filter: var(--glass-blur-strength);
+    pointer-events: none;
+    z-index: -1;
+    border-radius: 0 0 var(--ui-corner-radius) 0;
+}
+
+/* #menuLeft / #menuRight analogs */
+#menu .hf-menubar-left {
+    grid-column: 1;
+    padding-inline-start: 0;
+    padding-left: 0.75em;
+    display: flex;
+    gap: 1.5em;
+    color: var(--hf-color-7);
+    align-items: center;
+    height: 100%;
+}
+
+#menu .hf-menubar-right {
+    grid-column: 2;
+    padding-inline-end: 0;
+    padding-right: 1em;
+    display: flex;
+    justify-content: flex-end;
+    gap: 1em;
+    color: var(--hf-color-7);
+    align-items: center;
+    height: 100%;
+}
+
+/* .menu analog */
+#menu .hf-menubar-menu {
+    position: relative;
+    font-family: Nunito, 'Nunito Block';
+    font-size: 0.875em;
+    color: var(--hf-accent-3);
+    margin: 0;
+    background-color: transparent;
+    padding: 0;
+    height: 100%;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+/* .menu-title analog (font shorthand first — it resets line-height) */
+#menu button.hf-menubar-trigger {
+    font: inherit;
+    position: relative;
+    top: -1px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--hf-accent-3);
+}
+
+/* The original title has no persistent open-state color — hover only */
+#menu .hf-menubar-trigger[aria-expanded="true"] {
+    color: var(--hf-accent-3);
+}
+
+#menu .hf-menubar-trigger:hover {
+    color: var(--hf-accent-4);
+}
+
+#menu .hf-menubar-trigger:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-accent-3);
+}
+
+/* The original logo/filter titles are <button>s whose `font: inherit`
+ * (cascading after .menu-title) reset line-height: 1 back to the inherited
+ * value — mirror that. */
+#menu #logoMenu .hf-menubar-trigger,
+#menu #filterMenu .hf-menubar-trigger {
+    line-height: inherit;
+}
+
+/* .menu-items analog */
+#menu .hf-menu.hf-menubar-panel {
+    position: absolute;
+    background-color: color-mix(in srgb, var(--hf-color-2) var(--effect-surface-opacity), transparent var(--effect-surface-transparency));
+    color: var(--hf-accent-3);
+    width: max-content;
+    min-width: 200px;
+    text-wrap: nowrap;
+    z-index: 5;
+    top: var(--ui-titlebar-height);
+    left: -10px;
+    box-shadow: var(--hf-shadow-lg);
+    font-weight: normal;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    border-radius: var(--ui-corner-radius-small, 0.375rem);
+    flex-direction: column;
+    border: none;
+    padding: 0;
+    max-height: none;
+    overflow-y: visible;
+    backdrop-filter: var(--glass-blur-strength);
+    -webkit-backdrop-filter: var(--glass-blur-strength);
+}
+
+#menu .hf-menubar-panel::-webkit-scrollbar {
+    display: none;
+}
+
+#menu .hf-menubar-panel[hidden] {
+    display: none;
+}
+
+/* .menu-items div / #logoMenu button / #filterMenu button analogs */
+#menu button.hf-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    box-sizing: border-box;
+    width: 100%;
+    height: auto;
+    margin: 0;
+    padding: 8px 16px;
+    font: inherit;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    cursor: pointer;
+    color: inherit;
+    background: transparent;
+    border: none;
+    justify-content: flex-start;
+    text-align: left;
+    text-decoration: none;
+    transition: none;
+}
+
+#menu button.hf-menu-item:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: var(--hf-accent-4);
+}
+
+#menu button.hf-menu-item:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-accent-3);
+}
+
+/* .menu-shortcut analog (flex right-push replaces the original float) */
+#menu .hf-menu-shortcut {
+    margin-left: 2em;
+    padding-left: 0;
+    font-size: 0.75rem;
+    opacity: 0.5;
+    font-family: Nunito, 'Nunito Block';
+}
+
+/* .checked analog — original checkmark, and no bold on checked items */
+#menu .hf-menu-item[aria-checked="true"] {
+    font-weight: normal;
+}
+
+#menu .hf-menu-item[aria-checked="true"]::before {
+    content: '✓';
+    display: inline-block;
+    width: 1.25em;
+    margin-left: -0.25em;
+    margin-right: 0;
+    margin-top: 0;
+}
+
+/* .menu-seperator analog */
+#menu hr.hf-menu-separator {
+    border: none;
+    border-top: 1px solid color-mix(in srgb, var(--hf-accent-3) 20%, transparent 80%);
+    margin: 0.25em 0;
+}
+
+/* .has-submenu analog — text chevron; the filter menu's partial override
+ * below swaps the glyph for the bordered box but (as in the original rules)
+ * keeps this font-size and opacity. */
+#menu .hf-menu-item.has-submenu {
+    justify-content: space-between;
+}
+
+#menu .hf-menubar-has-submenu::after {
+    content: '▸';
+    margin-left: 1.5em;
+    margin-inline-start: 1.5em;
+    padding-inline-start: 0;
+    font-size: 0.75em;
+    opacity: 0.6;
+}
+
+#menu #filterMenu .hf-menubar-has-submenu::after {
+    content: '';
+    width: 0.4em;
+    height: 0.4em;
+    border-top: 1px solid currentColor;
+    border-right: 1px solid currentColor;
+    transform: rotate(45deg);
+}
+
+/* .submenu analog — like the original .submenu, inherits the bar's bold
+ * weight (the dropdown's font-weight: normal does not apply to it) */
+#menu .hf-menu.hf-menubar-subpanel {
+    position: absolute;
+    font-weight: bold;
+    min-width: 180px;
+    background-color: color-mix(in srgb, var(--hf-color-2) var(--effect-surface-opacity), transparent var(--effect-surface-transparency));
+    backdrop-filter: var(--glass-blur-strength);
+    -webkit-backdrop-filter: var(--glass-blur-strength);
+    box-shadow: var(--hf-shadow-lg);
+    border-radius: var(--ui-corner-radius-small, 0.375rem);
+    border: none;
+    padding: 0;
+    z-index: 6;
+    flex-direction: column;
+    max-height: calc(100vh - 16px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+#menu .hf-menubar-subpanel[hidden] {
+    display: none;
+}
+
+/* #filterMenu overrides (same partial-override structure as the originals) */
+#menu #filterMenu .hf-menubar-panel {
+    display: flex;
+    max-height: calc(100vh - var(--ui-titlebar-height) - 8px);
+    overflow-y: auto;
+}
+
+#menu #filterMenu .hf-menubar-panel[hidden] {
+    display: none;
+}
+
+#menu #filterMenu button.hf-menu-item {
+    line-height: 1.2;
+}
+
+#menu #filterMenu button.hf-menu-item:focus-visible {
+    box-shadow: inset 0 0 0 2px var(--hf-accent-3);
+}
+
+/* .menu-icon-btn parity for bar buttons (the config puts the original class
+ * on the button; these neutralize the handfish .hf-icon-btn/.hf-menubar-btn
+ * baseline where it differs) */
+#menu .hf-menubar-btn.menu-icon-btn {
+    font-size: inherit;
+    padding: 4px 6px;
+    margin: -4px -6px;
+    opacity: 1;
+    color: inherit;
+    border-radius: 4px;
+    line-height: 1;
+    transition: color 0.15s ease, background 0.15s ease;
+}
+
+#menu .hf-menubar-btn.menu-icon-btn:hover {
+    opacity: 1;
+    color: var(--hf-accent-4);
+}
+
+#menu .hf-menubar-btn.menu-icon-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-accent-3);
+}
+
+/* .icon-material analog for component-rendered glyphs (color: inherit —
+ * .icon-material had no color of its own, unlike the tokens.css .hf-icon) */
+#menu .menu-icon-btn .hf-icon {
+    color: inherit;
+    font-family: 'Material Symbols Outlined';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 20px;
+    width: auto;
+    height: auto;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
+/* Responsive parity (see the #menu media rules above) */
+@media (max-width: 910px) {
+    #menu .hf-menubar-backdrop {
+        border-radius: 0;
+    }
+}
+
+@media (max-width: 520px) {
+    #menu .hf-menubar-left {
+        min-width: 0;
+        padding-left: 0.25em;
+        gap: 0.25em;
+    }
+
+    #menu .hf-menubar-right {
+        padding-right: 0.5em;
+        gap: 0;
+    }
+
+    #menu .hf-menubar-left .hf-menubar-menu .hf-menubar-trigger {
+        top: 0;
+    }
+}

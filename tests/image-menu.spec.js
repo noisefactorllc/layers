@@ -16,15 +16,17 @@ test.describe('Image menu adjustments', () => {
 
     test('submenu appears on hover', async ({ page }) => {
         // Open image menu
-        await page.click('#imageMenu .menu-title')
-        await page.waitForSelector('#imageMenu .menu-items:not(.hide)')
+        await page.click('#imageMenu .hf-menubar-trigger')
+        await page.waitForSelector('#imageMenu .hf-menubar-panel:not([hidden])')
 
         // Hover over Tone submenu
         const toneItem = page.locator('#imageMenu .has-submenu', { hasText: 'tone' })
         await toneItem.hover()
 
-        // Submenu should be visible (sibling of .menu-items, linked by data-submenu-id)
-        const submenu = page.locator('.submenu[data-submenu-id="tone"]')
+        // Component subpanel adjacent to the tone row
+        const submenu = page.locator('#imageMenu .hf-menubar-subpanel', {
+            has: page.locator('[data-effect="filter/smoothstep"]'),
+        })
         await expect(submenu).toBeVisible()
 
         // Should contain brightness/contrast
@@ -37,7 +39,7 @@ test.describe('Image menu adjustments', () => {
         expect(layersBefore).toBe(1)
 
         // Open Image > Tone > Brightness/Contrast
-        await page.click('#imageMenu .menu-title')
+        await page.click('#imageMenu .hf-menubar-trigger')
         const toneItem = page.locator('#imageMenu .has-submenu', { hasText: 'tone' })
         await toneItem.hover()
         await page.click('[data-effect="filter/adjust"]')
@@ -54,7 +56,7 @@ test.describe('Image menu adjustments', () => {
 
     test('add effect from filter stylize submenu', async ({ page }) => {
         // Stylize moved from the image menu into the new photoshop-style filter menu.
-        await page.click('#filterMenu .menu-title')
+        await page.click('#filterMenu .hf-menubar-trigger')
         const stylizeItem = page.locator('#filterMenu .has-submenu', { hasText: 'stylize' })
         await stylizeItem.hover()
         await page.click('[data-effect="filter/emboss"]')
@@ -68,7 +70,7 @@ test.describe('Image menu adjustments', () => {
     })
 
     test('add color replace from color submenu', async ({ page }) => {
-        await page.click('#imageMenu .menu-title')
+        await page.click('#imageMenu .hf-menubar-trigger')
         const colorItem = page.locator('#imageMenu .has-submenu', { hasText: 'color' })
         await colorItem.hover()
         await page.click('[data-effect="filter/colorReplace"]')
@@ -82,7 +84,7 @@ test.describe('Image menu adjustments', () => {
     })
 
     test('auto levels creates effect layer', async ({ page }) => {
-        await page.click('#imageMenu .menu-title')
+        await page.click('#imageMenu .hf-menubar-trigger')
         await page.click('#autoLevelsMenuItem')
         await page.waitForTimeout(500)
 
@@ -98,7 +100,7 @@ test.describe('Image menu adjustments', () => {
         })
         await page.waitForTimeout(500)
 
-        await page.click('#imageMenu .menu-title')
+        await page.click('#imageMenu .hf-menubar-trigger')
         await page.click('#autoContrastMenuItem')
         await page.waitForTimeout(500)
 
@@ -107,7 +109,7 @@ test.describe('Image menu adjustments', () => {
     })
 
     test('auto white balance creates effect layer', async ({ page }) => {
-        await page.click('#imageMenu .menu-title')
+        await page.click('#imageMenu .hf-menubar-trigger')
         await page.click('#autoWhiteBalanceMenuItem')
         await page.waitForTimeout(500)
 

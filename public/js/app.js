@@ -52,9 +52,12 @@ import { StrokeRenderer } from './drawing/stroke-renderer.js'
 import { autoLevels, autoContrast, autoWhiteBalance } from './utils/auto-adjust.js'
 import { bootstrapAgent } from './agent/index.js'
 import { captureProjectSnapshotOverride } from './agent/snapshot.js'
-import { SeanceDialog } from 'handfish'  // Register <seance-dialog> custom element
+import { SeanceDialog, initEscapeHandler } from 'handfish'  // Register <seance-dialog> custom element
+import { LOGO_SVG, IMAGE_SUBMENUS, FILTER_CATEGORIES } from './menuData.js'
 import { createLayersOnlineAdapter } from './collab/onlineAdapter.js'
 import { assertRemoteNodeSemantics } from './collab/docModel.js'
+
+initEscapeHandler()
 
 const ONLINE_COLLABORATION_FEATURE = 'onlineCollaboration'
 const MAX_CANVAS_DIMENSION = 8192
@@ -647,6 +650,7 @@ class LayersApp {
         if (this._renderer.isRunning) return
         await new Promise(resolve => requestAnimationFrame(resolve))
         this._renderer.start()
+        this._menuBar?.refresh()   // play/pause icon pulls from isRunning
     }
 
     /**
@@ -981,12 +985,7 @@ class LayersApp {
      * @private
      */
     _updateUndoMenuState() {
-        const undoItem = document.getElementById('undoMenuItem')
-        const redoItem = document.getElementById('redoMenuItem')
-        // Pending debounce timer means uncommitted changes exist that _undo() can finalize
-        const canUndo = this._undoManager.canUndo() || this._undoDebounceTimer !== null
-        if (undoItem) undoItem.classList.toggle('disabled', !canUndo)
-        if (redoItem) redoItem.classList.toggle('disabled', !this._undoManager.canRedo())
+        this._menuBar?.refresh()
     }
 
     /**
@@ -1230,7 +1229,6 @@ class LayersApp {
         // Set up event listeners
         this._setupMenuHandlers()
         this._setupLayerStackHandlers()
-        this._setupLayerMenuHandlers()
         this._setupKeyboardShortcuts()
 
         // Export system
@@ -1329,29 +1327,17 @@ class LayersApp {
 
     /**
      * Create the Seance online-collaboration adapter (when the feature flag
-     * is enabled), wire the "go online..." File-menu item + its leading
-     * separator, and wire the <seance-dialog>'s semantic events.
-     *
-     * Visibility uses style.display, not the `hidden` attribute — handfish
-     * menu-item CSS cascades on `[hidden]` in a way that fights this menu's
-     * own show/hide classes, so `hidden` silently fails to hide submenu rows.
+     * is enabled) and wire the <seance-dialog>'s semantic events. The "go
+     * online..." File-menu item + its leading separator live in the menu-bar
+     * config with feature-gated `hidden` pulls, and the item's onSelect opens
+     * the dialog.
      * @private
      */
     _initOnlineCollaboration() {
-        const menuItem = document.getElementById('goOnlineMenuItem')
-        const separator = document.getElementById('onlineCollabMenuSeparator')
-        const enabled = isFeatureEnabled(ONLINE_COLLABORATION_FEATURE)
-
-        for (const el of [menuItem, separator]) {
-            if (el) el.style.display = enabled ? '' : 'none'
-        }
-        if (!enabled) return
+        if (!isFeatureEnabled(ONLINE_COLLABORATION_FEATURE)) return
 
         this._onlineAdapter = createLayersOnlineAdapter(this)
         this._onlineAdapter.wireUi()
-
-        const dialog = document.getElementById('seanceDialog')
-        menuItem?.addEventListener('click', () => dialog?.show?.())
     }
 
     /**
@@ -2253,6 +2239,7 @@ class LayersApp {
                     }
                     try {
                         this._renderer.start()
+                        this._menuBar?.refresh()   // play/pause icon pulls from isRunning
                     } catch (err) {
                         console.error('[Layers] Failed to start renderer after replacement:', err)
                     }
@@ -3639,16 +3626,8 @@ class LayersApp {
         const canvas = this._canvas
         if (!canvas) return
 
-        // Update menu checkmarks
-        const zoomMenuIds = {
-            fit: 'fitInWindowMenuItem',
-            50: 'zoom50MenuItem',
-            100: 'zoom100MenuItem',
-            200: 'zoom200MenuItem'
-        }
-        for (const [mode, id] of Object.entries(zoomMenuIds)) {
-            document.getElementById(id)?.classList.toggle('checked', mode === this._zoomMode)
-        }
+        // Menu checkmarks pull from _zoomMode via the menu-bar config
+        this._menuBar?.refresh()
 
         let displayWidth, displayHeight
 
@@ -3726,27 +3705,435 @@ class LayersApp {
      * Set up menu handlers
      * @private
      */
+    /**
+     * Mount the handfish <menu-bar> component with the app's menu tree.
+     *
+     * The component owns the dropdown/submenu mechanics and keyboard nav;
+     * item ids, classes, and data-* attributes from the config land on the
+     * rendered elements, so the effect data model and tests keep their
+     * original contract. Dynamic state (disabled/checked/labels/icons) is
+     * pulled from app state whenever a menu opens or _menuBar.refresh()
+     * runs — the _update*Menu* helpers below collapse onto refresh().
+     * @private
+     */
+    _setupMenuBar() {
+        const selectedLayerIds = () => this._layerStack?.selectedLayerIds || []
+        const singleSelectedLayer = () => {
+            const ids = selectedLayerIds()
+            return ids.length === 1 ? (this._layers.find(l => l.id === ids[0]) || null) : null
+        }
+        const hasSelection = () => !!this._selectionManager?.hasSelection()
+
+        // Effect leaves keep the original data-effect/data-params attributes;
+        // activation matches the old delegated handler: an optional params
+        // JSON seeds effects whose spec defaults would be a visual no-op, and
+        // the layer is named after the curated menu label, not the effect's
+        // camelCase short name ('twirl' is filter/spiral).
+        const effectItem = ({ label, effect, params }) => ({
+            label,
+            attrs: {
+                'data-effect': effect,
+                ...(params ? { 'data-params': JSON.stringify(params) } : {}),
+            },
+            onSelect: () => {
+                if (this._layers.length === 0) return
+                this._runPointerMutation(() => this._handleAddEffectLayer(effect, {
+                    name: label,
+                    ...(params ? { params } : {}),
+                }))
+            },
+        })
+        const autoCorrectionItem = (id, label, correctionFn) => ({
+            id,
+            label,
+            onSelect: () => {
+                if (this._layers.length === 0) return
+                this._runPointerMutation(() => this._handleAutoCorrection(correctionFn))
+            },
+        })
+        const modifySelectionItem = (id, label, options, maskFn) => ({
+            id,
+            label,
+            disabled: () => !hasSelection(),
+            onSelect: () => {
+                this._runPointerMutation(() => this._modifySelection(options, maskFn))
+            },
+        })
+        const zoomRadio = (id, label, mode) => ({
+            type: 'radio',
+            id,
+            label,
+            checked: () => this._zoomMode === mode,
+            onSelect: () => { this._setZoom(mode) },
+        })
+        const newOrOpenItem = (id, label) => ({
+            id,
+            label,
+            onSelect: () =>
+                this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
+                    this._showOpenDialog({
+                        replaceProject: true,
+                        leaveOnline,
+                        replacementConsent,
+                    })),
+        })
+
+        this._menuBar = document.getElementById('menu')
+        this._menuBar.config = {
+            regions: {
+                left: [
+                    {
+                        type: 'menu',
+                        id: 'logoMenu',
+                        trigger: { html: LOGO_SVG, ariaLabel: 'Layers menu' },
+                        items: [
+                            { id: 'welcomeMenuItem', label: 'welcome to Layers...', onSelect: () => { welcomeDialog.show() } },
+                            { id: 'aboutMenuItem', label: 'about Layers', onSelect: () => { aboutDialog.show() } },
+                            { id: 'settingsMenuItem', label: 'settings...', onSelect: () => { settingsDialog.show() } },
+                        ],
+                    },
+                    {
+                        type: 'menu',
+                        trigger: { label: 'file' },
+                        items: [
+                            newOrOpenItem('newMenuItem', 'new...'),
+                            {
+                                id: 'newFromClipboardMenuItem',
+                                label: 'new from clipboard',
+                                onSelect: () =>
+                                    this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
+                                        this._handleNewFromClipboard({ leaveOnline, replacementConsent })),
+                            },
+                            newOrOpenItem('openMenuItem', 'open...'),
+                            { type: 'separator' },
+                            {
+                                id: 'saveProjectMenuItem',
+                                label: 'save project',
+                                onSelect: () => {
+                                    if (this._currentProjectId) {
+                                        this._runPointerMutation(
+                                            (mutationToken) => this._quickSaveProject(mutationToken))
+                                    } else {
+                                        this._showSaveProjectDialog()
+                                    }
+                                },
+                            },
+                            { id: 'saveProjectAsMenuItem', label: 'save project as...', onSelect: () => { this._showSaveProjectAsDialog() } },
+                            {
+                                id: 'loadProjectMenuItem',
+                                label: 'load project...',
+                                onSelect: () =>
+                                    this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
+                                        this._showLoadProjectDialog(false, { leaveOnline, replacementConsent })),
+                            },
+                            { type: 'separator' },
+                            { id: 'savePngMenuItem', label: 'quick save as png', onSelect: () => { this._runPointerMutation(() => this._quickSavePng()) } },
+                            { id: 'saveJpgMenuItem', label: 'quick save as jpg', onSelect: () => { this._runPointerMutation(() => this._quickSaveJpg()) } },
+                            { type: 'separator' },
+                            { id: 'exportImageMenuItem', label: 'export image...', onSelect: () => { this._runPointerMutation(() => this._exportImageDialog.open()) } },
+                            { id: 'exportVideoMenuItem', label: 'export video clip...', onSelect: () => { this._runPointerMutation(async () => this._exportVideoDialog.open()) } },
+                            {
+                                type: 'separator',
+                                id: 'onlineCollabMenuSeparator',
+                                hidden: () => !isFeatureEnabled(ONLINE_COLLABORATION_FEATURE),
+                            },
+                            {
+                                id: 'goOnlineMenuItem',
+                                label: 'go online...',
+                                hidden: () => !isFeatureEnabled(ONLINE_COLLABORATION_FEATURE),
+                                onSelect: () => { document.getElementById('seanceDialog')?.show?.() },
+                            },
+                        ],
+                    },
+                    {
+                        type: 'menu',
+                        trigger: { label: 'edit' },
+                        items: [
+                            {
+                                id: 'undoMenuItem',
+                                label: 'undo',
+                                shortcut: '⌘Z',
+                                // Pending debounce timer means uncommitted changes exist that _undo() can finalize
+                                disabled: () => !(this._undoManager.canUndo() || this._undoDebounceTimer !== null),
+                                onSelect: () => { this._runPointerMutation(() => this._undo()) },
+                            },
+                            {
+                                id: 'redoMenuItem',
+                                label: 'redo',
+                                shortcut: '⌘⇧Z',
+                                disabled: () => !this._undoManager.canRedo(),
+                                onSelect: () => { this._runPointerMutation(() => this._redo()) },
+                            },
+                            { type: 'separator' },
+                            { id: 'copyImageMenuItem', label: 'copy image', onSelect: async () => { await this._runPointerMutation(() => this._handleCopyImage()) } },
+                            { id: 'pasteImageMenuItem', label: 'paste image', shortcut: '⌘V', onSelect: () => { this._runPointerMutation(() => this._handlePaste()) } },
+                        ],
+                    },
+                    {
+                        type: 'menu',
+                        id: 'imageMenu',
+                        trigger: { label: 'image' },
+                        items: [
+                            autoCorrectionItem('autoLevelsMenuItem', 'auto levels', autoLevels),
+                            autoCorrectionItem('autoContrastMenuItem', 'auto contrast', autoContrast),
+                            autoCorrectionItem('autoWhiteBalanceMenuItem', 'auto white balance', autoWhiteBalance),
+                            { type: 'separator' },
+                            ...IMAGE_SUBMENUS.map(({ submenu, label, effects }) => ({
+                                type: 'submenu',
+                                classes: 'has-submenu',
+                                attrs: { 'data-submenu': submenu },
+                                label,
+                                items: effects.map(effectItem),
+                            })),
+                            { type: 'separator' },
+                            {
+                                id: 'cropToSelectionMenuItem',
+                                label: 'crop to selection',
+                                disabled: () => !hasSelection(),
+                                onSelect: async () => { await this._runPointerMutation(() => this._cropToSelection()) },
+                            },
+                            { type: 'separator' },
+                            { id: 'imageSizeMenuItem', label: 'image size...', onSelect: () => { this._showImageSizeDialog() } },
+                            { id: 'canvasSizeMenuItem', label: 'canvas size...', onSelect: () => { this._showCanvasSizeDialog() } },
+                        ],
+                    },
+                    {
+                        type: 'menu',
+                        trigger: { label: 'layer' },
+                        items: [
+                            {
+                                id: 'duplicateLayerMenuItem',
+                                label: 'duplicate layer',
+                                disabled: () => selectedLayerIds().length !== 1,
+                                onSelect: () => { this._runPointerMutation(() => this._duplicateActiveLayer()) },
+                            },
+                            {
+                                id: 'deleteLayerMenuItem',
+                                label: 'delete layer',
+                                disabled: () => {
+                                    const ids = selectedLayerIds()
+                                    return !(ids.length === 1 && this._layers.findIndex(l => l.id === ids[0]) > 0)
+                                },
+                                onSelect: () => {
+                                    const selected = this._layerStack?.getSelectedLayer()
+                                    if (selected && this._layers.indexOf(selected) > 0) {
+                                        this._runPointerMutation(() => this._handleDeleteLayer(selected.id))
+                                    }
+                                },
+                            },
+                            { type: 'separator' },
+                            {
+                                id: 'flipHMenuItem',
+                                label: 'flip horizontal',
+                                disabled: () => singleSelectedLayer()?.sourceType !== 'media',
+                                onSelect: () => { this._runPointerMutation(() => this._flipActiveLayer('horizontal')) },
+                            },
+                            {
+                                id: 'flipVMenuItem',
+                                label: 'flip vertical',
+                                disabled: () => singleSelectedLayer()?.sourceType !== 'media',
+                                onSelect: () => { this._runPointerMutation(() => this._flipActiveLayer('vertical')) },
+                            },
+                            { type: 'separator' },
+                            {
+                                id: 'addLayerMaskMenuItem',
+                                label: 'add layer mask',
+                                disabled: () => {
+                                    const layer = singleSelectedLayer()
+                                    return !layer || !!layer.mask
+                                },
+                                onSelect: () => {
+                                    const layer = this._getActiveLayer()
+                                    if (layer && !layer.mask) {
+                                        this._runPointerMutation(() => this._addLayerMask(layer.id))
+                                    }
+                                },
+                            },
+                            {
+                                id: 'deleteLayerMaskMenuItem',
+                                label: 'delete layer mask',
+                                disabled: () => !singleSelectedLayer()?.mask,
+                                onSelect: () => {
+                                    const layer = this._getActiveLayer()
+                                    if (layer?.mask) {
+                                        this._runPointerMutation(() => this._deleteLayerMask(layer.id))
+                                    }
+                                },
+                            },
+                            { type: 'separator' },
+                            {
+                                id: 'layerActionMenuItem',
+                                label: () => {
+                                    const count = selectedLayerIds().length
+                                    return count === 0 ? 'flatten image'
+                                        : count === 1 ? 'rasterize layer' : 'flatten layers'
+                                },
+                                disabled: () => singleSelectedLayer()?.sourceType === 'media',
+                                onSelect: () => {
+                                    const selectedIds = selectedLayerIds()
+                                    if (selectedIds.length === 0) {
+                                        this._runPointerMutation(() => this._flattenImage())
+                                    } else if (selectedIds.length === 1) {
+                                        const layer = this._layers.find(l => l.id === selectedIds[0])
+                                        if (layer && layer.sourceType !== 'media') {
+                                            this._runPointerMutation(() => this._rasterizeLayer(selectedIds[0]))
+                                        }
+                                    } else {
+                                        this._runPointerMutation(() => this._flattenLayers(selectedIds))
+                                    }
+                                },
+                            },
+                            { type: 'separator' },
+                            { id: 'deselectAllLayersMenuItem', label: 'deselect all layers', onSelect: () => { this._deselectAllLayers() } },
+                        ],
+                    },
+                    {
+                        type: 'menu',
+                        trigger: { label: 'select' },
+                        items: [
+                            {
+                                id: 'selectAllMenuItem',
+                                label: 'select all',
+                                shortcut: '⌘A',
+                                onSelect: () => {
+                                    this._runPointerMutation(() => {
+                                        const { width, height } = this._canvas
+                                        this._selectionManager.setSelection({
+                                            type: 'rect', x: 0, y: 0, width, height
+                                        })
+                                    })
+                                },
+                            },
+                            {
+                                id: 'selectNoneMenuItem',
+                                label: 'select none',
+                                shortcut: '⌘D',
+                                disabled: () => !hasSelection(),
+                                onSelect: () => { this._runPointerMutation(() => this._selectionManager.clearSelection()) },
+                            },
+                            {
+                                id: 'selectInverseMenuItem',
+                                label: 'select inverse',
+                                shortcut: '⌘⇧I',
+                                disabled: () => !hasSelection(),
+                                onSelect: () => {
+                                    this._runPointerMutation(() => {
+                                        const mask = this._selectionManager.rasterizeSelection()
+                                        if (!mask) return
+                                        const inverted = invertMask(mask)
+                                        this._selectionManager.setSelection({ type: 'mask', data: inverted })
+                                    })
+                                },
+                            },
+                            { type: 'separator' },
+                            {
+                                id: 'colorRangeMenuItem',
+                                label: 'color range...',
+                                onSelect: () => {
+                                    this._runPointerMutation((mutationToken) =>
+                                        this._startColorRangePick(mutationToken))
+                                },
+                            },
+                            { type: 'separator' },
+                            modifySelectionItem('borderSelectionMenuItem', 'border...',
+                                { title: 'Border Selection', label: 'Width', defaultValue: 1 }, borderMask),
+                            modifySelectionItem('smoothSelectionMenuItem', 'smooth...',
+                                { title: 'Smooth Selection', label: 'Radius', defaultValue: 2 }, smoothMask),
+                            modifySelectionItem('expandSelectionMenuItem', 'expand...',
+                                { title: 'Expand Selection', label: 'Radius', defaultValue: 1 }, expandMask),
+                            modifySelectionItem('contractSelectionMenuItem', 'contract...',
+                                { title: 'Contract Selection', label: 'Radius', defaultValue: 1 }, contractMask),
+                            modifySelectionItem('featherSelectionMenuItem', 'feather...',
+                                { title: 'Feather Selection', label: 'Radius', defaultValue: 2 }, featherMask),
+                        ],
+                    },
+                    {
+                        type: 'menu',
+                        id: 'filterMenu',
+                        trigger: { label: 'filter', id: 'filterMenuTitle' },
+                        items: [
+                            ...FILTER_CATEGORIES.map(({ id, submenu, label, effects }) => ({
+                                type: 'submenu',
+                                id,
+                                classes: 'has-submenu',
+                                attrs: { 'data-submenu': submenu },
+                                label,
+                                items: effects.map(effectItem),
+                            })),
+                            { type: 'separator' },
+                            { id: 'filterMoreMenuItem', label: 'more...', onSelect: () => { this._showAddLayerDialog() } },
+                        ],
+                    },
+                    {
+                        type: 'menu',
+                        trigger: { label: 'view' },
+                        items: [
+                            { id: 'zoomInMenuItem', label: 'zoom in', onSelect: () => { this._zoomIn() } },
+                            { id: 'zoomOutMenuItem', label: 'zoom out', onSelect: () => { this._zoomOut() } },
+                            { type: 'separator' },
+                            zoomRadio('fitInWindowMenuItem', 'fit in window', 'fit'),
+                            { type: 'separator' },
+                            zoomRadio('zoom50MenuItem', '50%', '50'),
+                            zoomRadio('zoom100MenuItem', '100% (actual size)', '100'),
+                            zoomRadio('zoom200MenuItem', '200%', '200'),
+                        ],
+                    },
+                ],
+                right: [
+                    {
+                        type: 'button',
+                        id: 'playPauseBtn',
+                        classes: 'menu-icon-btn',
+                        attrs: { title: 'Play/Pause (Space)' },
+                        icon: () => (this._renderer?.isRunning ? 'pause' : 'play_arrow'),
+                        onSelect: () => {
+                            const mutationToken = this._tryAcquireProjectLifecycle()
+                            if (!mutationToken) return
+                            try {
+                                this._togglePlayPause()
+                            } finally {
+                                mutationToken.release()
+                            }
+                        },
+                    },
+                ],
+            },
+        }
+
+        // The filter dropdown's submenus must clear the toolbar, like the
+        // original menu code's live leftInset. The floor only applies while
+        // the filter menu is open; tone/color submenus keep the plain
+        // viewport inset.
+        this._menuBar.addEventListener('menu-open', (e) => {
+            if (e.detail.menuId === 'filterMenu') this._setFilterSubpanelFloor()
+        })
+        this._menuBar.addEventListener('menu-close', (e) => {
+            if (e.detail.menuId === 'filterMenu') {
+                this._menuBar.style.removeProperty('--hf-menubar-subpanel-min-left')
+            }
+        })
+    }
+
+    /**
+     * Keep filter submenus right of the toolbar (matches the original
+     * menu's live "leftInset" clamp).
+     * @private
+     */
+    _setFilterSubpanelFloor() {
+        const toolbarRight = document.getElementById('toolbar')?.getBoundingClientRect().right || 0
+        this._menuBar.style.setProperty(
+            '--hf-menubar-subpanel-min-left', `${Math.max(8, toolbarRight + 8)}px`)
+    }
+
     _setupMenuHandlers() {
-        // Submenu state — hoisted so menu title handlers can access it
-        let activeSubmenu = null
-        let activeSubmenuTrigger = null
-        let activeSubmenuKeyboardControlled = false
+        this._setupMenuBar()
+
+        // Toolbar dropdown mechanics. The top menu bar is the handfish
+        // <menu-bar> component (see _setupMenuBar); everything below serves
+        // the #toolbar menus, which share the .menu/.menu-items classes.
         const setTitleExpanded = (title, expanded) => {
             if (title?.hasAttribute('aria-expanded')) {
                 title.setAttribute('aria-expanded', String(expanded))
-            }
-        }
-        const hideSubmenu = ({ restoreFocus = false } = {}) => {
-            if (activeSubmenu) {
-                activeSubmenu.classList.add('hide')
-                if (activeSubmenuTrigger?.hasAttribute('aria-expanded')) {
-                    activeSubmenuTrigger.setAttribute('aria-expanded', 'false')
-                }
-                const triggerToRestore = activeSubmenuTrigger
-                activeSubmenu = null
-                activeSubmenuTrigger = null
-                activeSubmenuKeyboardControlled = false
-                if (restoreFocus) triggerToRestore?.focus()
             }
         }
         const closeDropdowns = (except = null) => {
@@ -3755,23 +4142,6 @@ class LayersApp {
                 items.classList.add('hide')
                 setTitleExpanded(items.closest('.menu')?.querySelector('.menu-title'), false)
             })
-        }
-        const clampFilterDropdown = (menu, items) => {
-            if (menu.id !== 'filterMenu') return
-            const viewportInset = 8
-            items.style.left = ''
-            const rect = items.getBoundingClientRect()
-            let left = Number.parseFloat(getComputedStyle(items).left) || 0
-            let adjustedLeft = rect.left
-            if (rect.right > window.innerWidth - viewportInset) {
-                const overflow = rect.right - (window.innerWidth - viewportInset)
-                left -= overflow
-                adjustedLeft -= overflow
-            }
-            if (adjustedLeft < viewportInset) {
-                left += viewportInset - adjustedLeft
-            }
-            items.style.left = `${left}px`
         }
         const positionToolbarFlyout = (menu, title, items) => {
             if (!menu.closest('#toolbar')
@@ -3789,61 +4159,7 @@ class LayersApp {
             const top = Math.min(Math.max(titleRect.top, viewportInset), maxTop)
             items.style.setProperty('--toolbar-flyout-top', `${top}px`)
         }
-        const positionSubmenu = (trigger, submenu) => {
-            const menuEl = trigger.closest('.menu')
-            const menuRect = menuEl.getBoundingClientRect()
-            const triggerRect = trigger.getBoundingClientRect()
-            const menuItemsRect = trigger.closest('.menu-items').getBoundingClientRect()
-            const viewportInset = 8
-            const toolbarRight = document.getElementById('toolbar')?.getBoundingClientRect().right || 0
-            const leftInset = menuEl.id === 'filterMenu'
-                ? Math.max(viewportInset, toolbarRight + viewportInset)
-                : viewportInset
-
-            // Position relative to .menu (position: relative).
-            submenu.style.top = `${triggerRect.top - menuRect.top}px`
-            submenu.style.left = `${menuItemsRect.right - menuRect.left}px`
-
-            let submenuRect = submenu.getBoundingClientRect()
-            if (submenuRect.right > window.innerWidth - viewportInset) {
-                submenu.style.left = `${menuItemsRect.left - menuRect.left - submenuRect.width}px`
-                submenuRect = submenu.getBoundingClientRect()
-            }
-            if (submenuRect.left < leftInset) {
-                submenu.style.left = `${leftInset - menuRect.left}px`
-                submenuRect = submenu.getBoundingClientRect()
-            }
-
-            let top = Number.parseFloat(submenu.style.top) || 0
-            let adjustedTop = submenuRect.top
-            if (submenuRect.bottom > window.innerHeight - viewportInset) {
-                const overflow = submenuRect.bottom - (window.innerHeight - viewportInset)
-                top -= overflow
-                adjustedTop -= overflow
-            }
-            if (adjustedTop < viewportInset) {
-                top += viewportInset - adjustedTop
-            }
-            submenu.style.top = `${top}px`
-        }
-
-        const showSubmenu = (trigger, submenu, { focusFirst = false } = {}) => {
-            hideSubmenu()
-            submenu.classList.remove('hide')
-            positionSubmenu(trigger, submenu)
-
-            activeSubmenu = submenu
-            activeSubmenuTrigger = trigger
-            activeSubmenuKeyboardControlled = focusFirst
-            if (trigger.hasAttribute('aria-expanded')) {
-                trigger.setAttribute('aria-expanded', 'true')
-            }
-            if (focusFirst) {
-                submenu.querySelector('[role="menuitem"]')?.focus()
-            }
-        }
-
-        // Menu dropdowns
+        // Toolbar menu dropdowns
         const menus = document.querySelectorAll('.menu')
         menus.forEach(menu => {
             const title = menu.querySelector('.menu-title')
@@ -3852,13 +4168,11 @@ class LayersApp {
             if (title && items) {
                 title.addEventListener('click', (e) => {
                     e.stopPropagation()
-                    hideSubmenu()
                     const shouldOpen = items.classList.contains('hide')
                     closeDropdowns(items)
                     items.classList.toggle('hide', !shouldOpen)
                     setTitleExpanded(title, shouldOpen)
                     if (shouldOpen) {
-                        clampFilterDropdown(menu, items)
                         positionToolbarFlyout(menu, title, items)
                     }
                 })
@@ -3871,178 +4185,17 @@ class LayersApp {
                 if (menu && title) positionToolbarFlyout(menu, title, items)
             })
 
-            const currentFilterMenu = document.getElementById('filterMenu')
-            const currentFilterItems = currentFilterMenu?.querySelector(':scope > .menu-items')
-            if (currentFilterItems && !currentFilterItems.classList.contains('hide')) {
-                clampFilterDropdown(currentFilterMenu, currentFilterItems)
-            }
-            if (activeSubmenu?.closest('#filterMenu') && activeSubmenuTrigger) {
-                positionSubmenu(activeSubmenuTrigger, activeSubmenu)
-                // Reclamping can shrink the submenu's scroll viewport; keep the
-                // keyboard-focused item visible (focus alone only auto-scrolls
-                // at focus time, not when the container later resizes).
-                if (activeSubmenu.contains(document.activeElement)) {
-                    document.activeElement.scrollIntoView({ block: 'nearest' })
-                }
+            // The filter dropdown's submenus clear the toolbar via a live
+            // min-left floor; keep it current while the menu is open.
+            if (this._menuBar?.openMenuId === 'filterMenu') {
+                this._setFilterSubpanelFloor()
             }
         }
         window.addEventListener('resize', repositionOpenMenus)
 
-        document.querySelectorAll('.has-submenu[data-submenu]').forEach(trigger => {
-            const submenuId = trigger.dataset.submenu
-            const menu = trigger.closest('.menu')
-            const submenu = menu?.querySelector(`:scope > .submenu[data-submenu-id="${submenuId}"]`)
-            if (!submenu) return
-
-            trigger.addEventListener('mouseenter', () => {
-                if (activeSubmenu === submenu && activeSubmenuKeyboardControlled) return
-                showSubmenu(trigger, submenu)
-            })
-
-            if (menu.id === 'filterMenu') {
-                trigger.addEventListener('click', (e) => {
-                    e.stopPropagation()
-                    showSubmenu(trigger, submenu, { focusFirst: e.detail === 0 })
-                })
-            }
-
-            trigger.addEventListener('mouseleave', (e) => {
-                if (activeSubmenuKeyboardControlled) return
-                if (e.relatedTarget && submenu.contains(e.relatedTarget)) return
-                hideSubmenu()
-            })
-
-            submenu.addEventListener('mouseleave', (e) => {
-                if (activeSubmenuKeyboardControlled) return
-                if (e.relatedTarget && trigger.contains(e.relatedTarget)) return
-                hideSubmenu()
-            })
-
-            submenu.addEventListener('click', () => hideSubmenu())
-        })
-
-        const filterMenu = document.getElementById('filterMenu')
-        const filterTitle = filterMenu?.querySelector(':scope > .menu-title')
-        const filterItems = filterMenu?.querySelector(':scope > .menu-items')
-        const filterTriggers = filterItems
-            ? [...filterItems.querySelectorAll(':scope > [role="menuitem"]')]
-            : []
-        const openFilterMenu = (focusIndex) => {
-            hideSubmenu()
-            closeDropdowns(filterItems)
-            filterItems.classList.remove('hide')
-            setTitleExpanded(filterTitle, true)
-            clampFilterDropdown(filterMenu, filterItems)
-            filterTriggers.at(focusIndex)?.focus()
-        }
-        const closeFilterMenu = ({ restoreFocus = false } = {}) => {
-            hideSubmenu()
-            filterItems?.classList.add('hide')
-            setTitleExpanded(filterTitle, false)
-            if (restoreFocus) filterTitle?.focus()
-        }
-
-        // Let Tab/Shift+Tab move normally, then close once focus is no longer
-        // inside the active dropdown/submenu popup. Moving back to the title
-        // also closes because the title is the control, not part of the popup.
-        filterMenu?.addEventListener('focusout', () => {
-            setTimeout(() => {
-                const focused = document.activeElement
-                const inDropdown = Boolean(focused && filterItems?.contains(focused))
-                const inSubmenu = Boolean(focused?.closest?.('#filterMenu > .submenu'))
-                if (!inDropdown && !inSubmenu) closeFilterMenu()
-            }, 0)
-        })
-
-        filterTitle?.addEventListener('keydown', (e) => {
-            if (e.key === ' ' || e.key === 'Enter') {
-                e.preventDefault()
-                e.stopPropagation()
-                openFilterMenu(0)
-                return
-            }
-            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                e.preventDefault()
-                e.stopPropagation()
-                openFilterMenu(e.key === 'ArrowDown' ? 0 : -1)
-            } else if (e.key === 'Escape') {
-                e.preventDefault()
-                e.stopPropagation()
-                closeFilterMenu({ restoreFocus: true })
-            }
-        })
-
-        filterTriggers.forEach((trigger, index) => {
-            trigger.addEventListener('keydown', (e) => {
-                if (e.key === ' ' || e.key === 'Enter') {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    const submenu = filterMenu.querySelector(
-                        `:scope > .submenu[data-submenu-id="${trigger.dataset.submenu}"]`)
-                    if (submenu) showSubmenu(trigger, submenu, { focusFirst: true })
-                    else trigger.click()
-                    return
-                }
-                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    hideSubmenu()
-                    const offset = e.key === 'ArrowDown' ? 1 : -1
-                    filterTriggers[(index + offset + filterTriggers.length) % filterTriggers.length].focus()
-                } else if (e.key === 'ArrowRight') {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    const submenu = filterMenu.querySelector(
-                        `:scope > .submenu[data-submenu-id="${trigger.dataset.submenu}"]`)
-                    if (submenu) showSubmenu(trigger, submenu, { focusFirst: true })
-                } else if (e.key === 'Escape') {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    if (activeSubmenu) hideSubmenu({ restoreFocus: true })
-                    else closeFilterMenu({ restoreFocus: true })
-                }
-            })
-        })
-
-        filterMenu?.querySelectorAll(':scope > .submenu').forEach(submenu => {
-            const effects = [...submenu.querySelectorAll(':scope > [role="menuitem"]')]
-            effects.forEach((effect, index) => {
-                effect.addEventListener('keydown', (e) => {
-                    if (e.key === ' ' || e.key === 'Enter') {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        effect.click()
-                        closeFilterMenu({ restoreFocus: true })
-                        return
-                    }
-                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        const offset = e.key === 'ArrowDown' ? 1 : -1
-                        effects[(index + offset + effects.length) % effects.length].focus()
-                    } else if (e.key === 'ArrowLeft' || e.key === 'Escape') {
-                        e.preventDefault()
-                        e.stopPropagation()
-                        hideSubmenu({ restoreFocus: true })
-                    }
-                })
-            })
-        })
-
-        // Close menus on outside click
+        // Close toolbar menus on outside click
         document.addEventListener('click', () => {
             closeDropdowns()
-            hideSubmenu()
-        })
-
-        // Logo menu - Settings
-        document.getElementById('settingsMenuItem')?.addEventListener('click', () => {
-            settingsDialog.show()
-        })
-
-        // Logo menu - About
-        document.getElementById('aboutMenuItem')?.addEventListener('click', () => {
-            aboutDialog.show()
         })
 
         // Welcome dialog — re-openable from the logo menu. Tiles route into the
@@ -4065,223 +4218,6 @@ class LayersApp {
             })),
             onDismiss: () => this._showOpenDialog(),
         })
-        document.getElementById('welcomeMenuItem')?.addEventListener('click', () => {
-            welcomeDialog.show()
-        })
-
-        // File menu - New / Open (both show the same open dialog with reset)
-        for (const id of ['newMenuItem', 'openMenuItem']) {
-            document.getElementById(id)?.addEventListener('click', () =>
-                this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
-                    this._showOpenDialog({
-                        replaceProject: true,
-                        leaveOnline,
-                        replacementConsent,
-                    })))
-        }
-
-        // File menu - New from Clipboard
-        document.getElementById('newFromClipboardMenuItem')?.addEventListener('click', () =>
-            this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
-                this._handleNewFromClipboard({ leaveOnline, replacementConsent })))
-
-        // File menu - Save Project (uses Save As if no project ID)
-        document.getElementById('saveProjectMenuItem')?.addEventListener('click', () => {
-            if (this._currentProjectId) {
-                this._runPointerMutation(
-                    (mutationToken) => this._quickSaveProject(mutationToken))
-            } else {
-                this._showSaveProjectDialog()
-            }
-        })
-
-        // File menu - Save Project As
-        document.getElementById('saveProjectAsMenuItem')?.addEventListener('click', () => {
-            this._showSaveProjectAsDialog()
-        })
-
-        // File menu - Load Project
-        document.getElementById('loadProjectMenuItem')?.addEventListener('click', () =>
-            this._startProjectReplacement(({ leaveOnline, replacementConsent }) =>
-                this._showLoadProjectDialog(false, { leaveOnline, replacementConsent })))
-
-        document.getElementById('savePngMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._quickSavePng())
-        })
-
-        document.getElementById('saveJpgMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._quickSaveJpg())
-        })
-
-        // File menu - Export Image
-        document.getElementById('exportImageMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._exportImageDialog.open())
-        })
-
-        // File menu - Export Video
-        document.getElementById('exportVideoMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(async () => this._exportVideoDialog.open())
-        })
-
-        // Edit menu - Undo
-        document.getElementById('undoMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._undo())
-        })
-
-        // Edit menu - Redo
-        document.getElementById('redoMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._redo())
-        })
-
-        // Edit menu - Copy Image
-        document.getElementById('copyImageMenuItem')?.addEventListener('click', async () => {
-            await this._runPointerMutation(() => this._handleCopyImage())
-        })
-
-        // Edit menu - Paste Image
-        document.getElementById('pasteImageMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._handlePaste())
-        })
-
-        // Image menu - Crop to selection
-        document.getElementById('cropToSelectionMenuItem')?.addEventListener('click', async () => {
-            await this._runPointerMutation(() => this._cropToSelection())
-        })
-
-        // Image menu - Image size
-        document.getElementById('imageSizeMenuItem')?.addEventListener('click', () => {
-            this._showImageSizeDialog()
-        })
-
-        // Image menu - Canvas size
-        document.getElementById('canvasSizeMenuItem')?.addEventListener('click', () => {
-            this._showCanvasSizeDialog()
-        })
-
-        // Image + Filter menus - Effect items (data-driven). An optional
-        // data-params JSON attribute supplies initial params for effects whose
-        // spec defaults would be a visual no-op (e.g. glitchiness: 0) — a menu
-        // item must never add a layer that appears to do nothing.
-        //
-        // The layer is named after the clicked menu label, not the effect's
-        // camelCase short name: several curated labels diverge from the effect
-        // name ('twirl' is filter/spiral, 'feedback' is convolutionFeedback),
-        // and auto-naming would cross those wires.
-        for (const menuId of ['imageMenu', 'filterMenu']) {
-            document.getElementById(menuId)?.addEventListener('click', (e) => {
-                const effectItem = e.target.closest('[data-effect]')
-                if (!effectItem) return
-                if (this._layers.length === 0) return
-                let params = null
-                if (effectItem.dataset.params) {
-                    try {
-                        params = JSON.parse(effectItem.dataset.params)
-                    } catch (err) {
-                        console.error('[Layers] Invalid data-params on menu item:',
-                            effectItem.dataset.effect, err)
-                    }
-                }
-                const name = effectItem.textContent.trim() || null
-                this._runPointerMutation(() =>
-                    this._handleAddEffectLayer(effectItem.dataset.effect, {
-                        name,
-                        ...(params ? { params } : {}),
-                    }))
-            })
-        }
-
-        // Auto correction handlers
-        document.getElementById('autoLevelsMenuItem')?.addEventListener('click', () => {
-            if (this._layers.length === 0) return
-            this._runPointerMutation(() => this._handleAutoCorrection(autoLevels))
-        })
-        document.getElementById('autoContrastMenuItem')?.addEventListener('click', () => {
-            if (this._layers.length === 0) return
-            this._runPointerMutation(() => this._handleAutoCorrection(autoContrast))
-        })
-        document.getElementById('autoWhiteBalanceMenuItem')?.addEventListener('click', () => {
-            if (this._layers.length === 0) return
-            this._runPointerMutation(() => this._handleAutoCorrection(autoWhiteBalance))
-        })
-
-        // Select menu - Select All
-        document.getElementById('selectAllMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => {
-                const { width, height } = this._canvas
-                this._selectionManager.setSelection({
-                    type: 'rect', x: 0, y: 0, width, height
-                })
-            })
-        })
-
-        // Select menu - Select None
-        document.getElementById('selectNoneMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._selectionManager.clearSelection())
-        })
-
-        // Select menu - Select Inverse
-        document.getElementById('selectInverseMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => {
-                const mask = this._selectionManager.rasterizeSelection()
-                if (!mask) return
-                const inverted = invertMask(mask)
-                this._selectionManager.setSelection({ type: 'mask', data: inverted })
-            })
-        })
-
-        // Select menu - Color Range
-        document.getElementById('colorRangeMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation((mutationToken) =>
-                this._startColorRangePick(mutationToken))
-        })
-
-        // Select menu - Modify operations
-        document.getElementById('borderSelectionMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._modifySelection(
-                { title: 'Border Selection', label: 'Width', defaultValue: 1 }, borderMask))
-        })
-        document.getElementById('smoothSelectionMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._modifySelection(
-                { title: 'Smooth Selection', label: 'Radius', defaultValue: 2 }, smoothMask))
-        })
-        document.getElementById('expandSelectionMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._modifySelection(
-                { title: 'Expand Selection', label: 'Radius', defaultValue: 1 }, expandMask))
-        })
-        document.getElementById('contractSelectionMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._modifySelection(
-                { title: 'Contract Selection', label: 'Radius', defaultValue: 1 }, contractMask))
-        })
-        document.getElementById('featherSelectionMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._modifySelection(
-                { title: 'Feather Selection', label: 'Radius', defaultValue: 2 }, featherMask))
-        })
-
-        // View menu - Zoom
-        document.getElementById('zoomInMenuItem')?.addEventListener('click', () => {
-            this._zoomIn()
-        })
-
-        document.getElementById('zoomOutMenuItem')?.addEventListener('click', () => {
-            this._zoomOut()
-        })
-
-        document.getElementById('fitInWindowMenuItem')?.addEventListener('click', () => {
-            this._setZoom('fit')
-        })
-
-        document.getElementById('zoom50MenuItem')?.addEventListener('click', () => {
-            this._setZoom('50')
-        })
-
-        document.getElementById('zoom100MenuItem')?.addEventListener('click', () => {
-            this._setZoom('100')
-        })
-
-        document.getElementById('zoom200MenuItem')?.addEventListener('click', () => {
-            this._setZoom('200')
-        })
-
         // Text tool button (toolbar)
         document.getElementById('textToolBtn')?.addEventListener('click', () => {
             if (this._layers.length === 0) return
@@ -4292,10 +4228,6 @@ class LayersApp {
         document.getElementById('addLayerBtn')?.addEventListener('click', () => {
             this._showAddLayerDialog()
         })
-        document.getElementById('filterMoreMenuItem')?.addEventListener('click', () => {
-            this._showAddLayerDialog()
-        })
-
         // Selection tool split-button
         document.getElementById('selectionToolBtn')?.addEventListener('click', (e) => {
             e.stopPropagation()
@@ -4398,17 +4330,6 @@ class LayersApp {
             this._setToolMode('selection')
         })
 
-        // Play/pause button
-        document.getElementById('playPauseBtn')?.addEventListener('click', () => {
-            const mutationToken = this._tryAcquireProjectLifecycle()
-            if (!mutationToken) return
-            try {
-                this._togglePlayPause()
-            } finally {
-                mutationToken.release()
-            }
-        })
-
         // Font install dialog trigger
         document.addEventListener('font-install-request', () => {
             this._showFontInstallDialog()
@@ -4417,64 +4338,6 @@ class LayersApp {
         // Font bundle changed (e.g., uninstall)
         document.addEventListener('font-bundle-changed', () => {
             this._refreshFontSelects()
-        })
-    }
-
-    /**
-     * Set up Layer menu handlers
-     * @private
-     */
-    _setupLayerMenuHandlers() {
-        document.getElementById('layerActionMenuItem')?.addEventListener('click', () => {
-            const selectedIds = this._layerStack?.selectedLayerIds || []
-
-            if (selectedIds.length === 0) {
-                this._runPointerMutation(() => this._flattenImage())
-            } else if (selectedIds.length === 1) {
-                const layer = this._layers.find(l => l.id === selectedIds[0])
-                if (layer && layer.sourceType !== 'media') {
-                    this._runPointerMutation(() => this._rasterizeLayer(selectedIds[0]))
-                }
-            } else {
-                this._runPointerMutation(() => this._flattenLayers(selectedIds))
-            }
-        })
-
-        document.getElementById('duplicateLayerMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._duplicateActiveLayer())
-        })
-
-        document.getElementById('deleteLayerMenuItem')?.addEventListener('click', () => {
-            const selected = this._layerStack?.getSelectedLayer()
-            if (selected && this._layers.indexOf(selected) > 0) {
-                this._runPointerMutation(() => this._handleDeleteLayer(selected.id))
-            }
-        })
-
-        document.getElementById('deselectAllLayersMenuItem')?.addEventListener('click', () => {
-            this._deselectAllLayers()
-        })
-
-        document.getElementById('flipHMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._flipActiveLayer('horizontal'))
-        })
-
-        document.getElementById('flipVMenuItem')?.addEventListener('click', () => {
-            this._runPointerMutation(() => this._flipActiveLayer('vertical'))
-        })
-
-        document.getElementById('addLayerMaskMenuItem')?.addEventListener('click', () => {
-            const layer = this._getActiveLayer()
-            if (layer && !layer.mask) {
-                this._runPointerMutation(() => this._addLayerMask(layer.id))
-            }
-        })
-
-        document.getElementById('deleteLayerMaskMenuItem')?.addEventListener('click', () => {
-            const layer = this._getActiveLayer()
-            if (layer?.mask) {
-                this._runPointerMutation(() => this._deleteLayerMask(layer.id))
-            }
         })
     }
 
@@ -4585,56 +4448,7 @@ class LayersApp {
      * @private
      */
     _updateLayerMenu() {
-        const menuItem = document.getElementById('layerActionMenuItem')
-        if (!menuItem) return
-
-        const selectedIds = this._layerStack?.selectedLayerIds || []
-
-        // Duplicate layer: enabled when exactly one layer selected
-        const dupItem = document.getElementById('duplicateLayerMenuItem')
-        if (dupItem) {
-            dupItem.classList.toggle('disabled', selectedIds.length !== 1)
-        }
-
-        // Delete layer: enabled when exactly one non-base layer selected
-        const delItem = document.getElementById('deleteLayerMenuItem')
-        if (delItem) {
-            const canDelete = selectedIds.length === 1 &&
-                this._layers.findIndex(l => l.id === selectedIds[0]) > 0
-            delItem.classList.toggle('disabled', !canDelete)
-        }
-
-        // Flip items: enabled when exactly one media layer selected
-        const selectedLayers = selectedIds.map(id => this._layers.find(l => l.id === id)).filter(Boolean)
-        const canFlip = selectedIds.length === 1 && selectedLayers[0]?.sourceType === 'media'
-        document.getElementById('flipHMenuItem')?.classList.toggle('disabled', !canFlip)
-        document.getElementById('flipVMenuItem')?.classList.toggle('disabled', !canFlip)
-
-        // Mask items: enabled based on active layer mask state
-        const activeLayer = selectedIds.length === 1 ? selectedLayers[0] : null
-        const addMaskItem = document.getElementById('addLayerMaskMenuItem')
-        const deleteMaskItem = document.getElementById('deleteLayerMaskMenuItem')
-        if (addMaskItem) addMaskItem.classList.toggle('disabled', !activeLayer || !!activeLayer.mask)
-        if (deleteMaskItem) deleteMaskItem.classList.toggle('disabled', !activeLayer?.mask)
-
-        if (selectedIds.length === 0) {
-            // No selection: flatten image
-            menuItem.textContent = 'flatten image'
-            menuItem.classList.remove('disabled')
-        } else if (selectedIds.length === 1) {
-            // Single layer selected
-            const layer = selectedLayers[0]
-            menuItem.textContent = 'rasterize layer'
-            if (layer?.sourceType === 'media') {
-                menuItem.classList.add('disabled')
-            } else {
-                menuItem.classList.remove('disabled')
-            }
-        } else {
-            // Multiple layers selected
-            menuItem.textContent = 'flatten layers'
-            menuItem.classList.remove('disabled')
-        }
+        this._menuBar?.refresh()
     }
 
     /**
@@ -5022,14 +4836,12 @@ class LayersApp {
      * @private
      */
     _togglePlayPause() {
-        const icon = document.querySelector('#playPauseBtn .icon-material')
         if (this._renderer.isRunning) {
             this._renderer.stop()
-            if (icon) icon.textContent = 'play_arrow'
         } else {
             this._renderer.start()
-            if (icon) icon.textContent = 'pause'
         }
+        this._menuBar?.refresh()   // play/pause icon pulls from isRunning
     }
 
     /**
@@ -6539,19 +6351,7 @@ class LayersApp {
     }
 
     _updateSelectMenu() {
-        const hasSelection = this._selectionManager?.hasSelection()
-        const selectionItems = [
-            'selectNoneMenuItem',
-            'selectInverseMenuItem',
-            'borderSelectionMenuItem',
-            'smoothSelectionMenuItem',
-            'expandSelectionMenuItem',
-            'contractSelectionMenuItem',
-            'featherSelectionMenuItem'
-        ]
-        for (const id of selectionItems) {
-            document.getElementById(id)?.classList.toggle('disabled', !hasSelection)
-        }
+        this._menuBar?.refresh()
     }
 
     _startColorRangePick(mutationToken = null) {
@@ -6637,10 +6437,7 @@ class LayersApp {
     }
 
     _updateImageMenu() {
-        const cropItem = document.getElementById('cropToSelectionMenuItem')
-        if (!cropItem) return
-        const hasSelection = this._selectionManager?.hasSelection()
-        cropItem.classList.toggle('disabled', !hasSelection)
+        this._menuBar?.refresh()
     }
 
     async _cropToSelection() {

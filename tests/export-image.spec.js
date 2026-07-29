@@ -16,7 +16,7 @@ test.describe('Export Image Dialog', () => {
 
     test('opens via menu and shows current canvas dimensions', async ({ page }) => {
         // Open File menu
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
 
         // Dialog should be visible
@@ -31,7 +31,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('closes on cancel button', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
 
         await expect(page.locator('#exportImageModal')).toBeVisible()
@@ -41,7 +41,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('closes on Escape key', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
 
         await expect(page.locator('#exportImageModal')).toBeVisible()
@@ -51,7 +51,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('hides quality for PNG, shows for JPEG', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
 
         // PNG is default — quality should be hidden
@@ -68,7 +68,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('invalid dimensions are rejected before acquiring a mutation lease', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
 
         const result = await page.evaluate(async () => {
@@ -106,7 +106,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('setup failure releases the project lifecycle lease', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
 
         const result = await page.evaluate(async () => {
@@ -134,7 +134,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('resolution restore failure releases the project lifecycle lease', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '64')
         await page.fill('#exportImageHeight', '64')
@@ -178,7 +178,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('exports the requested size after the canvas changes while the dialog is open', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
 
         const result = await page.evaluate(async () => {
@@ -205,7 +205,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('temporary export resize restores the begin-time canvas size', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '64')
         await page.fill('#exportImageHeight', '64')
@@ -234,7 +234,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('temporary export resize rerenders the restored canvas while paused', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '64')
         await page.fill('#exportImageHeight', '64')
@@ -270,7 +270,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('job polling hides the temporary image export resolution', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '64')
         await page.fill('#exportImageHeight', '66')
@@ -306,7 +306,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('preserves accepted odd image dimensions exactly', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '65')
         await page.fill('#exportImageHeight', '67')
@@ -334,7 +334,7 @@ test.describe('Export Image Dialog', () => {
     })
 
     test('post-save UI callback failures do not report a completed export as failed', async ({ page }) => {
-        await page.click('.menu-title:has-text("file")')
+        await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
 
         const result = await page.evaluate(async () => {

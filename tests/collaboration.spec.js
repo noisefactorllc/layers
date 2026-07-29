@@ -65,15 +65,7 @@ async function createProject(page, type = 'transparent') {
 }
 
 async function openFileMenu(page) {
-    await page.evaluate(() => {
-        for (const menu of document.querySelectorAll('.menu')) {
-            const title = menu.querySelector('.menu-title')
-            if (title && title.textContent.trim() === 'file') {
-                menu.querySelector('.menu-items')?.classList.remove('hide')
-                return
-            }
-        }
-    })
+    await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
     await page.waitForTimeout(50)
 }
 

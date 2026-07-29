@@ -18,8 +18,8 @@ async function createProjectFromWelcome(page, type = 'solid') {
 }
 
 async function reopenWelcome(page) {
-    await page.getByRole('button', { name: 'Layers menu', exact: true }).click()
-    await page.getByRole('button', { name: 'welcome to Layers...', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Layers menu', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'welcome to Layers...', exact: true }).click()
     await page.locator('.welcome-dialog[open]').waitFor()
 }
 
@@ -45,9 +45,8 @@ async function chooseBrokenPng(chooser) {
 }
 
 async function openFileMenuItem(page, id) {
-    const fileMenu = page.locator('.menu').nth(1)
-    await fileMenu.locator('.menu-title').click()
-    await fileMenu.locator(`#${id}`).click()
+    await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
+    await page.locator(`#menu #${id}`).click()
 }
 
 async function installOnlineSession(page) {
@@ -301,13 +300,14 @@ test.describe('Welcome dialog', () => {
         await page.locator('.welcome-dialog[open]').waitFor()
         await page.locator('.welcome-close').click()
 
-        const logoMenuButton = page.getByRole('button', { name: 'Layers menu', exact: true })
+        const logoMenuButton = page.getByRole('menuitem', { name: 'Layers menu', exact: true })
         await logoMenuButton.focus()
         await page.keyboard.press('Enter')
-        await expect(page.locator('#logoMenu > .menu-items')).toBeVisible()
+        await expect(page.locator('#logoMenu .hf-menubar-panel')).toBeVisible()
 
-        const welcomeButton = page.getByRole('button', { name: 'welcome to Layers...', exact: true })
-        await page.keyboard.press('Tab')
+        // The menu-bar component follows the ARIA menubar pattern: opening
+        // with Enter focuses the first item directly.
+        const welcomeButton = page.getByRole('menuitem', { name: 'welcome to Layers...', exact: true })
         await expect(welcomeButton).toBeFocused()
         await page.keyboard.press('Enter')
         await expect(page.locator('.welcome-dialog[open]')).toBeVisible()

@@ -231,12 +231,12 @@ test.describe('Filter menu', () => {
         await bootBlank(page)
         const actual = await page.evaluate(() => {
             const menu = document.getElementById('filterMenu')
-            return [...menu.querySelectorAll(':scope > .menu-items > .has-submenu')].map(trigger => {
+            return [...menu.querySelectorAll('.hf-menubar-panel .hf-menubar-has-submenu')].map(trigger => {
                 const submenuId = trigger.dataset.submenu
-                const submenu = menu.querySelector(`:scope > .submenu[data-submenu-id="${submenuId}"]`)
+                const submenu = document.getElementById(trigger.getAttribute('aria-controls'))
                 return {
                     submenuId,
-                    effectIds: [...submenu.querySelectorAll(':scope > [data-effect]')]
+                    effectIds: [...submenu.querySelectorAll('[data-effect]')]
                         .map(item => item.dataset.effect),
                 }
             })
@@ -253,7 +253,7 @@ test.describe('Filter menu', () => {
         await bootBlank(page)
 
         const controls = await page.locator(
-            '#menuLeft > .menu > .menu-title, #playPauseBtn').evaluateAll(elements =>
+            '#menu .hf-menubar-trigger, #playPauseBtn').evaluateAll(elements =>
             elements.map(element => {
                 const rect = element.getBoundingClientRect()
                 return {
@@ -279,7 +279,7 @@ test.describe('Filter menu', () => {
             await bootBlank(page)
 
             const blockedControls = await page.locator(
-                '#menuLeft > .menu > .menu-title, #playPauseBtn').evaluateAll(elements =>
+                '#menu .hf-menubar-trigger, #playPauseBtn').evaluateAll(elements =>
                 elements.flatMap(element => {
                     const rect = element.getBoundingClientRect()
                     const hit = document.elementFromPoint(
@@ -290,7 +290,7 @@ test.describe('Filter menu', () => {
                 }))
             expect(blockedControls).toEqual([])
 
-            const fileTitle = page.locator('#menuLeft > .menu').nth(1).locator(':scope > .menu-title')
+            const fileTitle = page.locator('#menu .hf-menubar-trigger', { hasText: 'file' })
             await fileTitle.click()
             await expect(page.locator('#newMenuItem')).toBeVisible()
 
@@ -399,8 +399,8 @@ test.describe('Filter menu', () => {
         await page.setViewportSize({ width: 390, height: 320 })
         await bootBlank(page)
 
-        await page.getByRole('button', { name: 'filter', exact: true }).click()
-        const dropdown = page.locator('#filterMenu > .menu-items')
+        await page.getByRole('menuitem', { name: 'filter', exact: true }).click()
+        const dropdown = page.locator('#filterMenu .hf-menubar-panel')
         await expect(dropdown).toBeVisible()
 
         await page.setViewportSize({ width: 320, height: 320 })
@@ -408,7 +408,7 @@ test.describe('Filter menu', () => {
             const rect = await dropdown.boundingBox()
             return rect.x >= 0 && rect.x + rect.width <= 320
         }).toBe(true)
-        await expect(page.getByRole('button', { name: 'filter', exact: true }))
+        await expect(page.getByRole('menuitem', { name: 'filter', exact: true }))
             .toHaveAttribute('aria-expanded', 'true')
     })
 
@@ -417,19 +417,19 @@ test.describe('Filter menu', () => {
         await bootBlank(page)
         await page.locator('.toast-visible').waitFor({ state: 'hidden' })
 
-        const title = page.getByRole('button', { name: 'filter', exact: true })
+        const title = page.getByRole('menuitem', { name: 'filter', exact: true })
         await title.focus()
         await page.keyboard.press('ArrowDown')
         await page.keyboard.press('ArrowDown')
         await page.keyboard.press('ArrowDown')
         await page.keyboard.press('ArrowDown')
-        const distort = page.locator(
-            '#filterMenu > .menu-items > [data-submenu="distort"]')
+        const distort = page.locator('#filterMenu [data-submenu="distort"]')
         await expect(distort).toBeFocused()
         await page.keyboard.press('ArrowRight')
 
-        const submenu = page.locator(
-            '#filterMenu > .submenu[data-submenu-id="distort"]')
+        const submenu = page.locator('#filterMenu .hf-menubar-subpanel', {
+            has: page.locator('[data-effect="filter/warp"]'),
+        })
         const wormhole = submenu.getByRole('menuitem', { name: 'wormhole', exact: true })
         await expect(submenu).toBeVisible()
         await page.keyboard.press('ArrowUp')
@@ -466,8 +466,8 @@ test.describe('Filter menu', () => {
         await page.setViewportSize({ width: 390, height: 320 })
         await bootBlank(page)
 
-        await page.locator('#filterMenu > .menu-title').click()
-        const dropdown = page.locator('#filterMenu > .menu-items')
+        await page.locator('#filterMenu .hf-menubar-trigger').click()
+        const dropdown = page.locator('#filterMenu .hf-menubar-panel')
         await expect(dropdown).toBeVisible()
         const dropdownRect = await dropdown.boundingBox()
         expect(dropdownRect.x).toBeGreaterThanOrEqual(0)
@@ -476,10 +476,10 @@ test.describe('Filter menu', () => {
             element.getBoundingClientRect().right)
 
         for (const group of EXPECTED_GROUPS.slice(2)) {
-            await page.locator(
-                `#filterMenu > .menu-items > [data-submenu="${group.submenuId}"]`).hover()
-            const submenu = page.locator(
-                `#filterMenu > .submenu[data-submenu-id="${group.submenuId}"]`)
+            await page.locator(`#filterMenu [data-submenu="${group.submenuId}"]`).hover()
+            const submenu = page.locator('#filterMenu .hf-menubar-subpanel', {
+                has: page.locator(`[data-effect="${group.effects[0][0]}"]`),
+            })
             await expect(submenu).toBeVisible()
             const geometry = await submenu.evaluate((element, effectIds) => {
                 const submenuRect = element.getBoundingClientRect()
@@ -517,11 +517,13 @@ test.describe('Filter menu', () => {
     test('supports complete Filter keyboard and ARIA operation', async ({ page }) => {
         await bootBlank(page)
 
-        const title = page.getByRole('button', { name: 'filter', exact: true })
-        const dropdown = page.locator('#filterMenu > .menu-items')
+        const title = page.getByRole('menuitem', { name: 'filter', exact: true })
+        const dropdown = page.locator('#filterMenu .hf-menubar-panel')
         const blurGroup = dropdown.getByRole('menuitem', { name: 'blur', exact: true })
         const sharpenGroup = dropdown.getByRole('menuitem', { name: 'sharpen', exact: true })
-        const blurSubmenu = page.locator('#filterMenu > .submenu[data-submenu-id="blur"]')
+        const blurSubmenu = page.locator('#filterMenu .hf-menubar-subpanel', {
+            has: page.locator('[data-effect="filter/blur"]'),
+        })
         const blurEffect = blurSubmenu.getByRole('menuitem', { name: 'blur', exact: true })
         const motionBlurEffect = blurSubmenu.getByRole('menuitem', { name: 'motion blur', exact: true })
 
@@ -536,17 +538,15 @@ test.describe('Filter menu', () => {
         })).toHaveCount(1)
         expect(await page.evaluate(() => {
             const menu = document.getElementById('filterMenu')
-            const title = menu.querySelector(':scope > .menu-title')
-            const dropdown = menu.querySelector(':scope > .menu-items')
+            const title = menu.querySelector('.hf-menubar-trigger')
+            const dropdown = menu.querySelector('.hf-menubar-panel')
             return {
                 titleControlsDropdown: title.getAttribute('aria-controls') === dropdown.id,
                 dropdownLabelledByTitle: dropdown.getAttribute('aria-labelledby') === title.id,
-                submenuRelationships: [...dropdown.querySelectorAll(':scope > [data-submenu]')]
+                submenuRelationships: [...dropdown.querySelectorAll('[data-submenu]')]
                     .every(trigger => {
-                        const submenu = menu.querySelector(
-                            `:scope > .submenu[data-submenu-id="${trigger.dataset.submenu}"]`)
-                        return trigger.getAttribute('aria-controls') === submenu?.id
-                            && submenu.getAttribute('aria-labelledby') === trigger.id
+                        const submenu = document.getElementById(trigger.getAttribute('aria-controls'))
+                        return !!submenu && submenu.getAttribute('aria-labelledby') === trigger.id
                     }),
             }
         })).toEqual({
@@ -640,10 +640,9 @@ test.describe('Filter menu', () => {
     test('clicking filter > stylize > oil paint adds its effect layer', async ({ page }) => {
         await bootBlank(page)
         const before = await page.evaluate(() => window.layersApp._layers.length)
-        await page.locator('#filterMenu > .menu-title').click()
-        await page.locator('#filterMenu > .menu-items > [data-submenu="stylize"]').hover()
-        const oilPaint = page.locator(
-            '#filterMenu > .submenu[data-submenu-id="stylize"] > [data-effect="filter/oilPaint"]')
+        await page.locator('#filterMenu .hf-menubar-trigger').click()
+        await page.locator('#filterMenu [data-submenu="stylize"]').hover()
+        const oilPaint = page.locator('#filterMenu [data-effect="filter/oilPaint"]')
         await expect(oilPaint).toBeVisible()
         await oilPaint.click()
         await expect.poll(() => page.evaluate(() => ({
@@ -655,10 +654,9 @@ test.describe('Filter menu', () => {
     test('clicking a data-params entry applies its params and menu-label name', async ({ page }) => {
         await bootBlank(page)
         const before = await page.evaluate(() => window.layersApp._layers.length)
-        await page.locator('#filterMenu > .menu-title').click()
-        await page.locator('#filterMenu > .menu-items > [data-submenu="glitch"]').hover()
-        const glitch = page.locator(
-            '#filterMenu > .submenu[data-submenu-id="glitch"] > [data-effect="classicNoisedeck/glitch"]')
+        await page.locator('#filterMenu .hf-menubar-trigger').click()
+        await page.locator('#filterMenu [data-submenu="glitch"]').hover()
+        const glitch = page.locator('#filterMenu [data-effect="classicNoisedeck/glitch"]')
         await expect(glitch).toBeVisible()
         await glitch.click()
         await expect.poll(() => page.evaluate(() => {
@@ -706,15 +704,14 @@ test.describe('Filter menu', () => {
             const env = await window.LayersAgent.listCuratedEffects()
             const menuGroups = ['imageMenu', 'filterMenu'].flatMap(menuId => {
                 const menu = document.getElementById(menuId)
-                return [...menu.querySelectorAll(':scope > .menu-items > .has-submenu')].map(trigger => {
+                return [...menu.querySelectorAll('.hf-menubar-panel .hf-menubar-has-submenu')].map(trigger => {
                     const submenuId = trigger.dataset.submenu
-                    const submenu = menu.querySelector(
-                        `:scope > .submenu[data-submenu-id="${submenuId}"]`)
+                    const submenu = document.getElementById(trigger.getAttribute('aria-controls'))
                     return {
                         menuId,
                         submenuId,
                         label: trigger.textContent.trim(),
-                        effects: [...submenu.querySelectorAll(':scope > [data-effect]')].map(item => ({
+                        effects: [...submenu.querySelectorAll('[data-effect]')].map(item => ({
                             effectId: item.dataset.effect,
                             label: item.textContent.trim(),
                             // Initial params for effects whose spec defaults are a
@@ -747,8 +744,8 @@ test.describe('Filter menu', () => {
     test('ends with the conventional divider and more menuitem', async ({ page }) => {
         await bootBlank(page)
         const actual = await page.evaluate(() => {
-            const items = document.getElementById('filterMenuItems')
-            const categories = [...items.querySelectorAll(':scope > .has-submenu')]
+            const items = document.querySelector('#filterMenu .hf-menubar-panel')
+            const categories = [...items.querySelectorAll(':scope > .hf-menubar-submenu-holder')]
             const divider = categories.at(-1).nextElementSibling
             const more = divider?.nextElementSibling
             return {
@@ -769,7 +766,7 @@ test.describe('Filter menu', () => {
         })
 
         expect(actual).toEqual({
-            divider: { tagName: 'HR', className: 'menu-seperator', role: null },
+            divider: { tagName: 'HR', className: 'hf-menu-separator', role: null },
             more: {
                 tagName: 'BUTTON',
                 id: 'filterMoreMenuItem',
@@ -783,8 +780,8 @@ test.describe('Filter menu', () => {
 
     test('clicking more closes Filter and opens the add-layer dialog', async ({ page }) => {
         await bootBlank(page)
-        const title = page.getByRole('button', { name: 'filter', exact: true })
-        const dropdown = page.locator('#filterMenuItems')
+        const title = page.getByRole('menuitem', { name: 'filter', exact: true })
+        const dropdown = page.locator('#filterMenu .hf-menubar-panel')
 
         await title.click()
         await page.locator('#filterMoreMenuItem').click()
@@ -797,8 +794,8 @@ test.describe('Filter menu', () => {
 
     test('more participates in Filter keyboard navigation and activation', async ({ page }) => {
         await bootBlank(page)
-        const title = page.getByRole('button', { name: 'filter', exact: true })
-        const dropdown = page.locator('#filterMenuItems')
+        const title = page.getByRole('menuitem', { name: 'filter', exact: true })
+        const dropdown = page.locator('#filterMenu .hf-menubar-panel')
         const tile = dropdown.getByRole('menuitem', { name: 'tile', exact: true })
         const more = dropdown.getByRole('menuitem', { name: 'more...', exact: true })
 
@@ -811,9 +808,14 @@ test.describe('Filter menu', () => {
             await page.keyboard.press('ArrowDown')
             await expect(more).toBeFocused()
 
+            // ArrowRight on a non-submenu item follows the ARIA menubar
+            // pattern: the next top-level menu opens; ArrowLeft steps back.
             await page.keyboard.press('ArrowRight')
-            await expect(more).toBeFocused()
+            await expect(dropdown).toBeHidden()
+            await page.keyboard.press('ArrowLeft')
             await expect(dropdown).toBeVisible()
+            await page.keyboard.press('ArrowUp')
+            await expect(more).toBeFocused()
             await expect(page.locator('.add-layer-dialog')).not.toBeVisible()
 
             await page.keyboard.press(activationKey)

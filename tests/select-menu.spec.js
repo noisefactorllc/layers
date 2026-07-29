@@ -23,16 +23,7 @@ async function setRectSelection(page, x, y, w, h) {
 async function openSelectMenu(page) {
     // The Select menu dropdown is hidden by default (.hide class).
     // We need to click its title to reveal the menu items.
-    await page.evaluate(() => {
-        const menus = document.querySelectorAll('.menu')
-        for (const menu of menus) {
-            const title = menu.querySelector('.menu-title')
-            if (title && title.textContent.trim() === 'select') {
-                menu.querySelector('.menu-items')?.classList.remove('hide')
-                return
-            }
-        }
-    })
+    await page.locator('#menu .hf-menubar-trigger', { hasText: 'select' }).click()
     await page.waitForTimeout(50)
 }
 
@@ -180,7 +171,7 @@ test.describe('Select Menu', () => {
                 'expandSelectionMenuItem', 'contractSelectionMenuItem',
                 'featherSelectionMenuItem'
             ]
-            return ids.every(id => document.getElementById(id)?.classList.contains('disabled'))
+            return ids.every(id => document.getElementById(id)?.getAttribute('aria-disabled') === 'true')
         })
         expect(disabled).toBe(true)
     })
@@ -196,7 +187,7 @@ test.describe('Select Menu', () => {
                 'expandSelectionMenuItem', 'contractSelectionMenuItem',
                 'featherSelectionMenuItem'
             ]
-            return ids.every(id => !document.getElementById(id)?.classList.contains('disabled'))
+            return ids.every(id => document.getElementById(id)?.getAttribute('aria-disabled') !== 'true')
         })
         expect(enabled).toBe(true)
     })

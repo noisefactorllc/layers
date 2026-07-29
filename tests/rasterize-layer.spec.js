@@ -41,7 +41,7 @@ test.describe('Layer menu - rasterize layer', () => {
         // Verify menu shows "rasterize layer" and is enabled
         const menuText = await page.locator('#layerActionMenuItem').textContent()
         expect(menuText).toBe('rasterize layer')
-        const isDisabled = await page.locator('#layerActionMenuItem').evaluate(el => el.classList.contains('disabled'))
+        const isDisabled = await page.locator('#layerActionMenuItem').evaluate(el => el.getAttribute('aria-disabled') === 'true')
         expect(isDisabled).toBe(false)
 
         // Trigger rasterize layer operation (simulates clicking "rasterize layer" menu item)
@@ -262,7 +262,7 @@ test.describe('Layer menu - rasterize layer', () => {
         // Verify menu shows "rasterize layer" but is disabled
         const menuText = await page.locator('#layerActionMenuItem').textContent()
         expect(menuText).toBe('rasterize layer')
-        const isDisabled = await page.locator('#layerActionMenuItem').evaluate(el => el.classList.contains('disabled'))
+        const isDisabled = await page.locator('#layerActionMenuItem').evaluate(el => el.getAttribute('aria-disabled') === 'true')
         expect(isDisabled).toBe(true)
     })
 })

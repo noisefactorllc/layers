@@ -1,10 +1,9 @@
 import { test, expect } from 'playwright/test'
 
 async function openFileMenuItem(page, menuItemId) {
-    const fileMenu = page.locator('.menu').nth(1)
-    await fileMenu.locator('.menu-title').click()
-    await fileMenu.locator('.menu-items:not(.hide)').waitFor({ state: 'visible' })
-    await fileMenu.locator(`#${menuItemId}`).click()
+    await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
+    await page.locator(`#menu #${menuItemId}`).waitFor({ state: 'visible' })
+    await page.locator(`#menu #${menuItemId}`).click()
 }
 
 async function createSolidProject(page) {
