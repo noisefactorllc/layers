@@ -1204,7 +1204,10 @@ class LayersApp {
             onError: (err) => {
                 console.error('[Layers] Render error:', err)
                 toast.error('Render error: ' + err.message)
-            }
+            },
+            // "Compiling shaders..." overlay over the canvas while a real
+            // (non-deduped) shader compile is in flight, a la noisedeck.
+            onCompileStateChange: (compiling) => this._setCompileOverlay(compiling)
         })
 
         // Initialize renderer
@@ -3512,6 +3515,23 @@ class LayersApp {
     /** Render all pending uniform updates before reading the visible canvas. @private */
     _renderCurrentFrame() {
         this._renderer.render(this._renderer.getPausedNormalizedTime())
+    }
+
+    /**
+     * Show/hide the "Compiling shaders..." overlay over the canvas. Driven by
+     * the renderer's onCompileStateChange, which only fires for legitimate
+     * shader compiles — uniform-only param updates and deduped rebuilds never
+     * touch it.
+     * @param {boolean} compiling
+     * @private
+     */
+    _setCompileOverlay(compiling) {
+        if (!this._compileOverlay) {
+            this._compileOverlay = document.getElementById('compile-overlay')
+            if (!this._compileOverlay) return
+        }
+        this._compileOverlay.classList.toggle('visible', compiling)
+        this._compileOverlay.setAttribute('aria-hidden', String(!compiling))
     }
 
     /**

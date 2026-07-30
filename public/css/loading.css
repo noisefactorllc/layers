@@ -125,3 +125,53 @@
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+/* =========================================================================
+   Shader Compile Overlay (a la Noisedeck's "compiling shaders..." status)
+   Shown over the canvas while the renderer is legitimately recompiling.
+   ========================================================================= */
+
+#compile-overlay {
+    grid-area: 1 / 1;
+    place-self: stretch;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    background: rgba(0, 0, 0, 0.25);
+    opacity: 0;
+    /* Hide immediately when a compile finishes */
+    transition: opacity 0.15s ease-out;
+}
+
+#compile-overlay.visible {
+    opacity: 1;
+    /* Short show delay so sub-100ms compiles (e.g. dragging a define-backed
+       param, which recompiles per step) don't strobe the overlay */
+    transition-delay: 0.12s;
+}
+
+.compile-overlay-badge {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    font-family: var(--font-body);
+    font-size: 13px;
+    color: var(--hf-color-7);
+    background: color-mix(in srgb, var(--hf-color-2) var(--hf-panel-opacity), transparent var(--hf-panel-transparency));
+    border: 1px solid var(--hf-color-3);
+    border-radius: var(--hf-radius-lg);
+    box-shadow: var(--hf-shadow-lg);
+}
+
+.compile-overlay-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-top-color: var(--hf-accent-3);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}

@@ -127,6 +127,54 @@ function extractEffectIdsFromDsl(dsl, manifest) {
 const VOLUME_IDENTIFIERS = Array.from({ length: 8 }, (_, index) => `vol${index}`)
 const GEOMETRY_IDENTIFIERS = Array.from({ length: 8 }, (_, index) => `geo${index}`)
 
+/**
+ * Imported-media size caps, mirroring noisedeck's free-tier capResolution()
+ * split: square sources get one cap, rectangular sources get orientation-
+ * aware long/short-side caps (1080p here). An imported image becomes both a
+ * GPU texture and — for new projects — the canvas size, so unbounded photo
+ * dimensions multiply every shader pass's cost and swamp the GPU.
+ */
+const MAX_MEDIA_SQUARE = 2048
+const MAX_MEDIA_RECT_LONG = 1920
+const MAX_MEDIA_RECT_SHORT = 1080
+
+/**
+ * Clamp media dimensions to the import caps, preserving aspect ratio.
+ * Square: max 2048×2048. Rectangular: long side max 1920, short side max
+ * 1080, scaled by a single factor (unlike noisedeck's per-dimension export
+ * clamp — imported photos must not distort).
+ *
+ * @param {number} width
+ * @param {number} height
+ * @returns {{width: number, height: number}}
+ */
+export function clampMediaDimensions(width, height) {
+    // Degenerate inputs pass through untouched — downstream dimension
+    // validation (_handleOpenMedia / _validatePreparedMediaResource) owns
+    // rejecting them; clamping garbage would only mask the real failure.
+    if (!Number.isFinite(width) || !Number.isFinite(height)
+        || width < 1 || height < 1) {
+        return { width, height }
+    }
+
+    if (width === height) {
+        if (width <= MAX_MEDIA_SQUARE) return { width, height }
+        return { width: MAX_MEDIA_SQUARE, height: MAX_MEDIA_SQUARE }
+    }
+
+    const isLandscape = width >= height
+    const maxWidth = isLandscape ? MAX_MEDIA_RECT_LONG : MAX_MEDIA_RECT_SHORT
+    const maxHeight = isLandscape ? MAX_MEDIA_RECT_SHORT : MAX_MEDIA_RECT_LONG
+
+    const scale = Math.min(maxWidth / width, maxHeight / height, 1)
+    if (scale >= 1) return { width, height }
+
+    return {
+        width: Math.max(1, Math.round(width * scale)),
+        height: Math.max(1, Math.round(height * scale)),
+    }
+}
+
 function getDeclaredDslIdentifierValues(spec) {
     if (spec?.type === 'member') {
         if (typeof spec.enum !== 'string' || !DSL_IDENTIFIER_PATTERN.test(spec.enum)) {
@@ -179,6 +227,13 @@ export class LayersRenderer {
         // has fire-and-forget rebuild call sites, so overlapping calls would
         // otherwise interleave their compile + post-compile steps.
         this._compileTail = Promise.resolve()
+        // Notified with true when a real shader compile starts and false when
+        // it settles (see _loadAndCompile). Rebuilds that dedup to a no-op
+        // never reach it, so the app's "Compiling shaders..." overlay only
+        // shows for legitimate recompiles.
+        this.onCompileStateChange = options.onCompileStateChange || null
+        this._compileDepth = 0
+        this._compileNotified = false
         // A staged project swap retains the previous renderer state until the
         // app synchronously commits or explicitly rolls it back. Ordinary
         // setLayers() calls wait here so they cannot overwrite a staged map.
@@ -695,21 +750,46 @@ export class LayersRenderer {
      * @private
      */
     async _loadAndCompile(dsl) {
-        const effectData = extractEffectIdsFromDsl(dsl, this._renderer.manifest || {})
-        const registeredEffects = getAllEffects()
+        this._notifyCompileState(1)
+        try {
+            const effectData = extractEffectIdsFromDsl(dsl, this._renderer.manifest || {})
+            const registeredEffects = getAllEffects()
 
-        const effectIdsToLoad = effectData
-            .map(e => e.effectId)
-            .filter(id => {
-                const dotKey = id.replace('/', '.')
-                return !registeredEffects.has(id) && !registeredEffects.has(dotKey)
-            })
+            const effectIdsToLoad = effectData
+                .map(e => e.effectId)
+                .filter(id => {
+                    const dotKey = id.replace('/', '.')
+                    return !registeredEffects.has(id) && !registeredEffects.has(dotKey)
+                })
 
-        if (effectIdsToLoad.length > 0) {
-            await this._renderer.loadEffects(effectIdsToLoad)
+            if (effectIdsToLoad.length > 0) {
+                await this._renderer.loadEffects(effectIdsToLoad)
+            }
+
+            await this._renderer.compile(dsl)
+        } finally {
+            this._notifyCompileState(-1)
         }
+    }
 
-        await this._renderer.compile(dsl)
+    /**
+     * Track in-flight compile depth and edge-notify onCompileStateChange.
+     * Compiles are serialized, but the depth counter keeps the callback
+     * correct even if that ever changes; callback errors must never break
+     * the compile path.
+     * @param {1|-1} delta
+     * @private
+     */
+    _notifyCompileState(delta) {
+        this._compileDepth = Math.max(0, this._compileDepth + delta)
+        const compiling = this._compileDepth > 0
+        if (compiling === this._compileNotified) return
+        this._compileNotified = compiling
+        try {
+            this.onCompileStateChange?.(compiling)
+        } catch (err) {
+            console.warn('[LayersRenderer] onCompileStateChange callback failed:', err)
+        }
     }
 
     buildDslFromLayers(layers) {
@@ -1154,6 +1234,35 @@ export class LayersRenderer {
             }
             const width = img.naturalWidth || img.width
             const height = img.naturalHeight || img.height
+
+            // Downscale oversized imports (aspect preserved) so a large photo
+            // can't swamp the GPU as a texture — or, via _handleOpenMedia,
+            // as the canvas size. Same drawImage pattern as noisedeck's
+            // capCanvas(); the decoded full-size Image is dropped after the
+            // scale so only the clamped canvas is retained.
+            const clamped = clampMediaDimensions(width, height)
+            if (clamped.width !== width || clamped.height !== height) {
+                const scaledCanvas = document.createElement('canvas')
+                scaledCanvas.width = clamped.width
+                scaledCanvas.height = clamped.height
+                const ctx = scaledCanvas.getContext('2d')
+                if (!ctx) {
+                    URL.revokeObjectURL(url)
+                    throw new Error('Could not allocate a canvas to downscale oversized media')
+                }
+                // Default smoothing quality is "low" — a big single-step
+                // photo downscale looks visibly worse without this.
+                ctx.imageSmoothingQuality = 'high'
+                ctx.drawImage(img, 0, 0, clamped.width, clamped.height)
+                URL.revokeObjectURL(url) // full-size source no longer needed
+                return {
+                    type: 'image',
+                    element: scaledCanvas,
+                    width: clamped.width,
+                    height: clamped.height
+                }
+            }
+
             return { type: 'image', element: img, url, width, height }
         }
 
