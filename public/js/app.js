@@ -12,6 +12,7 @@ import {
     createChildEffect,
     createDrawingLayer,
     decodeMasks,
+    cloneMask,
     bumpLayerCounter,
 } from './layers/layer-model.js'
 import './layers/layer-stack.js'
@@ -204,10 +205,7 @@ class LayersApp {
                 children: (l.children || []).map(c => ({
                     ...c,
                     effectParams: JSON.parse(JSON.stringify(c.effectParams)),
-                    mask: c.mask
-                        ? new ImageData(new Uint8ClampedArray(c.mask.data),
-                            c.mask.width, c.mask.height)
-                        : c.mask
+                    mask: cloneMask(c.mask)
                 }))
             }
             if (l.sourceType === 'drawing') {
@@ -215,10 +213,7 @@ class LayersApp {
                 clone.drawingCanvas = null
             }
             if (l.mask) {
-                clone.mask = new ImageData(
-                    new Uint8ClampedArray(l.mask.data),
-                    l.mask.width, l.mask.height
-                )
+                clone.mask = cloneMask(l.mask)
             }
             return clone
         })
@@ -2554,7 +2549,9 @@ class LayersApp {
     /**
      * The layer an effect being applied right now targets: the single layer
      * selected in the layer stack (resolving a selected child effect to its
-     * parent). Null when zero or several layers are selected.
+     * parent). Null when zero or several layers are selected — with multiple
+     * layers selected there is no unambiguous mask to intersect, so only the
+     * marquee constrains the effect.
      * @returns {object|null}
      * @private
      */
@@ -2723,6 +2720,41 @@ class LayersApp {
     }
 
     /**
+     * Delete a child effect's mask (captured from the marquee at apply
+     * time), un-confining the effect. Children have no edit mode or enable
+     * toggle, so this is the only mask mutation they support.
+     * @param {string} childId
+     */
+    async _deleteChildEffectMask(childId) {
+        const parent = this._layers.find(l =>
+            l.children?.some(c => c.id === childId))
+        const child = parent?.children.find(c => c.id === childId)
+        if (!child?.mask) return
+
+        const previousMask = child.mask
+        const hadTexture = this._renderer._maskTextures.has(childId)
+        const previousTexture = this._renderer._maskTextures.get(childId)
+        const outcome = await this._commitModelMutation(() => {
+            child.mask = null
+        }, {
+            updateLayerStack: true,
+            restore: async () => {
+                child.mask = previousMask
+                if (hadTexture) {
+                    this._renderer._maskTextures.set(childId, previousTexture)
+                }
+            },
+        })
+        if (outcome.status !== 'committed') return outcome
+        try {
+            toast.info('Effect mask deleted')
+        } catch (err) {
+            console.error('[Layers] Failed to show mask deletion notice:', err)
+        }
+        return outcome
+    }
+
+    /**
      * Invert a layer's mask (swap black/white).
      * @param {string} layerId
      */
@@ -2873,13 +2905,24 @@ class LayersApp {
         if (!menu) return
 
         const layer = this._layers.find(l => l.id === layerId)
-        if (!layer) return
+        // Child-effect masks support deletion only — no edit mode, rubylith,
+        // enable toggle, or shape ops. Reduce the menu to Delete Mask.
+        const isChildMask = !layer
+            && this._layers.some(l => l.children?.some(c => c.id === layerId))
+        if (!layer && !isChildMask) return
 
         this._closeContextMenus()
 
+        for (const item of menu.querySelectorAll('[data-action]')) {
+            const childAllowed = item.dataset.action === 'delete'
+            item.classList.toggle('hidden', isChildMask && !childAllowed)
+        }
+        const separator = menu.querySelector('.menu-seperator')
+        if (separator) separator.classList.toggle('hidden', isChildMask)
+
         // Update disable/enable text
         const disableItem = menu.querySelector('[data-action="disable"]')
-        if (disableItem) {
+        if (disableItem && layer) {
             disableItem.textContent = layer.maskEnabled ? 'Disable Mask' : 'Enable Mask'
         }
 
@@ -2902,6 +2945,10 @@ class LayersApp {
             this._closeContextMenus()
 
             await this._runPointerMutation(async () => {
+                if (isChildMask) {
+                    if (action === 'delete') await this._deleteChildEffectMask(layerId)
+                    return
+                }
                 switch (action) {
                     case 'invert': await this._invertLayerMask(layerId); break
                     case 'feather': await this._featherLayerMask(layerId); break
@@ -3148,10 +3195,13 @@ class LayersApp {
         // An active marquee selection is captured as the child's own mask so
         // the effect never alters pixels outside it. (The parent's layer mask
         // already confines the child at composite time, so only the selection
-        // is captured.) Child masks aren't in the collab wire schema, so
+        // is captured.) Content overlays (text) are exempt, matching the
+        // effect-layer path. Child masks aren't in the collab wire schema, so
         // online sessions skip the capture rather than render differently
         // from their peers.
-        if (!this._onlineAdapter?.isOnline()) {
+        if (this._isOverlayContentEffect(effectId)) {
+            // no capture
+        } else if (!this._onlineAdapter?.isOnline()) {
             const mask = this._captureEffectApplicationMask()
             if (mask) child.mask = mask
         } else if (this._selectionManager?.hasSelection()) {
@@ -6455,6 +6505,15 @@ class LayersApp {
                 if (layer.mask) {
                     candidate.maskTextures.set(
                         layer.id, this._renderer.prepareMaskTexture(layer.mask))
+                }
+                // Child-effect masks (captured from the marquee at apply
+                // time) survive the IDB save; without their textures the
+                // strict staging check rejects the whole project on load.
+                for (const child of layer.children || []) {
+                    if (child.mask) {
+                        candidate.maskTextures.set(
+                            child.id, this._renderer.prepareMaskTexture(child.mask))
+                    }
                 }
             }
 

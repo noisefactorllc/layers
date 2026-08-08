@@ -145,7 +145,7 @@ export function createChildEffect(effectId, name, params = {}) {
 }
 
 /** Deep-copy a mask ImageData (null/undefined pass through). */
-function cloneMask(mask) {
+export function cloneMask(mask) {
     if (!mask) return mask
     return new ImageData(
         new Uint8ClampedArray(mask.data), mask.width, mask.height)
@@ -170,10 +170,7 @@ export function cloneLayer(layer) {
         effectParams: JSON.parse(JSON.stringify(layer.effectParams)),
         strokes: layer.strokes ? JSON.parse(JSON.stringify(layer.strokes)) : layer.strokes,
         drawingCanvas: null,
-        mask: layer.mask ? new ImageData(
-            new Uint8ClampedArray(layer.mask.data),
-            layer.mask.width, layer.mask.height
-        ) : null,
+        mask: layer.mask ? cloneMask(layer.mask) : null,
         children: children.map((child, index) => ({
             ...child,
             id: ids[index + 1]

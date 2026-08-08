@@ -360,6 +360,47 @@ test('media gating: an existing media layer blocks take-online, and adding media
     expect((await layersState(page)).length).toBe(countBefore)
 })
 
+test('effect-mask gating: a masked child effect blocks take-online until its mask is deleted', async ({ page }) => {
+    await preparePage(page)
+    await gotoApp(page)
+    await createProject(page)
+
+    // A child effect added with an active marquee captures the selection as
+    // its mask. Child masks aren't in the wire schema, so this composition
+    // must be blocked from going online (peers would render it unmasked).
+    const childId = await page.evaluate(async () => {
+        const app = window.layersApp
+        const w = app._canvas.width
+        const h = app._canvas.height
+        app._selectionManager.setSelection(
+            { type: 'rect', x: 0, y: 0, width: w / 2, height: h })
+        await app._handleAddChildEffect(app._layers[0].id, 'filter/invert')
+        app._selectionManager.clearSelection()
+        return app._layers[0].children[0].id
+    })
+    expect(await page.evaluate(() =>
+        window.layersApp._layers[0].children[0].mask !== null)).toBe(true)
+
+    await openSeanceDialog(page)
+    await page.locator('#seanceDialog [data-action="take-online"]').click()
+    await expect(page.locator('.info-dialog-backdrop.visible')).toBeVisible()
+    await expect(page.locator('.info-dialog .info-message')).toContainText('effect')
+    await page.click('.info-dialog #info-ok')
+    await expect(page.locator('.info-dialog-backdrop.visible')).toHaveCount(0)
+    expect(await page.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('offline')
+
+    // Deleting the effect mask (the child-thumbnail menu action) unblocks
+    // take-online. The effect itself stays.
+    await page.evaluate(async (id) => {
+        await window.layersApp._deleteChildEffectMask(id)
+    }, childId)
+    expect(await page.evaluate(() =>
+        window.layersApp._layers[0].children[0].mask)).toBe(null)
+    await page.waitForTimeout(300)
+    await takeOnline(page)
+    expect(await page.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('online')
+})
+
 test('dialect refusal: joining a non-Layers session shows a friendly dialog and stays usable offline', async ({ page }) => {
     await preparePage(page)
     await page.goto(appPath())

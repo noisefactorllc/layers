@@ -587,6 +587,13 @@
     cursor: pointer;
 }
 
+/* Individual items hidden per-context (e.g. child-effect masks only
+   support Delete Mask) */
+.context-menu div.hidden,
+.context-menu hr.hidden {
+    display: none;
+}
+
 .context-menu div:hover {
     background-color: rgba(255, 255, 255, 0.08);
     color: var(--hf-accent-4);

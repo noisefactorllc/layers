@@ -1203,7 +1203,7 @@ export class LayersRenderer {
         if (strict) {
             for (const id of requiredMaskIds) {
                 if (!this._maskTextures.has(id)) {
-                    throw new Error(`No mask texture loaded for layer ${id}`)
+                    throw new Error(`No mask texture loaded for layer or child effect ${id}`)
                 }
             }
         }
@@ -1213,7 +1213,7 @@ export class LayersRenderer {
             const stepIndex = this._layerStepMap.get(`mask_${id}`)
             if (stepIndex === undefined) {
                 if (strict && requiredMaskIds.has(id)) {
-                    throw new Error(`Pipeline is missing the mask step for layer ${id}`)
+                    throw new Error(`Pipeline is missing the mask step for layer or child effect ${id}`)
                 }
                 continue
             }
@@ -1243,16 +1243,19 @@ export class LayersRenderer {
     }
 
     /**
-     * Get the set of media step indices used by mask textures.
+     * Get the set of media step indices used by masks (layer or child).
      * Used by _uploadMediaTextures and _updateVideoTextures to skip mask steps.
+     * Derived from the step map, not from _maskTextures: the step map is
+     * rebuilt from the layer model every rebuild, so a missing mask texture
+     * can't silently re-attribute the mask's media() step to a media layer
+     * (which would shift every subsequent media layer's texture).
      * @returns {Set<number>}
      * @private
      */
     _getMaskMediaStepIndices() {
         const indices = new Set()
-        for (const [layerId] of this._maskTextures) {
-            const stepIndex = this._layerStepMap.get(`mask_${layerId}`)
-            if (stepIndex !== undefined) {
+        for (const [key, stepIndex] of this._layerStepMap) {
+            if (typeof key === 'string' && key.startsWith('mask_')) {
                 indices.add(stepIndex)
             }
         }
@@ -1962,6 +1965,11 @@ export class LayersRenderer {
         for (const child of visibleChildren) {
             const effectCall = this._buildEffectCall(child)
             if (child.mask) {
+                // Note: the final composite's alpha is max(input, clipped fx)
+                // per the alphaMask shader, so an alpha-REDUCING child effect
+                // can't fully erase inside its mask — the original alpha wins
+                // proportionally to what the effect removed. Irrelevant for
+                // color filters, which preserve alpha.
                 const fxOutput = currentOutput + 1
                 const clippedOutput = currentOutput + 2
                 const composedOutput = currentOutput + 3

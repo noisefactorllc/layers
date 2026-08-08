@@ -123,7 +123,7 @@ class LayerItem extends HTMLElement {
                 <div class="layer-thumbnail">
                     <span class="icon-material">${iconName}</span>
                 </div>
-                ${layer.mask ? `<div class="layer-mask-thumbnail ${layer.maskVisible ? 'mask-visible' : ''} ${!layer.maskEnabled ? 'mask-disabled' : ''}" title="Click: edit mask | Right-click: mask options">
+                ${layer.mask ? `<div class="layer-mask-thumbnail ${layer.maskVisible ? 'mask-visible' : ''} ${(!this._isChild && !layer.maskEnabled) ? 'mask-disabled' : ''}" title="${this._isChild ? 'Effect mask (captured from selection) | Click: mask options' : 'Click: edit mask | Right-click: mask options'}">
                     <canvas class="mask-thumb-canvas" width="36" height="36"></canvas>
                 </div>` : ''}
                 <div class="layer-info">
@@ -245,7 +245,14 @@ class LayerItem extends HTMLElement {
             const maskThumb = e.target.closest('.layer-mask-thumbnail')
             if (maskThumb) {
                 e.stopPropagation()
-                if (e.shiftKey) {
+                if (this._isChild) {
+                    // Child-effect masks have no edit mode or rubylith —
+                    // every click opens the (reduced) mask options menu.
+                    this.dispatchEvent(new CustomEvent('mask-context-menu', {
+                        bubbles: true,
+                        detail: { layerId: this._layer.id, x: e.clientX, y: e.clientY }
+                    }))
+                } else if (e.shiftKey) {
                     // Shift+click: toggle rubylith overlay
                     this.dispatchEvent(new CustomEvent('mask-toggle-visible', {
                         bubbles: true,

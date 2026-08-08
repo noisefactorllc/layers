@@ -185,3 +185,66 @@ test.describe('Drawing texture cleanup', () => {
         expect(result.stillHasTexture).toBe(false)
     })
 })
+
+test.describe('Child-effect mask round-trip', () => {
+    // Regression: _loadProject prepared mask textures only for layer.mask.
+    // A project saved with a child-effect mask (captured from the marquee at
+    // apply time) survived the IDB save but failed the strict staging check
+    // on load — "Failed to load project" on every attempt.
+    test('project with a masked child effect saves, loads, and stays confined', async ({ page }) => {
+        await bootFromOpenDialog(page, 'solid')
+
+        await page.evaluate(async () => {
+            const app = window.layersApp
+            app._layers[0].effectParams = { color: [0.25, 0.25, 0.25], alpha: 1 }
+            await app._rebuild()
+            const w = app._canvas.width
+            const h = app._canvas.height
+            app._selectionManager.setSelection(
+                { type: 'rect', x: 0, y: 0, width: w / 2, height: h })
+            await app._handleAddChildEffect(app._layers[0].id, 'filter/invert')
+        })
+
+        const saved = await page.evaluate(() =>
+            window.LayersAgent.saveProjectAs({ name: 'child-mask-roundtrip' }))
+        expect(saved.ok).toBe(true)
+
+        // Fresh page -> empty renderer texture maps -> load must succeed and
+        // rebuild the child mask texture itself.
+        await reloadAndOpen(page, saved.result.projectId)
+
+        const state = await page.evaluate(() => {
+            const app = window.layersApp
+            const child = app._layers[0].children[0]
+            return {
+                maskIsImageData: child.mask instanceof ImageData,
+                textureLoaded: app._renderer._maskTextures.has(child.id),
+            }
+        })
+        expect(state.maskIsImageData).toBe(true)
+        expect(state.textureLoaded).toBe(true)
+
+        // Confinement must hold on the freshly loaded renderer.
+        await page.waitForTimeout(4000)
+        const pixels = await page.evaluate(() => {
+            const canvas = document.getElementById('canvas')
+            const gl = canvas.getContext('webgl2')
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+            const read = (x) => {
+                const p = new Uint8Array(4)
+                gl.readPixels(x, Math.floor(canvas.height / 2), 1, 1,
+                    gl.RGBA, gl.UNSIGNED_BYTE, p)
+                return Array.from(p)
+            }
+            return {
+                inside: read(Math.floor(canvas.width / 4)),
+                outside: read(Math.floor(canvas.width * 3 / 4)),
+            }
+        })
+        // Base is 0.25 gray (~64); inverted inside is ~191.
+        expect(Math.abs(pixels.inside[0] - 191) <= 6,
+            `inside pixel ${pixels.inside} not inverted`).toBe(true)
+        expect(Math.abs(pixels.outside[0] - 64) <= 6,
+            `outside pixel ${pixels.outside} not original`).toBe(true)
+    })
+})

@@ -947,6 +947,15 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         return (app._layers || []).some(l => l.sourceType === 'media')
     }
 
+    // Child-effect masks aren't in the wire schema, so publishing would strip
+    // them for peers while the host keeps rendering them — divergent frames,
+    // and the host's own mask is dropped after the first remote apply. Gate
+    // going online the same way media layers are gated.
+    function hasMaskedChildEffect() {
+        return (app._layers || []).some(l =>
+            (l.children || []).some(child => child.mask))
+    }
+
     async function showUnsupportedMediaMessage() {
         bestEffortSessionEffect('Failed to hide collaboration dialog for media warning',
             () => dialog?.hide?.())
@@ -956,6 +965,18 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             })
         } catch (err) {
             console.error('[Layers] Failed to show collaboration media warning:', err)
+        }
+    }
+
+    async function showUnsupportedChildMaskMessage() {
+        bestEffortSessionEffect('Failed to hide collaboration dialog for effect-mask warning',
+            () => dialog?.hide?.())
+        try {
+            await infoDialog.show({
+                message: 'This composition has an effect confined to a selection (an effect mask). Effect masks aren’t supported in shared sessions yet — delete the effect’s mask or the effect before going online.'
+            })
+        } catch (err) {
+            console.error('[Layers] Failed to show collaboration effect-mask warning:', err)
         }
     }
 
@@ -983,6 +1004,10 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             await showUnsupportedMediaMessage()
             return null
         }
+        if (hasMaskedChildEffect()) {
+            await showUnsupportedChildMaskMessage()
+            return null
+        }
         const transition = await prepareSessionTransition(
             () => intentGeneration === transitionIntentGeneration)
         if (intentGeneration !== transitionIntentGeneration) {
@@ -1001,6 +1026,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             if (hasMediaLayer()) {
                 abandonSessionTransition(transition.layer)
                 await showUnsupportedMediaMessage()
+                return null
+            }
+            if (hasMaskedChildEffect()) {
+                abandonSessionTransition(transition.layer)
+                await showUnsupportedChildMaskMessage()
                 return null
             }
             const { layer, previous } = transition

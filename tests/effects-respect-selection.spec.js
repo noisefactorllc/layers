@@ -328,8 +328,11 @@ test.describe('Effects respect selection marquee and layer mask', () => {
         // The rendered composite must track the ramp: sample the midpoint of
         // the outside half of the band; it must sit between the extremes,
         // not at either (which is what a hard edge produces).
-        const rendered = await page.evaluate(async ([y]) => {
-            await new Promise(resolve => setTimeout(resolve, 5000))
+        await expect.poll(async () => (await samplePixel(page, 360, midY))[0], {
+            timeout: 20000,
+            message: 'deep-inside pixel never rendered the inverted value',
+        }).toBeGreaterThan(170)
+        const rendered = await page.evaluate(([y]) => {
             const canvas = document.getElementById('canvas')
             const gl = canvas.getContext('webgl2')
             gl.bindFramebuffer(gl.FRAMEBUFFER, null)
@@ -373,6 +376,47 @@ test.describe('Effects respect selection marquee and layer mask', () => {
 
         expect(result.hasMask).toBe(true)
         expect(result.maskEnabled).toBe(true)
+        expect(result.insideValue).toBe(255)
+        expect(result.outsideValue).toBe(0)
+    })
+
+    // Pins the R-channel convention the capture relies on: wand masks carry
+    // their value in RGB (and A), and the capture reads R.
+    test('wand selection is captured with its value channel intact', async ({ page }) => {
+        const { width, height } = await bootSolidProject(page)
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const w = app._canvas.width
+            const h = app._canvas.height
+            const wandMask = new ImageData(w, h)
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const i = (y * w + x) * 4
+                    const v = x < w / 2 ? 255 : 0
+                    wandMask.data[i] = v
+                    wandMask.data[i + 1] = v
+                    wandMask.data[i + 2] = v
+                    wandMask.data[i + 3] = v
+                }
+            }
+            app._selectionManager.setSelection({ type: 'wand', mask: wandMask })
+            await app._handleAddEffectLayer('filter/invert', { name: 'invert' })
+            const layer = app._layers[app._layers.length - 1]
+            if (!layer.mask) return null
+            const mid = Math.floor(layer.mask.height / 2)
+            const at = x => layer.mask.data[(mid * layer.mask.width + x) * 4]
+            return {
+                insideValue: at(Math.floor(w / 4)),
+                outsideValue: at(Math.floor(w * 3 / 4)),
+                width: layer.mask.width,
+                height: layer.mask.height,
+            }
+        })
+
+        expect(result, 'no mask captured from wand selection').not.toBeNull()
+        expect(result.width).toBe(width)
+        expect(result.height).toBe(height)
         expect(result.insideValue).toBe(255)
         expect(result.outsideValue).toBe(0)
     })
