@@ -144,6 +144,13 @@ export function createChildEffect(effectId, name, params = {}) {
     }
 }
 
+/** Deep-copy a mask ImageData (null/undefined pass through). */
+function cloneMask(mask) {
+    if (!mask) return mask
+    return new ImageData(
+        new Uint8ClampedArray(mask.data), mask.width, mask.height)
+}
+
 /**
  * Clone a layer with a new ID
  * @param {object} layer - Layer to clone
@@ -152,7 +159,8 @@ export function createChildEffect(effectId, name, params = {}) {
 export function cloneLayer(layer) {
     const children = (layer.children || []).map(child => ({
         ...child,
-        effectParams: JSON.parse(JSON.stringify(child.effectParams))
+        effectParams: JSON.parse(JSON.stringify(child.effectParams)),
+        mask: cloneMask(child.mask)
     }))
     const ids = allocateLayerIds(1 + children.length)
     return {
@@ -173,6 +181,15 @@ export function cloneLayer(layer) {
     }
 }
 
+/** Encode a mask ImageData as a base64 PNG data URL. */
+function encodeMaskToDataUrl(mask) {
+    const canvas = document.createElement('canvas')
+    canvas.width = mask.width
+    canvas.height = mask.height
+    canvas.getContext('2d').putImageData(mask, 0, 0)
+    return canvas.toDataURL('image/png')
+}
+
 /**
  * Serialize layers for storage
  * @param {Array} layers - Layer array
@@ -185,13 +202,16 @@ export function serializeLayers(layers) {
             mediaFile: null,
             drawingCanvas: undefined
         }
-        // Encode mask ImageData as base64 PNG
+        // Encode mask ImageData as base64 PNG. ImageData does not survive
+        // JSON.stringify (it flattens to {}), so child masks must be encoded
+        // here too, not just the layer's own mask.
         if (layer.mask) {
-            const canvas = document.createElement('canvas')
-            canvas.width = layer.mask.width
-            canvas.height = layer.mask.height
-            canvas.getContext('2d').putImageData(layer.mask, 0, 0)
-            serialized.mask = canvas.toDataURL('image/png')
+            serialized.mask = encodeMaskToDataUrl(layer.mask)
+        }
+        if ((layer.children || []).some(child => child.mask)) {
+            serialized.children = layer.children.map(child => child.mask
+                ? { ...child, mask: encodeMaskToDataUrl(child.mask) }
+                : child)
         }
         return serialized
     })
@@ -224,56 +244,65 @@ export async function decodeMasks(layers, {
     expectedWidth = null,
     expectedHeight = null,
 } = {}) {
+    const decodeOne = async (maskString) => {
+        const prefix = 'data:image/png;base64,'
+        if (!maskString.startsWith(prefix)) {
+            throw new Error('Saved mask PNG header is invalid')
+        }
+        let header
+        try {
+            header = atob(maskString.slice(prefix.length, prefix.length + 32))
+        } catch {
+            throw new Error('Saved mask PNG header is invalid')
+        }
+        const signature = [137, 80, 78, 71, 13, 10, 26, 10,
+            0, 0, 0, 13, 73, 72, 68, 82]
+        if (header.length < 24 || signature.some((byte, index) =>
+            header.charCodeAt(index) !== byte)) {
+            throw new Error('Saved mask PNG header is invalid')
+        }
+        const uint32 = (offset) => (
+            header.charCodeAt(offset) * 0x1000000
+            + header.charCodeAt(offset + 1) * 0x10000
+            + header.charCodeAt(offset + 2) * 0x100
+            + header.charCodeAt(offset + 3)
+        )
+        const width = uint32(16)
+        const height = uint32(20)
+        if (!Number.isSafeInteger(width) || width < 1 || width > maxWidth
+            || !Number.isSafeInteger(height) || height < 1 || height > maxHeight
+            || width * height > maxPixels) {
+            throw new Error('Saved mask dimensions exceed the project canvas')
+        }
+        if ((expectedWidth !== null && width !== expectedWidth)
+            || (expectedHeight !== null && height !== expectedHeight)) {
+            throw new Error('Saved mask dimensions do not match the project canvas')
+        }
+        const img = new Image()
+        await new Promise((resolve, reject) => {
+            img.onload = resolve
+            img.onerror = reject
+            img.src = maskString
+        })
+        if (img.width !== width || img.height !== height) {
+            throw new Error('Saved mask dimensions do not match its PNG header')
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        return ctx.getImageData(0, 0, img.width, img.height)
+    }
+
     for (const layer of layers) {
         if (typeof layer.mask === 'string') {
-            const prefix = 'data:image/png;base64,'
-            if (!layer.mask.startsWith(prefix)) {
-                throw new Error('Saved mask PNG header is invalid')
+            layer.mask = await decodeOne(layer.mask)
+        }
+        for (const child of layer.children || []) {
+            if (typeof child.mask === 'string') {
+                child.mask = await decodeOne(child.mask)
             }
-            let header
-            try {
-                header = atob(layer.mask.slice(prefix.length, prefix.length + 32))
-            } catch {
-                throw new Error('Saved mask PNG header is invalid')
-            }
-            const signature = [137, 80, 78, 71, 13, 10, 26, 10,
-                0, 0, 0, 13, 73, 72, 68, 82]
-            if (header.length < 24 || signature.some((byte, index) =>
-                header.charCodeAt(index) !== byte)) {
-                throw new Error('Saved mask PNG header is invalid')
-            }
-            const uint32 = (offset) => (
-                header.charCodeAt(offset) * 0x1000000
-                + header.charCodeAt(offset + 1) * 0x10000
-                + header.charCodeAt(offset + 2) * 0x100
-                + header.charCodeAt(offset + 3)
-            )
-            const width = uint32(16)
-            const height = uint32(20)
-            if (!Number.isSafeInteger(width) || width < 1 || width > maxWidth
-                || !Number.isSafeInteger(height) || height < 1 || height > maxHeight
-                || width * height > maxPixels) {
-                throw new Error('Saved mask dimensions exceed the project canvas')
-            }
-            if ((expectedWidth !== null && width !== expectedWidth)
-                || (expectedHeight !== null && height !== expectedHeight)) {
-                throw new Error('Saved mask dimensions do not match the project canvas')
-            }
-            const img = new Image()
-            await new Promise((resolve, reject) => {
-                img.onload = resolve
-                img.onerror = reject
-                img.src = layer.mask
-            })
-            if (img.width !== width || img.height !== height) {
-                throw new Error('Saved mask dimensions do not match its PNG header')
-            }
-            const canvas = document.createElement('canvas')
-            canvas.width = img.width
-            canvas.height = img.height
-            const ctx = canvas.getContext('2d')
-            ctx.drawImage(img, 0, 0)
-            layer.mask = ctx.getImageData(0, 0, img.width, img.height)
         }
     }
 }

@@ -845,6 +845,12 @@ export class LayersRenderer {
                 if (childEffectName) {
                     mapStepIndex(child.id, childEffectName)
                 }
+                // A masked child emits its mask's media() call immediately
+                // after its effect call, so map it here to keep the media
+                // occurrence count aligned with DSL generation order.
+                if (child.mask) {
+                    mapStepIndex(`mask_${child.id}`, 'media')
+                }
             }
 
             // Map mask media step — the media() call inside alphaMask(tex: media(), ...)
@@ -1151,35 +1157,63 @@ export class LayersRenderer {
     /**
      * Upload mask textures to their corresponding media step texture slots.
      * Each mask uses a media() call in the DSL, tracked in _layerStepMap
-     * with the key `mask_${layerId}`.
+     * with the key `mask_${id}` — ids are top-level layers or child effects.
+     * Also the single chokepoint that prunes textures whose owning layer or
+     * child no longer exists (deleted, flattened, replaced), mirroring the
+     * text-canvas prune.
      * @private
      */
     _uploadMaskTextures({ strict = false } = {}) {
-        const visibleMaskedLayers = this._layers.filter(layer =>
-            layer.visible && layer.mask && layer.maskEnabled !== false)
+        // Ids that must render a mask this rebuild: visible layers with an
+        // enabled mask, and visible masked children of visible layers.
+        const requiredMaskIds = new Set()
+        // Ids that may legitimately hold a texture while not rendering
+        // (hidden layer/child, disabled mask): kept for cheap re-enable.
+        const liveMaskIds = new Set()
+        for (const layer of this._layers) {
+            if (layer.mask) {
+                liveMaskIds.add(layer.id)
+                if (layer.visible && layer.maskEnabled !== false) {
+                    requiredMaskIds.add(layer.id)
+                }
+            }
+            for (const child of (layer.children || [])) {
+                if (!child.mask) continue
+                liveMaskIds.add(child.id)
+                if (layer.visible && child.visible) {
+                    requiredMaskIds.add(child.id)
+                }
+            }
+        }
+
+        for (const id of this._maskTextures.keys()) {
+            if (!liveMaskIds.has(id)) {
+                this._maskTextures.delete(id)
+            }
+        }
+
         const passes = this._renderer.pipeline?.graph?.passes
         if (!passes) {
-            if (strict && visibleMaskedLayers.length > 0) {
+            if (strict && requiredMaskIds.size > 0) {
                 throw new Error('No pipeline graph available for mask textures')
             }
             return
         }
 
         if (strict) {
-            for (const layer of visibleMaskedLayers) {
-                if (!this._maskTextures.has(layer.id)) {
-                    throw new Error(`No mask texture loaded for layer ${layer.id}`)
+            for (const id of requiredMaskIds) {
+                if (!this._maskTextures.has(id)) {
+                    throw new Error(`No mask texture loaded for layer ${id}`)
                 }
             }
         }
 
-        for (const [layerId, maskData] of this._maskTextures) {
-            const maskStepKey = `mask_${layerId}`
-            const stepIndex = this._layerStepMap.get(maskStepKey)
+        const stepParameterValues = {}
+        for (const [id, maskData] of this._maskTextures) {
+            const stepIndex = this._layerStepMap.get(`mask_${id}`)
             if (stepIndex === undefined) {
-                const layer = this._layers.find(item => item.id === layerId)
-                if (strict && layer?.visible && layer.maskEnabled !== false) {
-                    throw new Error(`Pipeline is missing the mask step for layer ${layerId}`)
+                if (strict && requiredMaskIds.has(id)) {
+                    throw new Error(`Pipeline is missing the mask step for layer ${id}`)
                 }
                 continue
             }
@@ -1187,10 +1221,24 @@ export class LayersRenderer {
             const textureId = `imageTex_step_${stepIndex}`
             try {
                 this._renderer.updateTextureFromSource?.(textureId, maskData.element, { flipY: false })
+                // The media shader sizes and anchors its content from the
+                // imageSize uniform (default 1024x1024). Without the mask's
+                // real dimensions, any non-square canvas renders the mask
+                // squished and displaced — the masked region no longer
+                // matches the pixels the user selected or painted.
+                if (maskData.width > 0 && maskData.height > 0) {
+                    stepParameterValues[`step_${stepIndex}`] = {
+                        imageSize: [maskData.width, maskData.height]
+                    }
+                }
             } catch (err) {
                 if (strict) throw err
-                console.warn(`[LayersRenderer] Failed to upload mask texture for ${layerId}:`, err)
+                console.warn(`[LayersRenderer] Failed to upload mask texture for ${id}:`, err)
             }
+        }
+
+        if (Object.keys(stepParameterValues).length > 0) {
+            this._renderer.applyStepParameterValues?.(stepParameterValues)
         }
     }
 
@@ -1897,6 +1945,12 @@ export class LayersRenderer {
 
     /**
      * Build DSL lines for a layer's visible child effects.
+     *
+     * A child carrying its own mask (captured from the marquee selection at
+     * apply time) must not alter pixels outside that mask: the effected
+     * frame's alpha is clipped to the mask, then composited back over the
+     * unaffected input (alphaMask mix:0 is Porter-Duff tex-over-input), so
+     * outside the mask the input passes through untouched.
      * @param {object} layer - Parent layer
      * @param {number} currentOutput - Current output buffer index
      * @param {string[]} lines - DSL lines array to append to
@@ -1907,9 +1961,19 @@ export class LayersRenderer {
         const visibleChildren = (layer.children || []).filter(c => c.visible)
         for (const child of visibleChildren) {
             const effectCall = this._buildEffectCall(child)
-            const nextOutput = currentOutput + 1
-            lines.push(`read(o${currentOutput}).${effectCall}.write(o${nextOutput})`)
-            currentOutput = nextOutput
+            if (child.mask) {
+                const fxOutput = currentOutput + 1
+                const clippedOutput = currentOutput + 2
+                const composedOutput = currentOutput + 3
+                lines.push(`read(o${currentOutput}).${effectCall}.write(o${fxOutput})`)
+                lines.push(`read(o${fxOutput}).alphaMask(tex: media(), maskMode: 1).write(o${clippedOutput})`)
+                lines.push(`read(o${currentOutput}).alphaMask(tex: read(o${clippedOutput}), mix: 0).write(o${composedOutput})`)
+                currentOutput = composedOutput
+            } else {
+                const nextOutput = currentOutput + 1
+                lines.push(`read(o${currentOutput}).${effectCall}.write(o${nextOutput})`)
+                currentOutput = nextOutput
+            }
         }
         return currentOutput
     }

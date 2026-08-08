@@ -203,7 +203,11 @@ class LayersApp {
                 effectParams: JSON.parse(JSON.stringify(l.effectParams)),
                 children: (l.children || []).map(c => ({
                     ...c,
-                    effectParams: JSON.parse(JSON.stringify(c.effectParams))
+                    effectParams: JSON.parse(JSON.stringify(c.effectParams)),
+                    mask: c.mask
+                        ? new ImageData(new Uint8ClampedArray(c.mask.data),
+                            c.mask.width, c.mask.height)
+                        : c.mask
                 }))
             }
             if (l.sourceType === 'drawing') {
@@ -856,6 +860,21 @@ class LayersApp {
                     if (texture) maskTextures.set(layer.id, texture)
                 } else if (layer.mask) {
                     maskTextures.set(layer.id, this._renderer.prepareMaskTexture(layer.mask))
+                }
+
+                // Child effects carry their own masks (captured from the
+                // marquee selection at apply time) and share the layer mask
+                // texture pipeline, keyed by child id.
+                for (const child of layer.children || []) {
+                    if (maskOverrides.has(child.id)) {
+                        const texture = maskOverrides.get(child.id)
+                        if (texture) maskTextures.set(child.id, texture)
+                    } else if (reuseMaskIds.has(child.id)) {
+                        const texture = this._renderer._maskTextures.get(child.id)
+                        if (texture) maskTextures.set(child.id, texture)
+                    } else if (child.mask) {
+                        maskTextures.set(child.id, this._renderer.prepareMaskTexture(child.mask))
+                    }
                 }
             }
             return { layers, width, height, mediaTextures, maskTextures }
@@ -2480,6 +2499,7 @@ class LayersApp {
      */
     async _handleAddEffectLayer(effectId, { name = null, params = null } = {}) {
         const layer = createEffectLayer(effectId, name, params || {})
+        this._applyEffectApplicationMask(layer, effectId)
         return this._commitAddedLayer(layer)
     }
 
@@ -2503,6 +2523,7 @@ class LayersApp {
         }
         const layer = createEffectLayer(
             result.effectId, result.name, result.effectParams)
+        this._applyEffectApplicationMask(layer, result.effectId)
         const outcome = await this._commitAddedLayer(layer, { showSuccess: false })
         if (outcome.status !== 'added') return outcome
         try {
@@ -2516,6 +2537,114 @@ class LayersApp {
     }
 
     // ── Mask management ─────────────────────────────────────────────────
+
+    /**
+     * Whether an effect's content comes from an external texture rather than
+     * the pixels below it (today: filter/text). Such layers are content, not
+     * filters, so applying one is not constrained by selection or mask.
+     * @param {string} effectId
+     * @returns {boolean}
+     * @private
+     */
+    _isOverlayContentEffect(effectId) {
+        const entry = this._renderer.manifest?.[effectId]
+        return Boolean(entry?.externalTexture) && !entry.starter
+    }
+
+    /**
+     * The layer an effect being applied right now targets: the single layer
+     * selected in the layer stack (resolving a selected child effect to its
+     * parent). Null when zero or several layers are selected.
+     * @returns {object|null}
+     * @private
+     */
+    _resolveEffectTargetLayer() {
+        const ids = this._layerStack?.selectedLayerIds || []
+        if (ids.length !== 1) return null
+        const id = ids[0]
+        return this._layers.find(l => l.id === id)
+            || this._layers.find(l => l.children?.some(c => c.id === id))
+            || null
+    }
+
+    /**
+     * Redraw a mask ImageData at the current canvas size (no-op when it
+     * already matches).
+     * @param {ImageData} mask
+     * @param {number} width
+     * @param {number} height
+     * @returns {ImageData}
+     * @private
+     */
+    _maskAtCanvasSize(mask, width, height) {
+        if (mask.width === width && mask.height === height) return mask
+        const source = document.createElement('canvas')
+        source.width = mask.width
+        source.height = mask.height
+        source.getContext('2d').putImageData(mask, 0, 0)
+        const scaled = document.createElement('canvas')
+        scaled.width = width
+        scaled.height = height
+        const ctx = scaled.getContext('2d')
+        ctx.drawImage(source, 0, 0, width, height)
+        return ctx.getImageData(0, 0, width, height)
+    }
+
+    /**
+     * Snapshot the region an effect applied right now may touch: the active
+     * marquee selection intersected with the target layer's enabled mask.
+     * Mask value lives in the R channel of every source format (rasterized
+     * marquee, wand mask, layer mask), so intersection multiplies R and the
+     * result is emitted in canonical mask format (RGB=value, A=255).
+     * @param {{targetLayer?: object|null}} [options]
+     * @returns {ImageData|null} canvas-sized mask, or null when unconstrained
+     * @private
+     */
+    _captureEffectApplicationMask({ targetLayer = null } = {}) {
+        const selectionMask = this._selectionManager?.hasSelection()
+            ? this._selectionManager.rasterizeSelection()
+            : null
+        const layerMask = (targetLayer?.mask && targetLayer.maskEnabled !== false)
+            ? targetLayer.mask
+            : null
+        if (!selectionMask && !layerMask) return null
+
+        const width = this._canvas.width
+        const height = this._canvas.height
+        const sources = [selectionMask, layerMask]
+            .filter(Boolean)
+            .map(mask => this._maskAtCanvasSize(mask, width, height))
+
+        const out = new ImageData(width, height)
+        const a = sources[0].data
+        const b = sources[1]?.data || null
+        for (let i = 0; i < out.data.length; i += 4) {
+            const value = b ? Math.round(a[i] * b[i] / 255) : a[i]
+            out.data[i] = value
+            out.data[i + 1] = value
+            out.data[i + 2] = value
+            out.data[i + 3] = 255
+        }
+        return out
+    }
+
+    /**
+     * Constrain a freshly created (not yet committed) effect layer to the
+     * active selection and the target layer's mask by capturing them as the
+     * new layer's own mask. Content-overlay effects (text) are exempt.
+     * @param {object} layer - Layer created this call, before commit
+     * @param {string} effectId
+     * @private
+     */
+    _applyEffectApplicationMask(layer, effectId) {
+        if (this._isOverlayContentEffect(effectId)) return
+        const mask = this._captureEffectApplicationMask({
+            targetLayer: this._resolveEffectTargetLayer(),
+        })
+        if (!mask) return
+        layer.mask = mask
+        layer.maskEnabled = true
+    }
 
     /**
      * Add a fully white (revealed) mask to a layer.
@@ -3016,9 +3145,28 @@ class LayersApp {
         const parent = this._layers.find(l => l.id === parentLayerId)
         if (!parent) return
         const child = createChildEffect(effectId, name, params || {})
+        // An active marquee selection is captured as the child's own mask so
+        // the effect never alters pixels outside it. (The parent's layer mask
+        // already confines the child at composite time, so only the selection
+        // is captured.) Child masks aren't in the collab wire schema, so
+        // online sessions skip the capture rather than render differently
+        // from their peers.
+        if (!this._onlineAdapter?.isOnline()) {
+            const mask = this._captureEffectApplicationMask()
+            if (mask) child.mask = mask
+        } else if (this._selectionManager?.hasSelection()) {
+            try {
+                toast.info('Selections can’t constrain effects in an online session — the effect applies to the whole layer')
+            } catch (err) {
+                console.error('[Layers] Failed to show selection notice:', err)
+            }
+        }
         const outcome = await this._commitModelMutation(() => {
             if (!parent.children) parent.children = []
             parent.children.push(child)
+            if (child.mask) {
+                this._renderer.uploadMaskTexture(child.id, child.mask)
+            }
         }, {
             updateLayerStack: true,
             selectedLayerIds: [child.id],
