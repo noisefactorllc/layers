@@ -227,8 +227,14 @@ function borderMask(mask, r) {
 
 /**
  * Feather selection with linear alpha gradient using distance fields.
- * Produces smooth edges by ramping alpha from 255 (fully inside) to 0 (fully outside)
- * over the feather radius.
+ * Ramps from 255 at r inside the selection edge, through ~50% at the edge
+ * itself, to 0 at r outside — one continuous, monotone falloff centered on
+ * the original boundary.
+ *
+ * (The previous version ramped the inside branch down to ~0 AT the edge and
+ * restarted the outside branch at ~255 just past it, producing a sawtooth:
+ * a hard edge on the boundary with the effect's strongest band rendered
+ * outside the user's selection.)
  *
  * @param {ImageData} mask - Input selection mask
  * @param {number} r - Feather radius in pixels
@@ -244,11 +250,11 @@ function featherMask(mask, r) {
 
         if (wasSelected) {
             if (inside[i] >= r) return 255
-            return Math.round((inside[i] / r) * 255)
+            return Math.round(128 + (inside[i] / r) * 127)
         }
 
         if (outside[i] >= r) return 0
-        return Math.round((1 - outside[i] / r) * 255)
+        return Math.round(128 - (outside[i] / r) * 128)
     })
 }
 

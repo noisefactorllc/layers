@@ -276,6 +276,77 @@ test.describe('Effects respect selection marquee and layer mask', () => {
             `outside-mask pixel changed: ${beforeOut} -> ${afterOut}`).toBe(true)
     })
 
+    // Regression: featherMask must ramp 255 (deep inside) -> ~50% at the
+    // marquee boundary -> 0 (radius outside), monotonically. It used to ramp
+    // to ~0 approaching the boundary from inside and restart at ~255 just
+    // outside — a sawtooth that rendered a hard edge with the effect's
+    // strongest band OUTSIDE the user's selection.
+    test('feathered selection applies the effect proportionally across the band', async ({ page }) => {
+        const { height } = await bootSolidProject(page)
+        const midY = Math.floor(height / 2)
+
+        const maskLine = await page.evaluate(async ([y]) => {
+            const app = window.layersApp
+            const sm = app._selectionManager
+            sm.setSelection({
+                type: 'polygon',
+                points: [
+                    { x: 100, y: y - 200 }, { x: 400, y: y - 200 },
+                    { x: 400, y: y + 200 }, { x: 100, y: y + 200 },
+                ],
+            })
+            const { featherMask } = await import('/js/selection/selection-modify.js')
+            sm.setSelection({ type: 'mask', data: featherMask(sm.rasterizeSelection(), 30) })
+
+            await app._handleAddEffectLayer('filter/invert', { name: 'invert' })
+            const layer = app._layers[app._layers.length - 1]
+            if (!layer.mask) return null
+            const values = []
+            for (let x = 360; x <= 440; x += 5) {
+                values.push(layer.mask.data[(y * layer.mask.width + x) * 4])
+            }
+            return values
+        }, [midY])
+
+        expect(maskLine, 'no mask captured from feathered selection').not.toBeNull()
+
+        // Deep inside fully selected, radius-outside fully unselected
+        expect(maskLine[0]).toBe(255)
+        expect(maskLine[maskLine.length - 1]).toBe(0)
+
+        // Monotone non-increasing across the band — no sawtooth
+        for (let i = 1; i < maskLine.length; i++) {
+            expect(maskLine[i] <= maskLine[i - 1] + 2,
+                `mask values not monotone at sample ${i}: ${maskLine.join(', ')}`).toBe(true)
+        }
+
+        // ~50% at the marquee boundary (x=400 is sample index 8)
+        const boundary = maskLine[8]
+        expect(Math.abs(boundary - 128) <= 24,
+            `boundary value ${boundary} not near 50% — band misplaced: ${maskLine.join(', ')}`).toBe(true)
+
+        // The rendered composite must track the ramp: sample the midpoint of
+        // the outside half of the band; it must sit between the extremes,
+        // not at either (which is what a hard edge produces).
+        const rendered = await page.evaluate(async ([y]) => {
+            await new Promise(resolve => setTimeout(resolve, 5000))
+            const canvas = document.getElementById('canvas')
+            const gl = canvas.getContext('webgl2')
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+            const read = (x) => {
+                const p = new Uint8Array(4)
+                gl.readPixels(x, canvas.height - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, p)
+                return p[0]
+            }
+            return { deep: read(360), mid: read(415), out: read(440) }
+        }, [midY])
+
+        const lo = Math.min(rendered.deep, rendered.out)
+        const hi = Math.max(rendered.deep, rendered.out)
+        expect(rendered.mid > lo + 15 && rendered.mid < hi - 15,
+            `mid-band pixel ${rendered.mid} not between extremes ${lo}..${hi} — hard edge`).toBe(true)
+    })
+
     test('selection is captured as a mask on the new effect layer', async ({ page }) => {
         const { width, height } = await bootSolidProject(page)
 
