@@ -30,7 +30,7 @@ This starts a local server on port 3002.
 
 ### Noisemaker
 
-The shader pipeline is loaded at runtime from the [Noisemaker](https://github.com/noisedeck/noisemaker) CDN at `shaders.noisedeck.app`.
+The shader pipeline is loaded at runtime from the [Noisemaker](https://github.com/noisefactorllc/noisemaker) CDN at `shaders.noisedeck.app`.
 
 ## Testing
 
@@ -52,7 +52,7 @@ take a composition online only after removing any media layers.
 
 ## Third-Party Libraries
 
-- [Noisemaker](https://github.com/noisedeck/noisemaker) — WebGL shader pipeline (MIT License)
+- [Noisemaker](https://github.com/noisefactorllc/noisemaker) — WebGL shader pipeline (MIT License)
 - [Mediabunny](https://github.com/Vanilagy/mediabunny) by Vanilagy — MP4 video encoding via WebCodecs (MPL-2.0 License)
 - [JSZip](http://stuartk.com/jszip) — ZIP file generation (MIT License or GPLv3)
 - Cormorant Upright, Nunito, Noto Sans Mono — typefaces (OFL-1.1)
