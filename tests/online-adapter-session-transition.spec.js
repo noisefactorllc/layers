@@ -685,6 +685,8 @@ test('an accepted deletion expires from the rejection retry window', async ({ pa
         const deletedId = nodes.find(node => node.kind === 'layers-layer').id
         const handlers = new Map()
         const deletes = []
+        let resolveFirstDelete
+        const firstDelete = new Promise(resolve => { resolveFirstDelete = resolve })
         let status = 'offline'
         const online = {
             on: (event, handler) => handlers.set(event, handler),
@@ -692,7 +694,11 @@ test('an accepted deletion expires from the rejection retry window', async ({ pa
             getSessionId: () => 'delete-expiry',
             getShareUrl: () => '', getNodes: () => nodes,
             joinSession: async () => { status = 'online' },
-            upsertNode() {}, deleteNode: id => deletes.push(id),
+            upsertNode() {},
+            deleteNode: id => {
+                deletes.push(id)
+                resolveFirstDelete()
+            },
             goOffline: () => { status = 'offline' },
             writeSessionToUrl: url => url,
         }
@@ -704,6 +710,7 @@ test('an accepted deletion expires from the rejection retry window', async ({ pa
         await adapter.joinSession('delete-expiry', { skipConfirm: true })
         app._layers.splice(0, 1)
         adapter.schedulePublish()
+        await firstDelete
         await new Promise(resolve => setTimeout(resolve, 2200))
         handlers.get('node-reject')?.({ id: deletedId })
         adapter.schedulePublish()
