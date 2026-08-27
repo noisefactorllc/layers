@@ -11,6 +11,7 @@ import {
     createEffectLayer,
     createChildEffect,
     createDrawingLayer,
+    cloneLayer,
     decodeMasks,
     cloneMask,
     bumpLayerCounter,
@@ -5148,41 +5149,60 @@ class LayersApp {
      * @private
      */
     async _duplicateActiveLayer(layer = null, shouldCancel = null) {
-        // Gated unconditionally (not just for an already-media active layer):
-        // this always rasterizes the active layer's composite into a NEW
-        // media layer below, regardless of the source layer's own
-        // sourceType — an effect or drawing layer duplicate is media too.
-        if (this._blockedMediaOnline('Duplicating')) return false
         layer ||= this._getActiveLayer()
         if (!layer) return false
 
         const canvasWidth = this._canvas.width
         const canvasHeight = this._canvas.height
 
-        // Render the layer to get its pixels
-        const compositeImg = await this._renderLayerComposite([layer.id])
-        if (!compositeImg) return false
+        let newLayer
+        const mediaOverrides = new Map()
+        if (layer.effectId && this._isOverlayContentEffect(layer.effectId)) {
+            // Overlay-content layers (today: filter/text) duplicate as a
+            // model clone so the copy's text stays editable — their content
+            // lives in effectParams, not in the pixels below. Assumes the
+            // effect's external texture is fully reconstructible from
+            // effectParams (true for filter/text). Effect layers ride the
+            // shared collab doc, so no online media gate here.
+            newLayer = cloneLayer(layer)
+        } else {
+            // Gated unconditionally (not just for an already-media active
+            // layer): this rasterizes the active layer's composite into a
+            // NEW media layer, regardless of the source layer's own
+            // sourceType — a filter or drawing layer duplicate is media too.
+            if (this._blockedMediaOnline('Duplicating')) return false
 
-        // Create new layer with the pixels
-        const offscreen = new OffscreenCanvas(canvasWidth, canvasHeight)
-        const ctx = offscreen.getContext('2d')
-        ctx.drawImage(compositeImg, 0, 0)
+            // Render the layer to get its pixels
+            const compositeImg = await this._renderLayerComposite([layer.id])
+            if (!compositeImg) return false
 
-        const blob = await offscreen.convertToBlob({ type: 'image/png' })
-        const file = new File([blob], 'duplicated.png', { type: 'image/png' })
+            // Create new layer with the pixels
+            const offscreen = new OffscreenCanvas(canvasWidth, canvasHeight)
+            const ctx = offscreen.getContext('2d')
+            ctx.drawImage(compositeImg, 0, 0)
 
-        const newLayer = createMediaLayer(file, 'image', `${layer.name} copy`)
+            const blob = await offscreen.convertToBlob({ type: 'image/png' })
+            const file = new File([blob], 'duplicated.png', { type: 'image/png' })
+
+            newLayer = createMediaLayer(file, 'image', `${layer.name} copy`)
+            try {
+                const resource = await this._renderer.prepareMediaResource(file, 'image')
+                mediaOverrides.set(newLayer.id, resource)
+            } catch (err) {
+                console.error('[Layers] Duplicate failed:', err)
+                return false
+            }
+        }
+
         const layerIndex = this._layers.findIndex(l => l.id === layer.id)
         const layers = [...this._layers]
         layers.splice(layerIndex + 1, 0, newLayer)
-        let resource
         try {
-            resource = await this._renderer.prepareMediaResource(file, 'image')
             const candidate = await this._prepareLayerSetCandidate(
                 layers, canvasWidth, canvasHeight, {
                     reuseMediaIds: new Set(this._renderer._mediaTextures.keys()),
                     reuseMaskIds: new Set(this._renderer._maskTextures.keys()),
-                    mediaOverrides: new Map([[newLayer.id, resource]]),
+                    mediaOverrides,
                 })
             const outcome = await this._commitPreparedLayerMutation(candidate, {
                 selectedLayerIds: [newLayer.id],

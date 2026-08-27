@@ -137,6 +137,59 @@ test.describe('duplicateLayer', () => {
         expect(env.ok).toBe(false)
         expect(env.error.code).toBe('NOT_FOUND_LAYER')
     })
+
+    test('duplicating a text layer keeps the copy an editable text layer', async ({ page }) => {
+        await bootApp(page)
+        const added = await page.evaluate(() =>
+            window.LayersAgent.addLayer({ kind: 'text', text: 'Hello' }))
+        expect(added.ok).toBe(true)
+
+        const env = await page.evaluate((id) =>
+            window.LayersAgent.duplicateLayer({ layerId: id }), added.result.layerId)
+        expect(env.ok).toBe(true)
+        expect(env.result.layerId).not.toBe(added.result.layerId)
+
+        const copy = env.state.layers.find(l => l.id === env.result.layerId)
+        expect(copy.sourceType).toBe('effect')
+        expect(copy.effect.id).toBe('filter/text')
+        expect(copy.effect.params.text).toBe('Hello')
+
+        // The copy sits directly above the source layer
+        const layerIds = env.state.layers.map(l => l.id)
+        expect(layerIds.indexOf(env.result.layerId))
+            .toBe(layerIds.indexOf(added.result.layerId) + 1)
+
+        const edited = await page.evaluate((id) =>
+            window.LayersAgent.setLayerEffectParams({
+                layerId: id, params: { text: 'World' },
+            }), env.result.layerId)
+        expect(edited.ok).toBe(true)
+        const editedCopy = edited.state.layers.find(l => l.id === env.result.layerId)
+        expect(editedCopy.effect.params.text).toBe('World')
+
+        const original = edited.state.layers.find(l => l.id === added.result.layerId)
+        expect(original.effect.params.text).toBe('Hello')
+    })
+
+    test('duplicating a text layer works while a collab session is online', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const added = await window.LayersAgent.addLayer({ kind: 'text', text: 'Hello' })
+            window.layersApp._onlineAdapter = {
+                isOnline: () => true,
+                schedulePublish: () => {},
+            }
+            const env = await window.LayersAgent.duplicateLayer({
+                layerId: added.result.layerId,
+            })
+            window.layersApp._onlineAdapter = null
+            return { added, env }
+        })
+        expect(result.env.error ?? null).toBe(null)
+        expect(result.env.ok).toBe(true)
+        const copy = result.env.state.layers.find(l => l.id === result.env.result.layerId)
+        expect(copy.effect.id).toBe('filter/text')
+    })
 })
 
 test.describe('reorderLayer', () => {

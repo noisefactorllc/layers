@@ -761,12 +761,18 @@ export async function deleteLayer({ layerId }, app) {
  * @param {{layerId: string}} args
  * @returns {Promise<{result: {layerId: string}}>}
  * @throws NOT_FOUND_LAYER — when the source layer doesn't exist.
+ * @throws CONFLICT_MEDIA_BLOCKED_ONLINE — when the duplicate would produce a
+ *         media layer while a collaboration session is online. Overlay-content
+ *         layers (filter/text) duplicate as effect-layer clones, which ride
+ *         the shared doc, so they are exempt.
  * @throws CONFLICT_DUPLICATE_FAILED — when the app rejects the duplicate
  *         (e.g. unsupported layer type).
  */
 export async function duplicateLayer({ layerId }, app) {
     const layer = requireLayer(layerId, app)
-    rejectMediaMutationOnline(app)
+    if (!(layer.effectId && app._isOverlayContentEffect(layer.effectId))) {
+        rejectMediaMutationOnline(app)
+    }
     const ok = await app._duplicateActiveLayer(layer)
     if (!ok) {
         throw commandError('CONFLICT_DUPLICATE_FAILED',
