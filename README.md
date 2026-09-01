@@ -1,3 +1,8 @@
+<!-- repo-hero -->
+<a href="https://layers.noisefactor.io/"><img src="docs/hero.jpg" alt="Layers Non-destructive image and video editor" width="100%"></a>
+
+<sub>Open source from <a href="https://noisefactor.io">Noise Factor</a> &middot; <a href="https://github.com/noisefactorllc">more projects</a></sub>
+
 # Layers
 
 Layers is a browser-based media editor with non-destructive layer compositing, powered by the Noisemaker shader pipeline. It runs entirely client-side.
