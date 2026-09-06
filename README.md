@@ -35,7 +35,7 @@ This starts a local server on port 3002.
 
 ### Noisemaker
 
-The shader pipeline is loaded at runtime from the [Noisemaker](https://github.com/noisefactorllc/noisemaker) CDN at `shaders.noisedeck.app`.
+Layers loads the shader pipeline at runtime from the [Noisemaker](https://github.com/noisefactorllc/noisemaker) CDN at `shaders.noisedeck.app`.
 
 ## Testing
 
@@ -48,12 +48,14 @@ npm test
 ## Online collaboration
 
 "go online..." (File menu) shares the current composition live via
-[Seance](https://seance.noisefactor.io); anyone with the link can join and
-edit together in real time. Only Layers sessions are supported — Layers
-can't open a session created by a different Seance-connected app, and vice
-versa. Media layers (images/video clips) aren't supported in shared
-sessions yet, since their bytes live only in your browser's local storage;
-take a composition online only after removing any media layers.
+[Seance](https://seance.noisefactor.io). Anyone with the link can join and
+edit together in real time. Only Layers sessions are supported. Layers
+cannot open a session from another Seance-connected app. Those apps cannot
+open Layers sessions either.
+
+Shared sessions do not support media layers (images/video clips) yet.
+Their bytes live only in your browser's local storage. Remove any media
+layers before you take a composition online.
 
 ## Third-Party Libraries
 
