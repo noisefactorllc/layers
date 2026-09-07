@@ -1,48 +1,49 @@
 name: Deploy
 
-# Scaffold is the sole authority for layers deploys. This workflow just
-# fires the workflow_dispatch at scaffold's static-site-release, which
-# clones this repo at the pushed SHA, stages public/, writes
-# deployment-meta.json, and rsyncs to
-# ~/sites/layers.noisefactor.io/content on nf-toronto.
-#
-# Keeping the SSH key + server IP on the scaffold side means this
-# public repo carries no deploy secrets — only the EHSRE app private
-# key, which is scoped to dispatching scaffold workflows.
-
+# CI is the only automatic release trigger. Manual dispatch retries release of
+# the selected main SHA; Scaffold independently verifies its CI proof.
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-main
   cancel-in-progress: false
 
 jobs:
   trigger-scaffold-release:
     name: Dispatch scaffold static-site-release
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_branch == 'main' &&
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     steps:
       - name: Mint scaffold GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           client-id: Iv23liy6T6BW0BXuZRzx
           private-key: ${{ secrets.EHSRE_APP_PRIVATE_KEY }}
           owner: noisefactorllc
           repositories: scaffold
-
-      - name: Dispatch scaffold static-site-release for layers
+      - name: Dispatch quality-verified source SHA
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           gh workflow run static-site-release.yml \
-            --repo noisefactorllc/scaffold \
-            --ref main \
-            -f site=layers \
-            -f sha=${{ github.sha }}
-          echo "Dispatched scaffold static-site-release for layers @ ${{ github.sha }}"
+            --repo noisefactorllc/scaffold --ref main \
+            -f site=layers -f sha="$SOURCE_SHA"
+          echo "Dispatched Layers release verification for $SOURCE_SHA"

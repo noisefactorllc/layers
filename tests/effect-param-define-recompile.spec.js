@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Regression guard: effect params declared with `define:` in the effect
 // definition (e.g. filter/halftone `mode` and `pattern`) become compile-time

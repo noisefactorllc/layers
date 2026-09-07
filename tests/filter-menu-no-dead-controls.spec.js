@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // No dead controls: every entry in the Filter menu must add a layer that
 // VISIBLY changes the rendered canvas. A menu item that compiles but renders
@@ -35,6 +35,10 @@ test('every filter menu entry visibly changes the render', async ({ page }) => {
     await page.waitForSelector('.open-dialog-backdrop.visible')
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    // A small image still exercises every real filter and feedback frame,
+    // while keeping the complete sweep practical on software GPU backends.
+    await page.locator('#canvas-width').fill('128')
+    await page.locator('#canvas-height').fill('128')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await page.waitForTimeout(1500)

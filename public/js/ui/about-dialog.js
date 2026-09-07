@@ -1,3 +1,4 @@
+import { NOISEMAKER_BASE } from '../dependency-versions.js'
 import { AboutDialog } from 'handfish'
 
 const APP_VERSION = '0.11'
@@ -20,7 +21,6 @@ fetch('./deployment-meta.json', { cache: 'no-store' }).then(async (res) => {
 }).catch(() => {})
 
 // Noisemaker engine metadata, fetched from the shaders CDN.
-const NOISEMAKER_BASE = 'https://shaders.noisedeck.app/1'
 about.setNoisemakerFromUrl(`${NOISEMAKER_BASE}/deployment-meta.json`)
 
 export { about as aboutDialog }

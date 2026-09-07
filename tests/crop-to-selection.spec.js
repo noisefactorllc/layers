@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Image menu - Crop to Selection', () => {
     test('crop to selection resizes canvas to selection bounds', async ({ page }) => {

@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 const FIXTURE = path.resolve('tests/fixtures/agent-snapshot-blank.json')
 

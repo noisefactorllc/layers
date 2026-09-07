@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 function readCenterPixel(canvasEl) {
     const ctx = canvasEl.getContext('webgl2') || canvasEl.getContext('webgl')

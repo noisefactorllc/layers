@@ -1,4 +1,5 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
+import { seedClipboardRead } from './helpers/clipboard.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -10,22 +11,11 @@ async function createTransparentProject(page) {
 }
 
 async function copyColorSquareToClipboard(page, color) {
-    await page.evaluate(async (fillColor) => {
-        const canvas = document.createElement('canvas')
-        canvas.width = 50
-        canvas.height = 50
-        const ctx = canvas.getContext('2d')
-        ctx.fillStyle = fillColor
-        ctx.fillRect(0, 0, 50, 50)
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-    }, color)
+    await seedClipboardRead(page, { width: 50, height: 50, color })
 }
 
 test.describe('Paste to selection', () => {
-    test('SQUARE selection pastes SQUARE image (not rectangle)', async ({ page, context }) => {
-        await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-
+    test('SQUARE selection pastes SQUARE image (not rectangle)', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
@@ -100,9 +90,7 @@ test.describe('Paste to selection', () => {
         expect(pastedInfo.offsetY).toBe(Math.round(200 + selectionSize / 2 - 1024 / 2))
     })
 
-    test('pasted image scales to fit marquee selection bounds', async ({ page, context }) => {
-        await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-
+    test('pasted image scales to fit marquee selection bounds', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
@@ -207,9 +195,7 @@ test.describe('Paste to selection', () => {
         expect(pixelCheck.redPixelCount).toBeGreaterThan(0)
     })
 
-    test('paste without selection centers the image', async ({ page, context }) => {
-        await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-
+    test('paste without selection centers the image', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)

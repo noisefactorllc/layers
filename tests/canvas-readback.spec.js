@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Guards utils/canvas-readback.js readRenderPixels():
 //  - WebGL branch is byte-identical to a direct gl.readPixels (the active path);

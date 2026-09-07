@@ -1,4 +1,7 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
+import { readFileSync } from 'node:fs'
+
+const videoBase64 = readFileSync(new URL('./fixtures/native-video-detail.webm', import.meta.url)).toString('base64')
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -11,7 +14,7 @@ async function bootSolid(page) {
 }
 
 async function installRollbackHarness(page, { mask = false } = {}) {
-    await page.evaluate(async ({ mask }) => {
+    await page.evaluate(async ({ mask, videoBase64 }) => {
         const app = window.layersApp
         const renderer = app._renderer
         const {
@@ -56,14 +59,10 @@ async function installRollbackHarness(page, { mask = false } = {}) {
         renderer.disposeMediaResources(renderer._mediaTextures)
         renderer._maskTextures.clear()
         const imageResource = renderer.prepareCanvasMediaResource(imageCanvas)
-        const videoElement = document.createElement('video')
-        videoElement.muted = true
-        const videoResource = {
-            type: 'video',
-            element: videoElement,
-            width: 30,
-            height: 20,
-        }
+        const videoFile = new File([Uint8Array.from(atob(videoBase64), c => c.charCodeAt(0))],
+            'rollback.webm', { type: 'video/webm' })
+        video.mediaFile = videoFile
+        const videoResource = await renderer.prepareMediaResource(videoFile, 'video')
         const drawingResource = renderer.prepareCanvasMediaResource(drawingCanvas)
         renderer.setMediaResource(image.id, imageResource)
         renderer.setMediaResource(video.id, videoResource)
@@ -84,6 +83,10 @@ async function installRollbackHarness(page, { mask = false } = {}) {
         }
 
         renderer._layers = app._layers
+        // Failure injection starts from a valid compiled media graph. Resize
+        // must still reject missing texture steps during a real transaction.
+        const initialized = await app._rebuild({ force: true })
+        if (!initialized?.success) throw new Error(initialized?.error || 'Rollback fixture compile failed')
         app._updateLayerStack()
         app._layerStack.selectedLayerIds = [image.id, video.id]
         app._layerStack._lastClickedLayerId = image.id
@@ -287,7 +290,7 @@ async function installRollbackHarness(page, { mask = false } = {}) {
         }
 
         window.__phase2Rollback = harness
-    }, { mask })
+    }, { mask, videoBase64 })
 }
 
 for (const failure of [

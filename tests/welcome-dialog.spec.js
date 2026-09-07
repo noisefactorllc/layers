@@ -1,4 +1,5 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
+import { seedClipboardRead } from './helpers/clipboard.js'
 import path from 'node:path'
 
 // The first-run welcome splash is suppressed under the Playwright webdriver
@@ -9,10 +10,14 @@ async function boot(page, query = '') {
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 }
 
-async function createProjectFromWelcome(page, type = 'solid') {
+async function createProjectFromWelcome(page, type = 'solid', size) {
     await page.locator('.welcome-tile[data-action="new"]').click()
     await page.locator('.open-dialog-backdrop.visible').waitFor()
     await page.locator(`.media-option[data-type="${type}"]`).click()
+    if (size) {
+        await page.locator('#canvas-width').fill(String(size))
+        await page.locator('#canvas-height').fill(String(size))
+    }
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await page.locator('.open-dialog-backdrop.visible').waitFor({ state: 'hidden' })
 }
@@ -79,15 +84,7 @@ async function acceptUnsavedGuard(page) {
 }
 
 async function writeClipboardImage(page, width = 40, height = 30) {
-    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
-    await page.evaluate(async ({ width, height }) => {
-        const canvas = document.createElement('canvas')
-        canvas.width = width
-        canvas.height = height
-        canvas.getContext('2d').fillRect(0, 0, width, height)
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-    }, { width, height })
+    await seedClipboardRead(page, { width, height })
 }
 
 async function currentProjectState(page) {
@@ -287,7 +284,13 @@ test.describe('Welcome dialog', () => {
 
             if (dismissal === 'close') await dialog.locator('.welcome-close').click()
             if (dismissal === 'escape') await page.keyboard.press('Escape')
-            if (dismissal === 'backdrop') await dialog.click({ position: { x: 1, y: 1 } })
+            if (dismissal === 'backdrop') {
+                // A point inside the dialog's corner can hit its header.
+                // Click the native backdrop outside the actual dialog bounds.
+                const box = await dialog.boundingBox()
+                expect(box.x).toBeGreaterThan(2)
+                await page.mouse.click(box.x / 2, box.y + box.height / 2)
+            }
 
             await expect(dialog).toBeHidden()
             await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
@@ -881,12 +884,13 @@ test.describe('Welcome dialog', () => {
     for (const hasImage of [true, false]) {
         test(`online clipboard ${hasImage ? 'success commits offline' : 'without an image stays online'}`, async ({ page }) => {
             await boot(page, '?welcome=1')
-            await createProjectFromWelcome(page)
+            // This checks replacement and online state, independently of the
+            // old document's resolution. Keep software GPU allocations small.
+            await createProjectFromWelcome(page, 'solid', 128)
             if (hasImage) {
                 await writeClipboardImage(page, 40, 30)
             } else {
-                await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
-                await page.evaluate(() => navigator.clipboard.writeText('no image'))
+                await seedClipboardRead(page)
             }
             await installOnlineSession(page)
 

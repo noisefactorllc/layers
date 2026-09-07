@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('LayersAgent foundation', () => {
     test('exposes version 1.0', async ({ page }) => {

@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Round-trip regression tests for save -> reload page -> load.
 // Reloading the page is the realistic round-trip: it gives a fresh renderer

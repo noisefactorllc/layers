@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 const EXPECTED_GROUPS = [
     {
@@ -200,15 +200,16 @@ const EXPECTED_GROUPS = [
     },
 ]
 
-// Boots a blank solid project (mirrors tests/child-effects.spec.js). Under the
-// Playwright webdriver flag the first-run welcome splash is suppressed, so the
-// open dialog appears exactly as before.
+// Menu geometry, input, and model checks retain real rendering on a small
+// document. Native image dimensions have dedicated full-resolution tests.
 async function bootBlank(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.waitForSelector('.open-dialog-backdrop.visible')
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    await page.locator('#canvas-width').fill('128')
+    await page.locator('#canvas-height').fill('128')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await page.waitForTimeout(500)
@@ -276,6 +277,8 @@ test.describe('Filter menu', () => {
     for (const width of [390, 320]) {
         test(`keeps top-menu hit targets and toolbar controls usable at ${width}x320`, async ({ page }) => {
             await page.setViewportSize({ width, height: 320 })
+            // Preserve the real viewport geometry without a full-size GPU
+            // document whose displayed canvas is only a few CSS pixels.
             await bootBlank(page)
 
             const blockedControls = await page.locator(
@@ -508,8 +511,11 @@ test.describe('Filter menu', () => {
 
             for (const effect of geometry.effects) {
                 const label = group.effects.find(([effectId]) => effectId === effect.effectId)[1]
-                expect(effect.top, `${label} top edge`).toBeGreaterThanOrEqual(geometry.submenu.top)
-                expect(effect.bottom, `${label} bottom edge`).toBeLessThanOrEqual(geometry.submenu.bottom)
+                // Fractional layout arithmetic can differ by a few millionths
+                // of a CSS pixel. One layout unit still rejects a clipped pixel.
+                const layoutUnit = 1 / 64
+                expect(effect.top, `${label} top edge`).toBeGreaterThanOrEqual(geometry.submenu.top - layoutUnit)
+                expect(effect.bottom, `${label} bottom edge`).toBeLessThanOrEqual(geometry.submenu.bottom + layoutUnit)
             }
         }
     })

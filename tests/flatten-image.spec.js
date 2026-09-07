@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Layer menu - Flatten Image', () => {
     test('flatten image combines all visible layers into one', async ({ page }) => {

@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Stroke renderer', () => {
     test('rasterizes a path stroke to canvas', async ({ page }) => {

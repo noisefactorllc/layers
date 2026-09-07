@@ -1,5 +1,5 @@
 // @ts-check
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Drawing layer model', () => {
     test('createEffectLayer defaults gradient layers to four-corner mode', async ({ page }) => {

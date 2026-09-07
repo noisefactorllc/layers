@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 async function beginTinyZipExport(page) {
     await page.fill('#exportWidth', '64')
@@ -199,7 +199,7 @@ test.describe('Export Video Dialog', () => {
         expect(after.restoredRenderTime).toBeCloseTo(0.6, 6)
     })
 
-    test('job polling hides temporary video export resolution and playback', async ({ page }) => {
+    test('job polling preserves document resolution and playback during detached capture', async ({ page }) => {
         await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
         await page.fill('#exportWidth', '64')
@@ -215,15 +215,13 @@ test.describe('Export Video Dialog', () => {
                 canvas: { width: app._canvas.width, height: app._canvas.height },
                 isPlaying: app._renderer.isRunning,
             }
-            const setResolution = dialog.setResolution
+            const capture = app._renderer.createFullResolutionCapture.bind(app._renderer)
             let pollPromise = null
-            dialog.setResolution = (width, height) => {
-                setResolution(width, height)
-                if (width === 64 && height === 66) {
-                    pollPromise = window.LayersAgent.getJob({
-                        jobId: 'missing-video-export-observer',
-                    })
-                }
+            app._renderer.createFullResolutionCapture = options => {
+                if (!pollPromise) pollPromise = window.LayersAgent.getJob({
+                    jobId: 'missing-video-export-observer',
+                })
+                return capture(options)
             }
             const exportPromise = dialog.beginExport()
             while (!pollPromise) await new Promise(resolve => setTimeout(resolve, 0))
@@ -268,7 +266,7 @@ test.describe('Export Video Dialog', () => {
         })
     })
 
-    test('resize setup failure restores the original canvas dimensions', async ({ page }) => {
+    test('legacy resize setup failure restores the original canvas dimensions', async ({ page }) => {
         await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
         await page.fill('#exportWidth', '64')
@@ -278,6 +276,7 @@ test.describe('Export Video Dialog', () => {
             const app = window.layersApp
             const dialog = app._exportVideoDialog
             const original = { width: app._canvas.width, height: app._canvas.height }
+            app._renderer.renderFullResolution = null
             const setResolution = dialog.setResolution
             dialog.setResolution = (width, height) => {
                 setResolution(width, height)
@@ -395,6 +394,11 @@ test.describe('Export Video Dialog', () => {
             dialog.files.addZipFrame = () => {}
             dialog.files.endRecordingZip = async () => null
 
+            let allocations = 0
+            const OriginalRenderer = app._renderer.constructor
+            app._renderer.constructor = class extends OriginalRenderer {
+                constructor(...args) { super(...args); allocations++ }
+            }
             let completeCalls = 0
             let exportErrors = 0
             dialog.renderer.restoreLoopFromNormalizedTime = () => {
@@ -407,7 +411,9 @@ test.describe('Export Video Dialog', () => {
             }
 
             await dialog.beginExport()
+            app._renderer.constructor = OriginalRenderer
             return {
+                allocations,
                 completeCalls,
                 exportErrors,
                 state: dialog.state,
@@ -417,6 +423,7 @@ test.describe('Export Video Dialog', () => {
         })
 
         expect(result).toEqual({
+            allocations: 1,
             completeCalls: 0,
             exportErrors: 1,
             state: 'dialog',

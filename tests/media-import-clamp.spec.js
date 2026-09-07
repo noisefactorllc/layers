@@ -1,10 +1,8 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
-// Imported-media size clamp (noisedeck free-tier style): square sources cap
-// at 2048², rectangular sources at 1080p bounds (1920 long / 1080 short),
-// aspect preserved via a single scale factor. Oversized imports otherwise
-// become both a GPU texture and — for new projects — the canvas size, which
-// multiplies every shader pass's cost ("large images bog the app down").
+test.setTimeout(60000)
+
+// Preview textures are capped independently of native media/document dimensions.
 
 async function loadApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -71,7 +69,7 @@ test('clampMediaDimensions applies square/rect caps and preserves aspect', async
     expect(results.tallBanner).toEqual({ width: 307, height: 1920 })
 })
 
-test('opening a large square image clamps media and canvas to 2048', async ({ page }) => {
+test('opening a large square image preserves native dimensions and caps the preview', async ({ page }) => {
     await loadApp(page)
     await createSolidProject(page)
 
@@ -88,17 +86,20 @@ test('opening a large square image clamps media and canvas to 2048', async ({ pa
             status,
             mediaW: media?.width, mediaH: media?.height,
             canvasW: canvas.width, canvasH: canvas.height,
+            previewW: media?.element.width, previewH: media?.element.height,
         }
     }, fileHandle)
 
     expect(result.status).toBe('opened')
-    expect(result.mediaW).toBe(2048)
-    expect(result.mediaH).toBe(2048)
-    expect(result.canvasW).toBe(2048)
-    expect(result.canvasH).toBe(2048)
+    expect(result.mediaW).toBe(3000)
+    expect(result.mediaH).toBe(3000)
+    expect(result.canvasW).toBe(3000)
+    expect(result.canvasH).toBe(3000)
+    expect(result.previewW).toBe(2048)
+    expect(result.previewH).toBe(2048)
 })
 
-test('opening a large landscape image clamps to 1080p bounds with aspect kept', async ({ page }) => {
+test('opening a large landscape image preserves native document dimensions', async ({ page }) => {
     await loadApp(page)
     await createSolidProject(page)
 
@@ -110,10 +111,9 @@ test('opening a large landscape image clamps to 1080p bounds with aspect kept', 
         return { status, canvasW: canvas.width, canvasH: canvas.height }
     }, fileHandle)
 
-    // 4000×2000 → scale min(1920/4000, 1080/2000) = 0.48 → 1920×960
     expect(result.status).toBe('opened')
-    expect(result.canvasW).toBe(1920)
-    expect(result.canvasH).toBe(960)
+    expect(result.canvasW).toBe(4000)
+    expect(result.canvasH).toBe(2000)
 })
 
 test('small images import at native size', async ({ page }) => {
@@ -160,8 +160,8 @@ test('adding an oversized media layer clamps its texture without resizing the ca
     }, fileHandle)
 
     expect(result.status).toBe('added')
-    expect(result.mediaW).toBe(2048)
-    expect(result.mediaH).toBe(2048)
+    expect(result.mediaW).toBe(4096)
+    expect(result.mediaH).toBe(4096)
     // Adding a layer never resizes the project canvas
     expect(result.after).toEqual(result.before)
 })

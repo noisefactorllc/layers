@@ -1,5 +1,5 @@
 // tests/shape-tool.spec.js
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')

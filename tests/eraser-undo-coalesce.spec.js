@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // The eraser's class doc promises: "Drag across multiple strokes to delete
 // them all in one undo step." But _tryDelete pushed an undo snapshot per

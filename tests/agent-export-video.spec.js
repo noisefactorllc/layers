@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('agent: exportVideo', () => {
     test.beforeEach(async ({ page }) => {
@@ -32,17 +32,28 @@ test.describe('agent: exportVideo', () => {
         // the abort path actually invoked encoder cleanup.
         await page.evaluate(() => {
             window.__cancelZipCount = 0
+            window.__zipEncoderStarted = false
             const filesObj = window.LayersAgent._app._files
             const orig = filesObj.cancelZIP.bind(filesObj)
             filesObj.cancelZIP = (...a) => { window.__cancelZipCount++; return orig(...a) }
+            const start = filesObj.saveZip.bind(filesObj)
+            const encoderGate = new Promise(resolve => { window.__releaseZipEncoder = resolve })
+            filesObj.saveZip = async (...args) => {
+                await start(...args)
+                window.__zipEncoderStarted = true
+                await encoderGate
+            }
         })
 
         const r = await page.evaluate(() => window.LayersAgent.exportVideo({
             width: 64, height: 64, framerate: 30, duration: 5,
             loopCount: 1, format: 'zip', quality: 'low'
         }))
-        await page.evaluate(() => new Promise(r => setTimeout(r, 30)))
-        await page.evaluate((id) => window.LayersAgent.cancelJob({ jobId: id }), r.result.jobId)
+        await page.waitForFunction(() => window.__zipEncoderStarted)
+        await page.evaluate(async id => {
+            await window.LayersAgent.cancelJob({ jobId: id })
+            window.__releaseZipEncoder()
+        }, r.result.jobId)
         const final = await page.evaluate((id) =>
             window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 5000 }),
             r.result.jobId)
@@ -50,6 +61,28 @@ test.describe('agent: exportVideo', () => {
 
         const cancelCount = await page.evaluate(() => window.__cancelZipCount)
         expect(cancelCount).toBe(1)
+    })
+
+    test('cancellation while waiting for the project lease does not start or cancel an encoder', async ({ page }) => {
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const held = await app._acquireProjectLifecycle()
+            let encoderStarts = 0, encoderCancels = 0
+            app._files.saveZip = () => { encoderStarts++ }
+            app._files.cancelZIP = () => { encoderCancels++ }
+            // This test owns lifecycle ordering; pixel/session behavior has
+            // separate coverage and must not allocate a GPU while queued.
+            app._renderer.createFullResolutionCapture = async () => ({ render() { throw new Error('Cancelled job rendered a frame') }, async dispose() {} })
+            let jobId
+            try {
+                const started = await window.LayersAgent.exportVideo({ width: 64, height: 64, framerate: 30, duration: 1, format: 'zip' })
+                jobId = started.result.jobId
+                await window.LayersAgent.cancelJob({ jobId })
+            } finally { held.release() }
+            const settled = await window.LayersAgent.waitForJob({ jobId, timeoutMs: 5000 })
+            return { status: settled.result.status, encoderStarts, encoderCancels, lifecycleActive: app._projectLifecycleActive }
+        })
+        expect(result).toEqual({ status: 'cancelled', encoderStarts: 0, encoderCancels: 0, lifecycleActive: false })
     })
 
     test('replacement waits for export cancellation and commits at its own resolution', async ({ page }) => {
@@ -131,7 +164,7 @@ test.describe('agent: exportVideo', () => {
         expect(result).toEqual({ rendererStayedPaused: true, jobStatus: 'cancelled' })
     })
 
-    test('job polling snapshots hide temporary export resolution and playback state', async ({ page }) => {
+    test('job polling snapshots retain document dimensions and playback state during detached export', async ({ page }) => {
         const result = await page.evaluate(async () => {
             const app = window.layersApp
             const original = {
@@ -148,8 +181,6 @@ test.describe('agent: exportVideo', () => {
                 quality: 'low',
             })
             while (!app._projectLifecycleActive
-                || app._canvas.width !== 64
-                || app._canvas.height !== 66
                 || app._renderer.isRunning) {
                 await new Promise(resolve => setTimeout(resolve, 0))
             }
@@ -184,6 +215,8 @@ test.describe('agent: exportVideo', () => {
                 app._renderer.start()
                 const original = { width: app._canvas.width, height: app._canvas.height }
                 if (failure === 'resolution') {
+                    // Exercise the compatibility path for renderers without detached capture.
+                    app._renderer.renderFullResolution = null
                     const resizeCanvas = app._resizeCanvas.bind(app)
                     app._resizeCanvas = (width, height) => {
                         resizeCanvas(width, height)

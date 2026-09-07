@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Regression test: if the user releases the mouse while an async selection
 // extraction (or non-destructive duplicate) is still in flight, the move tool

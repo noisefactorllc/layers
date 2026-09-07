@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 const TINY_PNG_B64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
@@ -518,10 +518,24 @@ test('generation-invalidated queued opacity restores the real host and range', a
 
         const blocker = app._tryAcquireProjectLifecycle()
         if (!blocker) throw new Error('failed to acquire lifecycle blocker')
-        opacityRange.value = '40'
-        opacityRange.dispatchEvent(new Event('input', { bubbles: true }))
-        app._replacementGeneration += 1
-        blocker.release()
+        const runPointerMutation = app._runPointerMutation
+        let queuedMutation
+        app._runPointerMutation = function (...args) {
+            queuedMutation = runPointerMutation.apply(this, args)
+            return queuedMutation
+        }
+        try {
+            opacityRange.value = '40'
+            opacityRange.dispatchEvent(new Event('input', { bubbles: true }))
+            app._replacementGeneration += 1
+        } finally {
+            app._runPointerMutation = runPointerMutation
+            blocker.release()
+        }
+        if (!queuedMutation) throw new Error('opacity input did not queue a pointer mutation')
+        // Releasing the lifecycle lock precedes the event handler's control
+        // refresh. Wait for that actual mutation promise before reading UI.
+        await queuedMutation
         await app._projectLifecycleTail
 
         const restoredHost = app._layerStack.querySelector(

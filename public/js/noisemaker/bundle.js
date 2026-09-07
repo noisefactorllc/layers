@@ -6,8 +6,7 @@
  * - Minified for production
  */
 
-const SHADER_CDN = 'https://shaders.noisedeck.app/1'
-const BUNDLE_VERSION = '1'
+import { NOISEMAKER_BASE as SHADER_CDN, NOISEMAKER_VERSION as BUNDLE_VERSION } from '../dependency-versions.js'
 
 const isLocalDev = typeof window !== 'undefined' && (
     window.location.hostname === 'localhost' ||

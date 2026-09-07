@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // "Compiling shaders..." overlay (a la noisedeck): shown over the canvas
 // while the renderer is legitimately recompiling the DSL, and ONLY then.
@@ -7,12 +7,16 @@ import { test, expect } from 'playwright/test'
 // the original regression report: mousing over a layer's param controls must
 // not trigger DSL rebuilds.
 
-async function loadWithSolidBase(page) {
+async function loadWithSolidBase(page, size) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.waitForSelector('.open-dialog-backdrop.visible')
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    if (size) {
+        await page.locator('#canvas-width').fill(String(size))
+        await page.locator('#canvas-height').fill(String(size))
+    }
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await page.waitForTimeout(1000)
@@ -125,7 +129,9 @@ test('hovering over param controls never compiles or shows the overlay', async (
     page.on('console', msg => {
         if (msg.text().includes('[LayersRenderer] Built DSL:')) dslCompiles.push(msg.text())
     })
-    await loadWithSolidBase(page)
+    // Keep live animation and real pointer events while bounding software GPU
+    // work. This checks compilation on hover, independently of document size.
+    await loadWithSolidBase(page, 128)
 
     await page.evaluate(async () => {
         const app = window.layersApp

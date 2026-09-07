@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('agent: jobs registry', () => {
     test.beforeEach(async ({ page }) => {

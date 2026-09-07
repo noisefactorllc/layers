@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Regression guard for effect-parameter dropdown controls (effect-params.js).
 // Three distinct "dropdown does nothing" bugs are covered:

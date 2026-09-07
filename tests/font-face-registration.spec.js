@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 /**
  * A catalog entry is not always one typeface. "Monaspace" is five (Argon,

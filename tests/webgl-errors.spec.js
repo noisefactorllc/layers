@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 function collectWebGLErrors(page) {
     const webglErrors = []
@@ -21,7 +21,7 @@ async function createProject(page, type) {
 }
 
 test.describe('WebGL error handling', () => {
-    test('creating gradient composition renders without WebGL errors', async ({ page }) => {
+    test('creating gradient composition renders without WebGL errors', async ({ page }, testInfo) => {
         const consoleMessages = []
         page.on('console', msg => consoleMessages.push(msg.text()))
         const webglErrors = collectWebGLErrors(page)
@@ -42,7 +42,7 @@ test.describe('WebGL error handling', () => {
         expect(gradientState.dsl).toContain('gradient(type: 2)')
 
         await page.waitForTimeout(500)
-        await page.screenshot({ path: 'test-results/webgl-gradient-test.png' })
+        await page.screenshot({ path: testInfo.outputPath('webgl-gradient-test.png') })
 
         console.log('Console messages:', consoleMessages.filter(m =>
             m.includes('WebGL') || m.includes('Error') || m.includes('error')
@@ -51,7 +51,7 @@ test.describe('WebGL error handling', () => {
         expect(webglErrors).toEqual([])
     })
 
-    test('creating solid composition renders without WebGL errors', async ({ page }) => {
+    test('creating solid composition renders without WebGL errors', async ({ page }, testInfo) => {
         const webglErrors = collectWebGLErrors(page)
 
         await page.goto('/', { waitUntil: 'networkidle' })
@@ -61,12 +61,12 @@ test.describe('WebGL error handling', () => {
 
         await expect(page.locator('#canvas')).toBeVisible()
 
-        await page.screenshot({ path: 'test-results/webgl-solid-test.png' })
+        await page.screenshot({ path: testInfo.outputPath('webgl-solid-test.png') })
 
         expect(webglErrors).toEqual([])
     })
 
-    test('adding effect layer to composition renders without WebGL errors', async ({ page }) => {
+    test('adding effect layer to composition renders without WebGL errors', async ({ page }, testInfo) => {
         const webglErrors = collectWebGLErrors(page)
 
         await page.goto('/', { waitUntil: 'networkidle' })
@@ -92,7 +92,7 @@ test.describe('WebGL error handling', () => {
         }
 
         await page.waitForTimeout(2000)
-        await page.screenshot({ path: 'test-results/webgl-add-layer-test.png' })
+        await page.screenshot({ path: testInfo.outputPath('webgl-add-layer-test.png') })
 
         if (webglErrors.length > 0) {
             console.log('WebGL Errors found:', webglErrors)

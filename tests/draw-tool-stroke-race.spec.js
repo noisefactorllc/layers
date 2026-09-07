@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Regression: brush/shape _onMouseUp cleared instance gesture state
 // (_currentPoints / _startPt / _currentPt) AFTER awaiting the rasterize +

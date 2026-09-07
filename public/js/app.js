@@ -32,6 +32,8 @@ import { imageSizeDialog } from './ui/image-size-dialog.js'
 import { canvasResizeDialog } from './ui/canvas-resize-dialog.js'
 import { exportPng, exportJpg, getTimestampedFilename } from './utils/export.js'
 import { saveProject, loadProject } from './utils/project-storage.js'
+import { ProjectRecovery } from './utils/project-recovery.js'
+import { showRecoveryDialog } from './ui/recovery-dialog.js'
 import { registerServiceWorker } from './sw-register.js'
 import { SelectionManager } from './selection/selection-manager.js'
 import { copySelection, pasteFromClipboard, copyCanvasToClipboard, getSelectionBounds } from './selection/clipboard-ops.js'
@@ -148,6 +150,19 @@ class LayersApp {
         this._projectInstallTail = Promise.resolve()
         this._projectSnapshotCanvasOverride = null
         this._publishTransactionDepth = 0
+        this._recovery = new ProjectRecovery({
+            isDirty: () => this._isDirty,
+            capture: async () => {
+                const token = this._tryAcquireProjectLifecycle()
+                if (!token) return null
+                try { return await this._capturePersistableProject() }
+                finally { token.release() }
+            },
+            onError: error => {
+                console.error('[Layers] Recovery checkpoint failed:', error)
+                toast.warning('Recovery could not be saved. Save your project before closing Layers.')
+            },
+        })
     }
 
     /**
@@ -157,6 +172,7 @@ class LayersApp {
     _markDirty() {
         this._projectMutationRevision += 1
         this._isDirty = true
+        this._recovery?.schedule()
     }
 
     /**
@@ -198,7 +214,7 @@ class LayersApp {
      * @returns {Array} Cloned layer array
      * @private
      */
-    _cloneLayers(layers) {
+    _cloneLayers(layers, { history = false } = {}) {
         return layers.map(l => {
             const clone = {
                 ...l,
@@ -206,15 +222,18 @@ class LayersApp {
                 children: (l.children || []).map(c => ({
                     ...c,
                     effectParams: JSON.parse(JSON.stringify(c.effectParams)),
-                    mask: cloneMask(c.mask)
+                    mask: history ? c.mask : cloneMask(c.mask)
                 }))
             }
             if (l.sourceType === 'drawing') {
-                clone.strokes = JSON.parse(JSON.stringify(l.strokes || []))
+                // Committed strokes are immutable. Editing appends/removes
+                // strokes or replaces them on resize, so only copy the list.
+                clone.strokes = history ? (l.strokes || []).slice()
+                    : JSON.parse(JSON.stringify(l.strokes || []))
                 clone.drawingCanvas = null
             }
             if (l.mask) {
-                clone.mask = cloneMask(l.mask)
+                clone.mask = history ? l.mask : cloneMask(l.mask)
             }
             return clone
         })
@@ -235,7 +254,7 @@ class LayersApp {
             mediaCanvases.set(layer.id, resource.element)
         }
         return {
-            layers: this._cloneLayers(layers),
+            layers: this._cloneLayers(layers, { history: true }),
             canvasWidth,
             canvasHeight,
             mediaCanvases,
@@ -588,9 +607,6 @@ class LayersApp {
     _commitMaskMutation(layer, mutate, options = {}) {
         const commit = () => {
             const previousMask = layer.mask
-            const previousMaskBytes = previousMask
-                ? new Uint8ClampedArray(previousMask.data)
-                : null
             const textureHad = this._renderer._maskTextures.has(layer.id)
             const previousTexture = this._renderer._maskTextures.get(layer.id)
             const previousUi = this._captureMaskEditUiState()
@@ -598,10 +614,7 @@ class LayersApp {
             return this._commitModelMutation(mutate, {
                 ...options,
                 restore: async () => {
-                    if (previousMask && previousMaskBytes) {
-                        previousMask.data.set(previousMaskBytes)
-                        layer.mask = previousMask
-                    }
+                    layer.mask = previousMask
                     if (textureHad) {
                         this._renderer._maskTextures.set(layer.id, previousTexture)
                     } else {
@@ -1065,6 +1078,8 @@ class LayersApp {
 
         // Set source canvas for magic wand
         this._selectionManager.setSourceCanvas(this._canvas)
+        this._selectionManager.captureCanvas = () => this._captureFullResolutionFrame()
+        this._selectionManager.runPixelMutation = task => this._runPointerMutation(task)
         this._selectionManager.onSelectionChange = () => {
             this._updateImageMenu()
             this._updateSelectMenu()
@@ -1193,6 +1208,7 @@ class LayersApp {
         this._fillTool = new FillTool({
             overlay: this._selectionOverlay,
             canvas: this._canvas,
+            captureCanvas: () => this._captureFullResolutionFrame(),
             runMutation: (task) => this._runPointerMutation(task),
             addMediaLayerFromCanvas: (c, n) => this._addMediaLayerFromCanvas(c, n),
         })
@@ -1201,6 +1217,8 @@ class LayersApp {
         this._eyedropperTool = new EyedropperTool({
             overlay: this._selectionOverlay,
             canvas: this._canvas,
+            captureCanvas: () => this._captureFullResolutionFrame(),
+            runMutation: task => this._runPointerMutation(task),
             setForegroundColor: (c) => this._setForegroundColor(c),
             restorePreviousTool: () => this._setToolMode(this._previousTool)
         })
@@ -1272,10 +1290,12 @@ class LayersApp {
             getResolution: () => ({ width: this._canvas.width, height: this._canvas.height }),
             setResolution: (w, h) => this._resizeCanvas(w, h),
             renderCurrentFrame: () => this._renderCurrentFrame(),
+            captureCanvas: options => this._captureFullResolutionFrame(options),
             acquireMutation: () => this._tryAcquireProjectLifecycle(),
             acquireSnapshotOverride: acquireExportSnapshot,
             getProjectGeneration: () => this._replacementGeneration,
             onComplete: (format) => toast.success(`Exported as ${format.toUpperCase()}`),
+            onError: error => toast.error(error.message || 'Image export failed'),
             onCancel: () => {}
         })
         this._exportVideoDialog = new ExportVideoDialog({
@@ -1321,7 +1341,7 @@ class LayersApp {
             })
             : false
         this._hideLoadingScreen()
-        if (!joinedFromUrl) {
+        if (!joinedFromUrl && !(await this._showRecoveryDialog({ atBoot: true }))) {
             if (this._shouldAutoShowWelcome()) {
                 welcomeDialog.show({ fallThrough: true, entry: 'boot' })
             } else {
@@ -1779,6 +1799,10 @@ class LayersApp {
         return this._runProjectLifecycle(null, (token) => {
             if (generation !== this._replacementGeneration) return
             return task(token)
+        }).catch(error => {
+            if (error.code !== 'FULL_RESOLUTION_UNSUPPORTED') throw error
+            toast.error(error.message)
+            return { status: 'failed', error }
         })
     }
 
@@ -2261,6 +2285,8 @@ class LayersApp {
                     } catch (err) {
                         console.error('[Layers] Failed to start renderer after replacement:', err)
                     }
+                    if (candidate.recovery) this._recovery?.schedule()
+                    else this._recovery?.replace()
                     return { status: 'opened' }
                 } catch (err) {
                     const restoreError = await rollback()
@@ -2434,8 +2460,7 @@ class LayersApp {
      * @private
      */
     async _handleCopyImage() {
-        this._renderCurrentFrame()
-        const ok = await copyCanvasToClipboard(this._canvas)
+        const ok = await copyCanvasToClipboard(await this._captureFullResolutionFrame())
         if (ok) {
             toast.success('Copied image to clipboard')
         } else {
@@ -2764,6 +2789,9 @@ class LayersApp {
         if (!layer?.mask) return
 
         const outcome = await this._commitMaskMutation(layer, () => {
+            // History owns the previous immutable pixels. Inversion is the
+            // only mask edit that writes in place; other edits replace data.
+            layer.mask = cloneMask(layer.mask)
             const data = layer.mask.data
             for (let i = 0; i < data.length; i += 4) {
                 data[i] = 255 - data[i]
@@ -3711,8 +3739,9 @@ class LayersApp {
         return result
     }
 
-    /** Render all pending uniform updates before reading the visible canvas. @private */
-    _renderCurrentFrame() {
+    /** Render pending updates once, optionally capturing original-resolution pixels. @private */
+    _renderCurrentFrame({ capture = false, ...options } = {}) {
+        if (capture) return this._renderer.renderFullResolution(options)
         this._renderer.render(this._renderer.getPausedNormalizedTime())
     }
 
@@ -4038,6 +4067,7 @@ class LayersApp {
                                 },
                             },
                             { id: 'saveProjectAsMenuItem', label: 'save project as...', onSelect: () => { this._showSaveProjectAsDialog() } },
+                            { id: 'recoverProjectMenuItem', label: 'recover unsaved work...', onSelect: () => { this._showRecoveryDialog() } },
                             {
                                 id: 'loadProjectMenuItem',
                                 label: 'load project...',
@@ -4680,10 +4710,9 @@ class LayersApp {
         if (this._layers.length === 0) return { status: 'committed' }
 
         // Capture current canvas (all visible layers composited)
-        this._renderCurrentFrame()
         const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
         const ctx = offscreen.getContext('2d')
-        ctx.drawImage(this._canvas, 0, 0)
+        ctx.drawImage(await this._captureFullResolutionFrame(), 0, 0)
 
         // Convert to blob and create media layer
         const blob = await offscreen.convertToBlob({ type: 'image/png' })
@@ -5892,15 +5921,15 @@ class LayersApp {
                 return null
             }
             drewCandidate = true
-            this._renderer.render(0)
             const offscreen = new OffscreenCanvas(this._canvas.width, this._canvas.height)
-            offscreen.getContext('2d').drawImage(this._canvas, 0, 0)
+            offscreen.getContext('2d').drawImage(await this._captureFullResolutionFrame({ normalizedTime: 0 }), 0, 0)
             if (!await rollback()) return null
             const blob = await offscreen.convertToBlob({ type: 'image/png' })
             return this._loadImageFromBlob(blob)
         } catch (err) {
             console.error('[Layers] Failed to render layer composite:', err)
             await rollback()
+            if (err.code === 'FULL_RESOLUTION_UNSUPPORTED') throw err
             return null
         }
     }
@@ -6182,7 +6211,6 @@ class LayersApp {
     async _handleCopy() {
         if (!this._selectionManager?.hasSelection()) return
 
-        this._renderCurrentFrame()
 
         const selectionPath = this._selectionManager.selectionPath
         const selectedLayers = this._layerStack?.selectedLayers || []
@@ -6198,7 +6226,7 @@ class LayersApp {
         const origin = await copySelection({
             selectionPath,
             layers: layersToCopy,
-            sourceCanvas: this._canvas
+            sourceCanvas: await this._captureFullResolutionFrame()
         })
 
         if (origin) {
@@ -6403,19 +6431,80 @@ class LayersApp {
      * @param {string} projectName - Project name
      * @private
      */
+    async _capturePersistableProject() {
+        const layers = this._cloneLayers(this._layers)
+        for (const layer of layers) {
+            layer.drawingCanvas = null
+            if (layer.sourceType !== 'media' || layer.mediaFile) continue
+            const source = this._renderer._mediaTextures.get(layer.id)?.element
+            if (!source || typeof source.toBlob !== 'function') {
+                throw new Error(`Cannot save missing media for layer "${layer.name}"`)
+            }
+            const blob = await new Promise((resolve, reject) => source.toBlob(
+                value => value ? resolve(value) : reject(new Error('Could not encode layer pixels')),
+                'image/png'))
+            layer.mediaFile = new File([blob], `${layer.name || 'layer'}.png`, { type: 'image/png' })
+        }
+        return {
+            projectId: this._currentProjectId,
+            name: this._currentProjectName,
+            canvasWidth: this._canvas.width,
+            canvasHeight: this._canvas.height,
+            layers,
+        }
+    }
+
+    async _showRecoveryDialog({ atBoot = false } = {}) {
+        const records = await this._recovery.list().catch(error => {
+            console.error('[Layers] Could not read recovery copies:', error)
+            return []
+        })
+        if (!records.length) {
+            if (!atBoot) toast.info('No recovery copies are available')
+            return false
+        }
+        showRecoveryDialog(records, {
+            restore: async record => {
+                try {
+                    let restored = false
+                    await this._startProjectReplacement(async ({ leaveOnline, replacementConsent }) => {
+                        await this._runProjectLifecycle(null, async mutationToken => {
+                            restored = await this._recovery.restore(record.id, async source => {
+                                const status = await this._loadProject(null, {
+                                    recovery: source, leaveOnline, replacementConsent, mutationToken,
+                                })
+                                return status === 'opened'
+                            })
+                        })
+                    })
+                    return restored
+                } catch (error) {
+                    console.error('[Layers] Recovery restore failed:', error)
+                    toast.error(error.message || 'Could not restore this recovery copy')
+                    return false
+                }
+            },
+            onClose: () => {
+                this._recovery.retain()
+                if (atBoot && this._layers.length === 0) this._showOpenDialog()
+            },
+        })
+        return true
+    }
+
     async _saveProject(projectId, projectName, { mutationToken = null } = {}) {
         return this._runProjectLifecycle(mutationToken, async () => {
             try {
+                const snapshot = await this._capturePersistableProject()
                 const savedId = await saveProject({
+                    ...snapshot,
                     name: projectName,
-                    canvasWidth: this._canvas.width,
-                    canvasHeight: this._canvas.height,
-                    layers: this._layers
                 }, projectId)
 
                 this._currentProjectId = savedId
                 this._currentProjectName = projectName
                 this._markClean()
+                await this._recovery?.clear()
             } catch (err) {
                 console.error('[Layers] Failed to save project:', err)
                 try {
@@ -6442,12 +6531,17 @@ class LayersApp {
         leaveOnline = false,
         mutationToken = null,
         replacementConsent = null,
+        recovery = null,
     } = {}) {
         const generation = ++this._replacementGeneration
         return this._runProjectReplacement(mutationToken, async (token, replacementGate) => {
             let candidate = null
             try {
-                const result = await loadProject(projectId)
+                const result = recovery ? {
+                    project: { ...recovery, id: recovery.projectId, name: recovery.name || 'Recovered project' },
+                    mediaFiles: new Map(recovery.layers.filter(layer => layer.mediaFile)
+                        .map(layer => [layer.id, layer.mediaFile])),
+                } : await loadProject(projectId)
             if (!result) {
                 toast.error('Project not found')
                 return 'not-found'
@@ -6481,7 +6575,8 @@ class LayersApp {
                 height,
                 projectId: project.id,
                 projectName: project.name,
-                dirty: false,
+                dirty: !!recovery,
+                recovery: !!recovery,
                 selectedLayerId: layers.at(-1)?.id || null,
                 nextLayerId,
                 mediaTextures: new Map(),
@@ -6564,10 +6659,13 @@ class LayersApp {
      * Quick save as PNG
      * @private
      */
-    _quickSavePng() {
-        this._renderCurrentFrame()
+    async _captureFullResolutionFrame(options = {}) {
+        return this._renderCurrentFrame({ ...options, capture: true })
+    }
+
+    async _quickSavePng() {
         const filename = getTimestampedFilename('layers')
-        exportPng(this._canvas, filename)
+        exportPng(await this._captureFullResolutionFrame(), filename)
         toast.success('Saved as PNG')
     }
 
@@ -6575,10 +6673,9 @@ class LayersApp {
      * Quick save as JPG
      * @private
      */
-    _quickSaveJpg() {
-        this._renderCurrentFrame()
+    async _quickSaveJpg() {
         const filename = getTimestampedFilename('layers')
-        exportJpg(this._canvas, filename)
+        exportJpg(await this._captureFullResolutionFrame(), filename)
         toast.success('Saved as JPG')
     }
 
@@ -6625,13 +6722,22 @@ class LayersApp {
             pickToken.release()
         }
 
-        const handler = (e) => {
+        let sampling = false
+        const handler = async (e) => {
+            if (sampling || this._colorRangePickCleanup !== cleanup || !pickToken.retain()) return
+            sampling = true
             try {
                 if (generation === this._replacementGeneration) {
-                    this._handleColorRangePick(e)
+                    await this._handleColorRangePick(e, () =>
+                        generation !== this._replacementGeneration || this._colorRangePickCleanup !== cleanup)
+                }
+            } catch (error) {
+                if (this._colorRangePickCleanup === cleanup) {
+                    console.error('[Layers] Color-range capture failed:', error)
+                    toast.error(error.message || 'Could not sample the color range')
                 }
             } finally {
-                cleanup()
+                try { cleanup() } finally { pickToken.release() }
             }
         }
 
@@ -6655,8 +6761,7 @@ class LayersApp {
         this._colorRangePickCleanup?.()
     }
 
-    _handleColorRangePick(e) {
-        this._renderCurrentFrame()
+    async _handleColorRangePick(e, shouldCancel = () => false) {
         const rect = this._selectionOverlay.getBoundingClientRect()
         const scaleX = this._canvas.width / rect.width
         const scaleY = this._canvas.height / rect.height
@@ -6667,7 +6772,8 @@ class LayersApp {
         tempCanvas.width = this._canvas.width
         tempCanvas.height = this._canvas.height
         const tempCtx = tempCanvas.getContext('2d')
-        tempCtx.drawImage(this._canvas, 0, 0)
+        tempCtx.drawImage(await this._captureFullResolutionFrame(), 0, 0)
+        if (shouldCancel()) return
         const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height)
 
         const tolerance = this._selectionManager.wandTolerance
@@ -6796,6 +6902,7 @@ class LayersApp {
             })
             if (outcome.status !== 'committed') return outcome
         } catch (err) {
+            if (err.code === 'FULL_RESOLUTION_UNSUPPORTED') throw err
             return { status: 'failed', error: err }
         } finally {
             if (!mediaOwnershipTransferred) disposePreparedResources()
@@ -6898,8 +7005,12 @@ class LayersApp {
                             })
                         } else {
                             const offscreen = new OffscreenCanvas(dstW, dstH)
+                            const original = layer.mediaFile
+                                ? await this._getLayerImage(layer)
+                                : media.sourceFile ? await this._loadImageFromBlob(media.sourceFile) : media.element
+                            if (!original) throw new Error('Could not decode original media for image resize')
                             offscreen.getContext('2d').drawImage(
-                                media.element, 0, 0, media.width, media.height,
+                                original, 0, 0, media.width, media.height,
                                 0, 0, dstW, dstH)
                             const blob = await offscreen.convertToBlob({ type: 'image/png' })
                             const file = new File([blob], 'resized.png', { type: 'image/png' })

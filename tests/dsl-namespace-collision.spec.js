@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Short-name collision guard: DSL effect calls are unqualified short names
 // resolved first-match-wins over the program's `search` order, and _buildDsl

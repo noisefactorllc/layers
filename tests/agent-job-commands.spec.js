@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 async function bootApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -67,13 +67,21 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
                 return { ok: 1 }
             })
             while (!releaseJob) await new Promise(resolve => setTimeout(resolve, 0))
-            const waitPromise = window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 2000 })
-            let replacementSettled = false
+            const waitPromise = window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 30000 })
             const replacementPromise = app._handleCreateGradientBase(333, 222)
-                .then(status => { replacementSettled = true; return status })
-            await new Promise(resolve => setTimeout(resolve, 250))
-            const replacementCompletedWhileJobPending = replacementSettled
-            releaseJob()
+            let deadline
+            let replacementCompletedWhileJobPending
+            try {
+                // Keep the job pending until replacement actually completes.
+                // Shader compilation speed is not the lifecycle contract.
+                replacementCompletedWhileJobPending = await Promise.race([
+                    replacementPromise.then(() => true),
+                    new Promise(resolve => { deadline = setTimeout(() => resolve(false), 15000) }),
+                ])
+            } finally {
+                clearTimeout(deadline)
+                releaseJob()
+            }
             const [waitEnvelope, replacementStatus] = await Promise.all([
                 waitPromise,
                 replacementPromise,

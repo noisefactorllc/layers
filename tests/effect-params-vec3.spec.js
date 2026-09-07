@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // vec3 effect params render a working handfish <vector3d-picker> (mirroring
 // noisedeck's controlGroupBuilder) instead of being silently hidden by the

@@ -1,3 +1,4 @@
+import { renderFullResolution, createFullResolutionCapture } from './full-resolution.js'
 /**
  * Layers Renderer - Wrapper around Noisemaker CanvasRenderer
  *
@@ -13,6 +14,7 @@ import {
     formatDslError,
     _bundle,
 } from './bundle.js'
+import { NOISEMAKER_BASE } from '../dependency-versions.js'
 
 const DSL_IDENTIFIER_PATTERN = /^[_A-Za-z][_A-Za-z0-9]*$/
 
@@ -128,11 +130,9 @@ const VOLUME_IDENTIFIERS = Array.from({ length: 8 }, (_, index) => `vol${index}`
 const GEOMETRY_IDENTIFIERS = Array.from({ length: 8 }, (_, index) => `geo${index}`)
 
 /**
- * Imported-media size caps, mirroring noisedeck's free-tier capResolution()
- * split: square sources get one cap, rectangular sources get orientation-
- * aware long/short-side caps (1080p here). An imported image becomes both a
- * GPU texture and — for new projects — the canvas size, so unbounded photo
- * dimensions multiply every shader pass's cost and swamp the GPU.
+ * Bounded preview dimensions. Media/document dimensions remain native;
+ * full-resolution captures decode original sources and use a separate,
+ * memory-budgeted shader renderer.
  */
 const MAX_MEDIA_SQUARE = 2048
 const MAX_MEDIA_RECT_LONG = 1920
@@ -191,28 +191,69 @@ function getDeclaredDslIdentifierValues(spec) {
     return []
 }
 
+function previewRenderDimensions(width, height) {
+    const capped = clampMediaDimensions(width, height)
+    const scale = Math.min(1, Math.sqrt((1024 * 1024) / (capped.width * capped.height)))
+    return { width: Math.max(1, Math.floor(capped.width * scale)),
+        height: Math.max(1, Math.floor(capped.height * scale)) }
+}
+
 export class LayersRenderer {
     constructor(canvas, options = {}) {
         this._canvas = canvas
         this.width = options.width || canvas?.width || 1024
         this.height = options.height || canvas?.height || 1024
         this.loopDuration = options.loopDuration || 10
-
-        const NOISEMAKER_BASE = 'https://shaders.noisedeck.app/1'
+        this._fullResolution = options.fullResolution === true
+        const renderSize = this._fullResolution
+            ? { width: this.width, height: this.height }
+            : previewRenderDimensions(this.width, this.height)
+        this._renderWidth = renderSize.width
+        this._renderHeight = renderSize.height
 
         this._renderer = new CanvasRenderer({
             canvas,
             canvasContainer: canvas?.parentElement || null,
-            width: this.width,
-            height: this.height,
+            width: this._renderWidth,
+            height: this._renderHeight,
             basePath: NOISEMAKER_BASE,
             preferWebGPU: false,
             useBundles: true,
             bundlePath: `${NOISEMAKER_BASE}/effects`,
             alpha: true,
             onFPS: options.onFPS,
-            onError: options.onError
+            onError: options.onError,
+            onContextLost: () => {
+                this._contextGeneration = (this._contextGeneration || 0) + 1
+                this._stopVideoUpdateLoop()
+            },
+            onContextRestored: () => {
+                const generation = this._contextGeneration
+                // The engine recreated its GPU pipeline. Its host-owned source
+                // textures and runtime parameter values must be uploaded again.
+                this._renderer.stop()
+                this._serializeCompileOp(() => {
+                    if (generation !== this._contextGeneration || this._renderer.isContextLost) return
+                    this._normalizeColorUniforms()
+                    this._buildLayerStepMap()
+                    this._uploadMediaTextures({ strict: true })
+                    this._uploadMaskTextures({ strict: true })
+                    this._uploadTextTextures({ strict: true })
+                    this._applyAllLayerParams({ strict: true })
+                    if (this._playbackRequested) this.start()
+                    else this.render(this._pausedNormalizedTime ?? 0)
+                }).catch(error => {
+                    this.stop()
+                    options.onError?.(error)
+                })
+            },
         })
+
+        // Route the engine's canvas-dimension observer through the same
+        // preview sizing policy as explicit app resizes. The DOM canvas keeps
+        // document coordinates; only shader intermediates use the proxy size.
+        this._resizePipeline = this._renderer.resize.bind(this._renderer)
+        this._renderer.resize = (width, height) => this.resize(width, height)
 
         this._initialized = false
         this._layers = []
@@ -278,6 +319,7 @@ export class LayersRenderer {
     }
 
     start() {
+        this._playbackRequested = true
         let restoreError = null
         if (this._pausedNormalizedTime !== null) {
             try {
@@ -293,6 +335,7 @@ export class LayersRenderer {
     }
 
     stop() {
+        this._playbackRequested = false
         if (this.isRunning || this._pausedNormalizedTime === null) {
             this._pausedNormalizedTime = this._computeNormalizedLoopTime()
         }
@@ -348,7 +391,7 @@ export class LayersRenderer {
             const flipV = layer.flipV || false
             const source = (scaleX !== 1 || scaleY !== 1 || flipH || flipV)
                 ? this._drawTransformedMediaFrame(media, scaleX, scaleY, flipH, flipV)
-                : media.element
+                : this._mediaUploadSource(media)
 
             try {
                 this._renderer.updateTextureFromSource?.(`imageTex_step_${stepIndices[i]}`, source, { flipY: false })
@@ -379,8 +422,12 @@ export class LayersRenderer {
      * @private
      */
     _drawTransformedMediaFrame(media, scaleX, scaleY, flipH, flipV) {
-        const destW = Math.max(1, Math.ceil(media.width * Math.abs(scaleX)))
-        const destH = Math.max(1, Math.ceil(media.height * Math.abs(scaleY)))
+        const nativeW = Math.max(1, Math.ceil(media.width * Math.abs(scaleX)))
+        const nativeH = Math.max(1, Math.ceil(media.height * Math.abs(scaleY)))
+        const size = this._fullResolution ? { width: nativeW, height: nativeH }
+            : clampMediaDimensions(nativeW, nativeH)
+        const destW = size.width
+        const destH = size.height
 
         let canvas = media.transformCanvas
         if (!canvas || canvas.width !== destW || canvas.height !== destH) {
@@ -431,10 +478,29 @@ export class LayersRenderer {
         return [...new Set(indices)]
     }
 
+    createFullResolutionCapture(options) {
+        return createFullResolutionCapture(this, options)
+    }
+
+    renderFullResolution(options) {
+        return renderFullResolution(this, options)
+    }
+
     resize(width, height) {
+        const size = this._fullResolution ? { width, height } : previewRenderDimensions(width, height)
+        if (this._resizePipeline && width === this.width && height === this.height
+            && size.width === this._renderWidth && size.height === this._renderHeight) return
         this.width = width
         this.height = height
-        this._renderer.resize?.(width, height)
+        this._renderWidth = size.width
+        this._renderHeight = size.height
+        if (this._resizePipeline) this._resizePipeline(size.width, size.height)
+        else this._renderer.resize?.(size.width, size.height)
+        if (this._renderer.pipeline && this._layers?.length) {
+            this._uploadMediaTextures({ strict: true })
+            this._uploadMaskTextures({ strict: true })
+            this._applyAllLayerParams({ strict: true })
+        }
         // Text rasterizes onto a CPU canvas sized to the render target and is
         // sampled as a full-frame overlay, so a canvas left at the previous
         // size gets stretched across the new one.
@@ -448,7 +514,8 @@ export class LayersRenderer {
     _refreshTextCanvases() {
         if (!this._textCanvases?.size) return
         for (const [layerId, state] of this._textCanvases) {
-            if (state?.canvas?.width === this.width && state?.canvas?.height === this.height) continue
+            if (state?.canvas?.width === (this._renderWidth ?? this.width)
+                && state?.canvas?.height === (this._renderHeight ?? this.height)) continue
             const layer = this._layers.find(candidate => candidate.id === layerId)
             if (!layer) continue
             this._renderTextCanvas(layerId, layer.effectParams || {})
@@ -505,9 +572,9 @@ export class LayersRenderer {
     *getVideoMediaIterator() {
         for (const [, media] of this._mediaTextures) {
             if (media.type !== 'video') continue
-            const videoElement = media.element
+            const videoElement = media.videoElement || media.element
             const duration = videoElement?.duration
-            if (videoElement && isFinite(duration) && duration > 0) {
+            if (videoElement) {
                 yield { videoElement, duration }
             }
         }
@@ -974,10 +1041,10 @@ export class LayersRenderer {
         if (!needsCpuTransform && rotation === 0) {
             // Full identity: restore original texture
             try {
-                this._renderer.updateTextureFromSource?.(textureId, media.element, { flipY: false })
+                this._renderer.updateTextureFromSource?.(textureId, this._mediaUploadSource(media), { flipY: false })
                 if (srcW > 0 && srcH > 0) {
                     this._renderer.applyStepParameterValues?.({
-                        [`step_${stepIndex}`]: { imageSize: [srcW, srcH], rotation: 0 }
+                        [`step_${stepIndex}`]: { imageSize: this._mediaRenderSize(srcW, srcH), rotation: 0 }
                     })
                 }
             } catch (err) {
@@ -997,7 +1064,7 @@ export class LayersRenderer {
             try {
                 this._renderer.updateTextureFromSource?.(textureId, canvas, { flipY: false })
                 this._renderer.applyStepParameterValues?.({
-                    [`step_${stepIndex}`]: { imageSize: [canvas.width, canvas.height], rotation }
+                    [`step_${stepIndex}`]: { imageSize: this._mediaRenderSize(Math.ceil(srcW * Math.abs(scaleX)), Math.ceil(srcH * Math.abs(scaleY))), rotation }
                 })
             } catch (err) {
                 if (strict) throw err
@@ -1006,9 +1073,9 @@ export class LayersRenderer {
         } else {
             // Rotation only — use original texture, shader handles rotation
             try {
-                this._renderer.updateTextureFromSource?.(textureId, media.element, { flipY: false })
+                this._renderer.updateTextureFromSource?.(textureId, this._mediaUploadSource(media), { flipY: false })
                 this._renderer.applyStepParameterValues?.({
-                    [`step_${stepIndex}`]: { imageSize: [srcW, srcH], rotation }
+                    [`step_${stepIndex}`]: { imageSize: this._mediaRenderSize(srcW, srcH), rotation }
                 })
             } catch (err) {
                 if (strict) throw err
@@ -1097,6 +1164,29 @@ export class LayersRenderer {
         }
     }
 
+    _mediaRenderSize(width, height) {
+        return [width * (this._renderWidth ?? this.width) / this.width,
+            height * (this._renderHeight ?? this.height) / this.height]
+    }
+
+    _mediaUploadSource(media) {
+        if (this._fullResolution) return media.element
+        const source = media.element
+        const width = source.videoWidth || source.naturalWidth || source.width
+        const height = source.videoHeight || source.naturalHeight || source.height
+        const size = clampMediaDimensions(width, height)
+        if (size.width === width && size.height === height) return source
+        const canvas = media.previewCanvas || document.createElement('canvas')
+        if (canvas.width !== size.width) canvas.width = size.width
+        if (canvas.height !== size.height) canvas.height = size.height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) throw new Error('Could not allocate a media preview')
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(source, 0, 0, canvas.width, canvas.height)
+        media.previewCanvas = canvas
+        return canvas
+    }
+
     _uploadMediaTextures({ strict = false } = {}) {
         const visibleMediaLayers = this._layers.filter(l =>
             l.visible && (l.sourceType === 'media' || l.sourceType === 'drawing'))
@@ -1136,11 +1226,11 @@ export class LayersRenderer {
 
             const textureId = `imageTex_step_${stepIndex}`
             try {
-                this._renderer.updateTextureFromSource?.(textureId, media.element, { flipY: false })
+                this._renderer.updateTextureFromSource?.(textureId, this._mediaUploadSource(media), { flipY: false })
 
                 if (media.width > 0 && media.height > 0) {
                     stepParameterValues[`step_${stepIndex}`] = {
-                        imageSize: [media.width, media.height]
+                        imageSize: this._mediaRenderSize(media.width, media.height)
                     }
                 }
             } catch (err) {
@@ -1220,7 +1310,7 @@ export class LayersRenderer {
 
             const textureId = `imageTex_step_${stepIndex}`
             try {
-                this._renderer.updateTextureFromSource?.(textureId, maskData.element, { flipY: false })
+                this._renderer.updateTextureFromSource?.(textureId, this._mediaUploadSource(maskData), { flipY: false })
                 // The media shader sizes and anchors its content from the
                 // imageSize uniform (default 1024x1024). Without the mask's
                 // real dimensions, any non-square canvas renders the mask
@@ -1228,7 +1318,7 @@ export class LayersRenderer {
                 // matches the pixels the user selected or painted.
                 if (maskData.width > 0 && maskData.height > 0) {
                     stepParameterValues[`step_${stepIndex}`] = {
-                        imageSize: [maskData.width, maskData.height]
+                        imageSize: this._mediaRenderSize(maskData.width, maskData.height)
                     }
                 }
             } catch (err) {
@@ -1268,7 +1358,7 @@ export class LayersRenderer {
      * @param {'image'|'video'} mediaType
      * @returns {Promise<object|null>} prepared renderer resource
      */
-    async prepareMediaResource(file, mediaType) {
+    async prepareMediaResource(file, mediaType, { fullResolution = false } = {}) {
         const url = URL.createObjectURL(file)
 
         if (mediaType === 'image') {
@@ -1286,12 +1376,10 @@ export class LayersRenderer {
             const width = img.naturalWidth || img.width
             const height = img.naturalHeight || img.height
 
-            // Downscale oversized imports (aspect preserved) so a large photo
-            // can't swamp the GPU as a texture — or, via _handleOpenMedia,
-            // as the canvas size. Same drawImage pattern as noisedeck's
-            // capCanvas(); the decoded full-size Image is dropped after the
-            // scale so only the clamped canvas is retained.
-            const clamped = clampMediaDimensions(width, height)
+            // Keep the original File and native dimensions; the canvas below
+            // is only the live GPU preview. Full-resolution capture decodes
+            // the retained File again, so this never discards source detail.
+            const clamped = fullResolution ? { width, height } : clampMediaDimensions(width, height)
             if (clamped.width !== width || clamped.height !== height) {
                 const scaledCanvas = document.createElement('canvas')
                 scaledCanvas.width = clamped.width
@@ -1309,12 +1397,13 @@ export class LayersRenderer {
                 return {
                     type: 'image',
                     element: scaledCanvas,
-                    width: clamped.width,
-                    height: clamped.height
+                    width,
+                    height,
+                    sourceFile: file
                 }
             }
 
-            return { type: 'image', element: img, url, width, height }
+            return { type: 'image', element: img, url, width, height, sourceFile: file }
         }
 
         if (mediaType === 'video') {
@@ -1349,7 +1438,7 @@ export class LayersRenderer {
             } catch (playError) {
                 console.warn('[LayersRenderer] Video autoplay blocked:', playError.message)
             }
-            return { type: 'video', element: video, url, width, height }
+            return { type: 'video', element: video, videoElement: video, url, width, height, sourceFile: file }
         }
 
         URL.revokeObjectURL(url) // unknown media type — nothing stored, don't leak
@@ -1533,8 +1622,8 @@ export class LayersRenderer {
         }
 
         const { canvas } = state
-        canvas.width = this.width
-        canvas.height = this.height
+        canvas.width = this._renderWidth ?? this.width
+        canvas.height = this._renderHeight ?? this.height
 
         const ctx = canvas.getContext('2d')
 

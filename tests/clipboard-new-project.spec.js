@@ -1,4 +1,5 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
+import { seedClipboardRead } from './helpers/clipboard.js'
 
 test.describe('New from Clipboard', () => {
     test('clipboard button is available on media pane', async ({ page }) => {
@@ -17,7 +18,7 @@ test.describe('New from Clipboard', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
-        await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+        await seedClipboardRead(page)
 
         await page.click('.media-option[data-type="media"]')
         await page.click('#open-clipboard-btn')
@@ -31,19 +32,7 @@ test.describe('New from Clipboard', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
-        await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
-
-        // Write a 200x100 image to clipboard
-        await page.evaluate(async () => {
-            const canvas = document.createElement('canvas')
-            canvas.width = 200
-            canvas.height = 100
-            const ctx = canvas.getContext('2d')
-            ctx.fillStyle = 'red'
-            ctx.fillRect(0, 0, 200, 100)
-            const blob = await new Promise(r => canvas.toBlob(r, 'image/png'))
-            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-        })
+        await seedClipboardRead(page, { width: 200, height: 100, color: 'red' })
 
         await page.click('.media-option[data-type="media"]')
         await page.click('#open-clipboard-btn')

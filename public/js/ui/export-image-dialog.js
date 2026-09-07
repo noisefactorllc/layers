@@ -13,12 +13,14 @@ export class ExportImageDialog {
         this.getResolution = options.getResolution
         this.setResolution = options.setResolution
         this.renderCurrentFrame = options.renderCurrentFrame || (() => {})
+        this.captureCanvas = options.captureCanvas || null
         this.acquireMutation = options.acquireMutation || (() => ({ release() {} }))
         this.acquireSnapshotOverride = options.acquireSnapshotOverride
             || (() => ({ release() {} }))
         this.getProjectGeneration = options.getProjectGeneration || (() => 0)
         this.onComplete = options.onComplete || (() => {})
         this.onCancel = options.onCancel || (() => {})
+        this.onError = options.onError || (() => {})
 
         this.originalResolution = null
         this.state = 'idle'
@@ -189,18 +191,26 @@ export class ExportImageDialog {
             needsResize = width !== restoreResolution.width ||
                           height !== restoreResolution.height
 
-            if (needsResize) {
-                this.setResolution(width, height)
-                await new Promise(resolve => requestAnimationFrame(resolve))
-                await new Promise(resolve => requestAnimationFrame(resolve))
-            }
+            if (this.captureCanvas) {
+                needsResize = false
+                const canvas = await this.captureCanvas({ width, height })
+                const qualityValue = settings.format === 'png' ? 1.0 : this._qualityToValue(settings.quality)
+                this.files.saveImage(canvas, settings.format, qualityValue)
+            } else {
+                if (needsResize) {
+                    this.setResolution(width, height)
+                    await new Promise(resolve => requestAnimationFrame(resolve))
+                    await new Promise(resolve => requestAnimationFrame(resolve))
+                }
 
-            this.renderCurrentFrame()
-            const qualityValue = settings.format === 'png' ? 1.0 : this._qualityToValue(settings.quality)
-            this.files.saveImage(this.canvas, settings.format, qualityValue)
+                this.renderCurrentFrame()
+                const qualityValue = settings.format === 'png' ? 1.0 : this._qualityToValue(settings.quality)
+                this.files.saveImage(this.canvas, settings.format, qualityValue)
+            }
             completed = true
         } catch (err) {
             console.error('Export image failed:', err)
+            this.onError(err)
         } finally {
             try {
                 if (needsResize) {

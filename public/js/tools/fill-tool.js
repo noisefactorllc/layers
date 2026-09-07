@@ -15,6 +15,7 @@ export class FillTool {
     constructor(options) {
         this._overlay = options.overlay
         this._canvas = options.canvas
+        this._captureCanvas = options.captureCanvas
         this._runMutation = options.runMutation
         this._addMediaLayerFromCanvas = options.addMediaLayerFromCanvas
 
@@ -63,7 +64,8 @@ export class FillTool {
         const height = this._canvas.height
 
         // Read composited pixels (bottom-up), backend-agnostic (WebGL2/WebGPU).
-        const pixels = readRenderPixels(this._canvas, 0, 0, width, height)
+        const source = this._captureCanvas ? await this._captureCanvas() : this._canvas
+        const pixels = readRenderPixels(source, 0, 0, width, height)
 
         // readPixels order is bottom-up, flip vertically
         const flipped = new Uint8ClampedArray(width * height * 4)

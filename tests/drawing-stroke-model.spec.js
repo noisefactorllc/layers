@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Stroke model', () => {
     test('createPathStroke creates a valid path stroke', async ({ page }) => {

@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Effects must never alter pixels outside the active selection marquee or
 // outside the target layer's mask. Applying an effect while a marquee

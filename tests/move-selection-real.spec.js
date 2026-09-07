@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Move tool - real user flow', () => {
     test('draw selection then drag with move tool extracts to new layer', async ({ page }) => {

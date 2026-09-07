@@ -1,28 +1,25 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 import { SEANCE_SDK_URL, hasLocalSeanceHarness, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
 
 let seance
 
-test.describe.configure({ mode: 'serial' })
 test.skip(!hasLocalSeanceHarness(), 'requires a local Seance checkout; set SEANCE_ROOT (or SEANCE_DIST_DIR + SEANCE_PYTHON)')
 
-test.beforeEach(({}, testInfo) => {
+test.beforeEach(async ({}, testInfo) => {
     // Convergence tests chain several expect.poll() waits against a real
     // local server, and this suite must also survive CPU-starved parallel
     // full-suite runs (software WebGL × N workers), where a single boot or
     // join can take 10x its isolated wall-clock. Budgets are sized for that
-    // contended case — in serial mode one mid-file timeout skips every
-    // remaining test in the file, so a premature budget costs the whole
-    // file's signal, not one test.
+    // contended case.
     testInfo.setTimeout(180000)
-})
-
-test.beforeAll(async () => {
+    // Each case gets an independent database and rate-limit window. Sharing
+    // one server exhausted its real anonymous session-creation limit.
     seance = await startSeanceServer()
 })
 
-test.afterAll(async () => {
+test.afterEach(async () => {
     await seance?.stop()
+    seance = null
 })
 
 // ---------------------------------------------------------------------
@@ -55,10 +52,14 @@ async function gotoApp(page, params = {}) {
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 25000 })
 }
 
-async function createProject(page, type = 'transparent') {
+async function createProject(page, type = 'transparent', size) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
     await page.click(`.media-option[data-type="${type}"]`)
     await page.waitForSelector('.canvas-size-dialog', { timeout: 15000 })
+    if (size) {
+        await page.locator('#canvas-width').fill(String(size))
+        await page.locator('#canvas-height').fill(String(size))
+    }
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await page.waitForTimeout(500)
@@ -171,11 +172,12 @@ test('two-page convergence: add layer, opacity, blend mode, reorder, delete', as
     await preparePage(pageB)
 
     await gotoApp(pageA)
-    await createProject(pageA, 'solid')
+    // State convergence needs real rendering, but no particular document size.
+    await createProject(pageA, 'solid', 128)
     const sessionId = await takeOnline(pageA)
 
     await gotoApp(pageB)
-    await createProject(pageB, 'solid')
+    await createProject(pageB, 'solid', 128)
     await joinById(pageB, sessionId)
     await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
 
@@ -493,13 +495,13 @@ test('flatten gate: flattening while online shows a toast and leaves both pages 
     await preparePage(pageB)
 
     await gotoApp(pageA)
-    await createProject(pageA, 'solid')
+    await createProject(pageA, 'solid', 128)
     await pageA.evaluate(async () => { await window.layersApp._handleAddEffectLayer('filter/blur') })
     const sessionId = await takeOnline(pageA)
     await closeSeanceDialog(pageA)
 
     await gotoApp(pageB)
-    await createProject(pageB, 'solid')
+    await createProject(pageB, 'solid', 128)
     await joinById(pageB, sessionId)
     await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(2)
 

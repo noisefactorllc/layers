@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Move tool - effect base layer', () => {
     test('move selection works on transparent base layer (effect type)', async ({ page }) => {

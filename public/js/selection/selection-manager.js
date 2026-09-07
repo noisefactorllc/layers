@@ -381,7 +381,7 @@ class SelectionManager {
      * @private
      */
     _handleMouseDown(e) {
-        if (!this._enabled) return
+        if (!this._enabled || this._sampling) return
 
         if (this._currentTool === 'polygon') {
             const coords = this._getCanvasCoords(e)
@@ -395,10 +395,6 @@ class SelectionManager {
             const coords = this._getCanvasCoords(e)
             this._selectionMode = this._getModeFromEvent(e)
             this._previousSelection = this._selectionPath
-
-            if (this._selectionMode === 'replace' && this._selectionPath) {
-                this.clearSelection()
-            }
 
             this._handleWandClick(coords)
             return
@@ -702,6 +698,17 @@ class SelectionManager {
      * @private
      */
     _handleWandClick(coords) {
+        if (this.captureCanvas) {
+            if (this._sampling) return
+            this._sampling = true
+            return Promise.resolve().then(() => this.runPixelMutation(async () => {
+                this._applyWandClick(coords, await this.captureCanvas())
+            })).finally(() => { this._sampling = false })
+        }
+        return this._applyWandClick(coords, this._sourceCanvas)
+    }
+
+    _applyWandClick(coords, sourceCanvas) {
         if (!this._sourceCanvas) {
             console.warn('[SelectionManager] No source canvas for magic wand')
             return
@@ -712,10 +719,10 @@ class SelectionManager {
 
         // Use temp 2D canvas since source may be WebGL
         const tempCanvas = document.createElement('canvas')
-        tempCanvas.width = this._sourceCanvas.width
-        tempCanvas.height = this._sourceCanvas.height
+        tempCanvas.width = sourceCanvas.width
+        tempCanvas.height = sourceCanvas.height
         const tempCtx = tempCanvas.getContext('2d')
-        tempCtx.drawImage(this._sourceCanvas, 0, 0)
+        tempCtx.drawImage(sourceCanvas, 0, 0)
         const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height)
 
         const mask = floodFill(imageData, x, y, this._wandTolerance)

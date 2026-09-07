@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('agent: listInstalledFonts', () => {
     test('returns shape with installed flag and fonts array', async ({ page }) => {

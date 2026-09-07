@@ -1,5 +1,5 @@
 // tests/fill-tool.spec.js
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Fill tool', () => {
     test('clicking on canvas creates a filled raster layer', async ({ page }) => {

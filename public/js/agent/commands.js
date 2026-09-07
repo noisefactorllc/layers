@@ -1273,11 +1273,12 @@ async function canvasToBytes(canvas, format, quality, targetW, targetH) {
  * @param {{format?: 'png'|'jpg'|'webp', quality?: number}} args
  * @returns {Promise<{result: object}>}
  */
-export async function getCanvasImageBytes(args, app) {
+export async function getCanvasImageBytes(args, app, mutationToken = null) {
     const format = args?.format || 'png'
     const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
-    app._renderCurrentFrame?.()
-    const out = await canvasToBytes(app._canvas, format, quality)
+    const out = await app._runProjectLifecycle(mutationToken, async () => {
+        return canvasToBytes(await app._captureFullResolutionFrame(), format, quality)
+    })
     return {
         result: {
             bytes: out.base64,
@@ -1414,7 +1415,7 @@ function triggerBrowserDownload(blob, filename) {
  *                         captureOnly?, filename?}
  * @returns {Promise<{result: object}>}
  */
-export async function exportImage(args, app) {
+export async function exportImage(args, app, mutationToken = null) {
     const format = args?.format || 'png'
     const quality = args?.quality ?? DEFAULT_IMAGE_QUALITY
     const width = args?.width
@@ -1424,8 +1425,10 @@ export async function exportImage(args, app) {
     const triggerDownload = !captureOnly && (args?.triggerDownload !== false)
     const filename = timestampedFilename(args?.filename, format)
 
-    app._renderCurrentFrame?.()
-    const out = await canvasToBytes(app._canvas, format, quality, width, height)
+    const out = await app._runProjectLifecycle(mutationToken, async () => {
+        const canvas = await app._captureFullResolutionFrame({ width, height })
+        return canvasToBytes(canvas, format, quality)
+    })
 
     if (triggerDownload) {
         triggerBrowserDownload(out.blob, filename)
@@ -1644,12 +1647,11 @@ export async function setMagicWandSelection({ x, y, tolerance }, app) {
             `Point (${x}, ${y}) is outside canvas (${canvas.width}x${canvas.height})`,
             { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
     }
-    app._renderCurrentFrame?.()
     // Read current canvas pixels into an offscreen 2D context for flood fill.
     const tmp = document.createElement('canvas')
     tmp.width = canvas.width
     tmp.height = canvas.height
-    tmp.getContext('2d').drawImage(canvas, 0, 0)
+    tmp.getContext('2d').drawImage(await app._captureFullResolutionFrame(), 0, 0)
     const imageData = tmp.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
     const tol = tolerance ?? sm.wandTolerance ?? 32
     const mask = floodFill(imageData, x, y, tol)
@@ -1678,11 +1680,10 @@ export async function selectColorRange({ x, y, tolerance }, app) {
             `Point (${x}, ${y}) is outside canvas (${canvas.width}x${canvas.height})`,
             { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
     }
-    app._renderCurrentFrame?.()
     const tmp = document.createElement('canvas')
     tmp.width = canvas.width
     tmp.height = canvas.height
-    tmp.getContext('2d').drawImage(canvas, 0, 0)
+    tmp.getContext('2d').drawImage(await app._captureFullResolutionFrame(), 0, 0)
     const imageData = tmp.getContext('2d').getImageData(0, 0, canvas.width, canvas.height)
     const tol = tolerance ?? 32
     const mask = selectionMods.colorRange(imageData, x, y, tol)
@@ -2117,14 +2118,16 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
             { field: 'x|y', max: { x: canvas.width - 1, y: canvas.height - 1 } })
     }
     const tol = tolerance ?? 32
-    app._renderCurrentFrame?.()
 
     // Read composited pixels from the render canvas (mirrors FillTool._onClick).
     const w = canvas.width, h = canvas.height
     let pixels
     try {
-        pixels = readRenderPixels(canvas, 0, 0, w, h)
-    } catch {
+        pixels = readRenderPixels(await app._captureFullResolutionFrame(), 0, 0, w, h)
+    } catch (error) {
+        if (error?.code === 'FULL_RESOLUTION_UNSUPPORTED') {
+            throw commandError('INTERNAL_ERROR', error.message, { reason: error.code })
+        }
         throw commandError('INTERNAL_ERROR', 'Could not read canvas pixels for fill', {})
     }
 

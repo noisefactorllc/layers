@@ -4,74 +4,95 @@ on:
   pull_request:
   push:
     branches: [main, preview]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  ci:
+  source:
+    name: Source checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      # Audit-mode egress monitoring: records every outbound connection the
-      # runner makes so exfil/C2 from a compromised dependency is detectable.
-      # Non-blocking (audit) — does not fail the build.
       - name: Harden runner
-        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5 # v2
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5
         with:
           egress-policy: audit
-
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
           node-version: '22'
-          cache: 'npm'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run test:unit
 
-      - name: Install
-        # --ignore-scripts blocks dependency lifecycle scripts (the install-time
-        # code-exec vector for a compromised package). Modern native deps
-        # (esbuild, sharp, rollup) ship prebuilt platform binaries as optional
-        # deps and do not need postinstall. If a repo's build genuinely needs a
-        # rebuild, that fails only this dep-bump PR's gate (surfaces in triage),
-        # never a production build.
-        run: npm ci --ignore-scripts
-
-      - name: Lint
+  browser:
+    name: Browser (${{ matrix.browser }})
+    needs: source
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    defaults:
+      run:
+        working-directory: layers
+    env:
+      CI: 'true'
+      SEANCE_ROOT: ${{ github.workspace }}/seance
+      SEANCE_PYTHON: ${{ github.workspace }}/seance/.venv/bin/python
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          path: layers
+      - name: Checkout pinned collaboration harness
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: noisefactorllc/seance
+          ref: 3f74d11f87e35dfa9f8f4b769323661901583f92
+          path: seance
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: layers/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+      - name: Build collaboration harness
+        working-directory: seance
         run: |
-          if jq -e '.scripts.lint' package.json >/dev/null 2>&1; then
-            npm run lint
-          else
-            echo "No lint script — skipping"
-          fi
-
-      - name: Build
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r requirements.txt
+          npm run build:sdk
+      - run: npm ci --ignore-scripts
+      - name: Require collaboration harness
+        run: node --input-type=module -e "import { hasLocalSeanceHarness } from './tests/seanceLocal.js'; if (!hasLocalSeanceHarness()) throw new Error('Seance harness unavailable')"
+      - name: Install locked browser
+        run: npx --no-install playwright install --with-deps ${{ matrix.browser }}
+      - name: Test all browser and pixel regressions
         run: |
-          if jq -e '.scripts.build' package.json >/dev/null 2>&1; then
-            build_cmd=$(jq -r '.scripts.build' package.json)
-            if echo "$build_cmd" | grep -qE '(docker-compose|docker compose)'; then
-              echo "Docker-based build — skipped in CI"
-            else
-              npm run build
-            fi
+          if [ '${{ matrix.browser }}' = 'webkit' ]; then
+            # Match WebKit's GLib test runner for offscreen video textures.
+            WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS=1 xvfb-run -a npm test -- --project=webkit --headed --workers=1
           else
-            echo "No build script — skipping"
+            npm test -- --project=${{ matrix.browser }}
           fi
-
-      - name: Unit tests
-        # continue-on-error so E2E tests that need a browser/server/DB don't
-        # block patch auto-merge. Install + Lint + Build are the real gates
-        # for dep-bump compatibility; tests are informational here.
-        continue-on-error: true
-        run: |
-          if jq -e '.scripts.test' package.json >/dev/null 2>&1; then
-            test_cmd=$(jq -r '.scripts.test' package.json)
-            if [ "$test_cmd" = 'echo "Error: no test specified" && exit 1' ]; then
-              echo "Placeholder test script — skipping"
-            elif echo "$test_cmd" | grep -qiE '(playwright|test-e2e)'; then
-              echo "E2E tests require browser/server — skipping in install CI"
-            else
-              npm test
-            fi
-          else
-            echo "No test script — skipping"
-          fi
+      - name: Preserve browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: browser-${{ matrix.browser }}-${{ github.sha }}
+          path: |
+            layers/playwright-report/
+            layers/test-results/
+          retention-days: 14

@@ -4,11 +4,17 @@
   "description": "Layer-based media editor powered by Noisemaker shader pipeline",
   "type": "module",
   "scripts": {
-    "dev": "npx http-server public -p 3002 -c-1",
-    "test": "npx playwright test"
+    "dev": "http-server public -a 127.0.0.1 -p 3002 -c-1",
+    "lint": "node scripts/check-source.mjs",
+    "build": "node scripts/check-dependencies.mjs",
+    "test:unit": "node --test scripts/*.test.mjs",
+    "test": "playwright test",
+    "test:release": "npm run lint && npm run build && npm run test:unit && playwright test"
   },
   "devDependencies": {
-    "playwright": "^1.62.1"
+    "http-server": "14.1.1",
+    "playwright": "1.62.1",
+    "pngjs": "7.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

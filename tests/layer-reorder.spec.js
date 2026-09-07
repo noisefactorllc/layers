@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 async function addColorLayer(page, color, size = 100) {
     await page.evaluate(async ({ color, size }) => {

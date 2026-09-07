@@ -1,5 +1,7 @@
 /* Selection overlay canvas - stacked on main canvas via grid */
 #selectionOverlay {
+    /* WebGL canvases can be composited above auto-stacked grid siblings. */
+    z-index: 1;
     /* Same sizing as #canvas to ensure 1:1 coordinate mapping */
     max-width: 100%;
     max-height: 100%;

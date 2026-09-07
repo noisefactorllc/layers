@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 async function bootBase(page, type = 'solid') {
     await page.goto('/', { waitUntil: 'networkidle' })

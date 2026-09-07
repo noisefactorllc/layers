@@ -8,9 +8,9 @@
 
 import { readRenderPixels } from '../utils/canvas-readback.js'
 
-// One export at a time: the exporter pauses/restarts the shared renderer and
-// resizes the shared canvas, so overlapping runs corrupt each other's frames
-// and race the resolution restore. This module is the chokepoint for BOTH the
+// One export at a time: the exporter pauses the shared renderer and seeks
+// native video sources. The compatibility path also resizes the live canvas,
+// so overlapping runs corrupt frames and restoration state. This module is the chokepoint for BOTH the
 // export dialog and the agent's exportVideo command — the agent-side job
 // guard cannot see a dialog-initiated export, so the refusal lives here.
 let _exportInFlight = false
@@ -40,11 +40,22 @@ async function runVideoExportInner(opts) {
     const wasRunning = renderer.isRunning
     const pausedNormalizedTime = renderer.getPausedNormalizedTime()
 
-    if (wasRunning) {
-        renderer.stop()
-    }
-
     const originalRes = getResolution()
+    const captureOriginal = typeof renderer.renderFullResolution === 'function'
+    let exportCanvas = canvas
+    let captureSession = null
+    const videos = typeof renderer.getVideoMediaIterator === 'function'
+        ? [...renderer.getVideoMediaIterator()].map(({ videoElement, duration }) => ({
+            element: videoElement, duration, currentTime: videoElement.currentTime, paused: videoElement.paused,
+        })) : []
+    if (videos.some(video => !Number.isFinite(video.duration) || video.duration <= 0)) {
+        const error = new Error('Video export requires a finite source duration. Reimport a seekable video file with duration metadata.')
+        error.code = 'VIDEO_DURATION_UNAVAILABLE'
+        throw error
+    }
+    const videoOffsets = new Map(videos.map(video => [video.element,
+        settings.playFrom === 'beginning' ? 0 : video.currentTime]))
+    let stopRequested = false
     let started = false  // track whether encoder was started, for cleanup
     // Only restore resolution if we changed it. Without this flag, the finally
     // block snapshots `originalRes` at entry and unconditionally restores —
@@ -52,15 +63,30 @@ async function runVideoExportInner(opts) {
     let wasResized = false
 
     try {
-        if (settings.width !== originalRes.width || settings.height !== originalRes.height) {
+        if (wasRunning) {
+            stopRequested = true
+            renderer.stop()
+        }
+        for (const video of videos) video.element.pause()
+        if (captureOriginal) {
+            exportCanvas = document.createElement('canvas')
+            exportCanvas.width = settings.width
+            exportCanvas.height = settings.height
+            if (typeof renderer.createFullResolutionCapture === 'function') {
+                captureSession = await renderer.createFullResolutionCapture({ width: settings.width, height: settings.height })
+            }
+        }
+        if (!captureOriginal && (settings.width !== originalRes.width || settings.height !== originalRes.height)) {
             wasResized = true
             setResolution(settings.width, settings.height)
             await waitFrame()
         }
 
         if (settings.playFrom === 'beginning') {
-            await seekAllVideos(renderer, 0)
+            await seekAllVideos(renderer, 0, abortSignal)
         }
+
+        if (abortSignal?.aborted) throw cancelledError()
 
         const exportSettings = {
             width: settings.width,
@@ -75,9 +101,9 @@ async function runVideoExportInner(opts) {
         }
 
         if (settings.format === 'mp4') {
-            await files.startRecordingMP4(canvas, exportSettings)
+            await files.startRecordingMP4(exportCanvas, exportSettings)
         } else {
-            files.saveZip(exportSettings)
+            await files.saveZip(exportSettings)
         }
         started = true
 
@@ -102,21 +128,36 @@ async function runVideoExportInner(opts) {
             const baseNormalizedTime = timeInLoop / exportDurationSec
             const normalizedTime = (baseNormalizedTime + timeOffset) % 1
 
-            await seekAllVideos(renderer, targetTimeSec)
+            await seekAllVideos(renderer, targetTimeSec, abortSignal, videoOffsets)
             renderer.updateVideoTextures()
-            renderer.render(normalizedTime)
+            if (captureOriginal) {
+                const frame = captureSession ? await captureSession.render(normalizedTime)
+                    : await renderer.renderFullResolution({
+                        width: settings.width, height: settings.height, normalizedTime,
+                    })
+                if (!frame || frame.width !== settings.width || frame.height !== settings.height) {
+                    throw new Error('Full-resolution video capture returned incorrect frame dimensions')
+                }
+                const context = exportCanvas.getContext('2d')
+                if (!context) throw new Error('Could not allocate the video export frame')
+                context.clearRect(0, 0, exportCanvas.width, exportCanvas.height)
+                context.drawImage(frame, 0, 0)
+            } else {
+                renderer.render(normalizedTime)
+            }
             await waitFrame()
+            if (abortSignal?.aborted) throw cancelledError()
 
             if (settings.format === 'mp4') {
-                files.encodeVideoFrame(canvas, {
+                await files.encodeVideoFrame(exportCanvas, {
                     framerate: settings.framerate,
                     videoQuality: settings.quality
                 })
             } else {
-                const pixels = readRenderPixels(canvas, 0, 0, canvas.width, canvas.height)
-                files.addZipFrame(pixels, {
-                    width: canvas.width,
-                    height: canvas.height,
+                const pixels = readRenderPixels(exportCanvas, 0, 0, exportCanvas.width, exportCanvas.height)
+                await files.addZipFrame(pixels, {
+                    width: exportCanvas.width,
+                    height: exportCanvas.height,
                     totalFrames
                 })
             }
@@ -185,43 +226,69 @@ async function runVideoExportInner(opts) {
         throw err
     } finally {
         let restoreError = null
-        const attemptRestore = (restore) => {
+        const attemptRestore = async (restore) => {
             try {
-                restore()
+                await restore()
             } catch (err) {
                 if (!restoreError) restoreError = err
             }
         }
+        if (captureSession) await attemptRestore(() => captureSession.dispose())
         if (wasResized) {
-            attemptRestore(() => setResolution(originalRes.width, originalRes.height))
+            await attemptRestore(() => setResolution(originalRes.width, originalRes.height))
         }
-        if (wasRunning) {
-            attemptRestore(() => renderer.restoreLoopFromNormalizedTime(pausedNormalizedTime))
-            attemptRestore(() => renderer.start())
-        } else if (wasResized) {
-            attemptRestore(() => renderer.render(pausedNormalizedTime))
+        for (const video of videos) {
+            await attemptRestore(() => seekVideo(video.element, video.currentTime))
+        }
+        await attemptRestore(() => renderer.updateVideoTextures())
+        if (stopRequested) {
+            await attemptRestore(() => renderer.restoreLoopFromNormalizedTime(pausedNormalizedTime))
+            await attemptRestore(() => renderer.start())
+        } else {
+            await attemptRestore(() => renderer.render(pausedNormalizedTime))
+        }
+        for (const video of videos) {
+            if (!video.paused) await attemptRestore(() => video.element.play())
         }
         if (restoreError) throw restoreError
     }
 }
 
-async function seekAllVideos(renderer, timeSec) {
+function cancelledError() {
+    const error = new Error('Export cancelled')
+    error.code = 'JOB_CANCELLED'
+    return error
+}
+
+async function seekAllVideos(renderer, timeSec, abortSignal, offsets = new Map()) {
     if (typeof renderer.getVideoMediaIterator !== 'function') return
-    const promises = []
-    for (const { videoElement, duration } of renderer.getVideoMediaIterator()) {
-        const seekTime = timeSec % duration
-        if (Math.abs(videoElement.currentTime - seekTime) > 0.01) {
-            promises.push(new Promise(resolve => {
-                const onSeeked = () => {
-                    videoElement.removeEventListener('seeked', onSeeked)
-                    resolve()
-                }
-                videoElement.addEventListener('seeked', onSeeked)
-                videoElement.currentTime = seekTime
-            }))
+    await Promise.all([...renderer.getVideoMediaIterator()].map(({ videoElement, duration }) => {
+        const absoluteTime = timeSec + (offsets.get(videoElement) || 0)
+        const time = Number.isFinite(duration) && duration > 0 ? absoluteTime % duration : absoluteTime
+        return seekVideo(videoElement, time, abortSignal)
+    }))
+}
+
+function seekVideo(video, time, abortSignal) {
+    if (abortSignal?.aborted) return Promise.reject(cancelledError())
+    if (!video.seeking && Math.abs(video.currentTime - time) <= 0.000001) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+        const cleanup = () => {
+            clearTimeout(timer)
+            video.removeEventListener('seeked', onSeeked)
+            video.removeEventListener('error', onError)
+            abortSignal?.removeEventListener('abort', onAbort)
         }
-    }
-    await Promise.all(promises)
+        const finish = error => { cleanup(); error ? reject(error) : resolve() }
+        const onSeeked = () => finish()
+        const onError = () => finish(new Error('Video frame seeking failed'))
+        const onAbort = () => finish(cancelledError())
+        const timer = setTimeout(() => finish(new Error('Timed out seeking a video frame')), 10000)
+        video.addEventListener('seeked', onSeeked)
+        video.addEventListener('error', onError)
+        abortSignal?.addEventListener('abort', onAbort, { once: true })
+        try { video.currentTime = time } catch (error) { finish(error) }
+    })
 }
 
 function waitFrame() {

@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Move tool - media base layer', () => {
     test('move selection works when image is opened directly as base layer', async ({ page }) => {

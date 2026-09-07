@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Image menu - Image Size', () => {
     test('resize image scales canvas and layers', async ({ page }) => {

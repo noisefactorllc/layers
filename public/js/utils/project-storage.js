@@ -5,6 +5,8 @@
  * @module utils/project-storage
  */
 
+import { writeTransaction } from './idb.js'
+
 const DB_NAME = 'layers-projects'
 const DB_VERSION = 1
 const STORE_PROJECTS = 'projects'
@@ -66,107 +68,22 @@ async function generateMediaId(blob) {
     return hashHex.substring(0, 16)
 }
 
-/**
- * Save a media blob to IndexedDB
- * @param {string} mediaId - Media ID
- * @param {Blob} blob - Media blob
- * @param {string} name - Original filename
- * @param {string} type - MIME type
- * @returns {Promise<void>}
- */
-async function saveMedia(mediaId, blob, name, type) {
+/** Delete unreferenced media under the same lock used to commit projects. */
+async function cleanupUnusedMedia() {
     const database = await initDB()
-
-    return new Promise((resolve, reject) => {
-        const tx = database.transaction(STORE_MEDIA, 'readwrite')
-        const store = tx.objectStore(STORE_MEDIA)
-
-        const data = {
-            id: mediaId,
-            blob,
-            name,
-            type,
-            savedAt: Date.now()
-        }
-
-        const request = store.put(data)
-        request.onsuccess = () => resolve()
-        request.onerror = () => reject(request.error)
-    })
-}
-
-/**
- * Load a media blob from IndexedDB
- * @param {string} mediaId - Media ID
- * @returns {Promise<{blob: Blob, name: string, type: string}|null>}
- */
-async function loadMedia(mediaId) {
-    const database = await initDB()
-
-    return new Promise((resolve, reject) => {
-        const tx = database.transaction(STORE_MEDIA, 'readonly')
-        const store = tx.objectStore(STORE_MEDIA)
-
-        const request = store.get(mediaId)
-        request.onsuccess = () => {
-            if (!request.result) return resolve(null)
-            const { blob, name, type } = request.result
-            resolve({ blob, name, type })
-        }
-        request.onerror = () => reject(request.error)
-    })
-}
-
-/**
- * Delete media blobs that are no longer referenced by any project
- * @param {Set<string>} usedMediaIds - Set of media IDs still in use
- * @returns {Promise<void>}
- */
-async function cleanupUnusedMedia(usedMediaIds) {
-    const database = await initDB()
-
-    return new Promise((resolve, reject) => {
-        const tx = database.transaction(STORE_MEDIA, 'readwrite')
-        const store = tx.objectStore(STORE_MEDIA)
-
-        const request = store.openCursor()
-        request.onsuccess = (event) => {
-            const cursor = event.target.result
-            if (cursor) {
-                if (!usedMediaIds.has(cursor.key)) {
-                    cursor.delete()
-                }
-                cursor.continue()
-            } else {
-                resolve()
+    return writeTransaction(database, [STORE_PROJECTS, STORE_MEDIA], tx => {
+        const projects = tx.objectStore(STORE_PROJECTS).getAll()
+        projects.onsuccess = () => {
+            const usedIds = new Set(projects.result.flatMap(project =>
+                project.layers.map(layer => layer.mediaId).filter(Boolean)))
+            const cursor = tx.objectStore(STORE_MEDIA).openCursor()
+            cursor.onsuccess = () => {
+                if (!cursor.result) return
+                if (!usedIds.has(cursor.result.key)) cursor.result.delete()
+                cursor.result.continue()
             }
         }
-        request.onerror = () => reject(request.error)
     })
-}
-
-/**
- * Get all media IDs referenced by all projects
- * @returns {Promise<Set<string>>}
- */
-async function getAllUsedMediaIds() {
-    // listProjects() returns only metadata (id/name/dates) — it strips `layers`.
-    // Fetch each full project record so we can see which media blobs are still
-    // referenced; otherwise the set is always empty and cleanupUnusedMedia()
-    // would delete every blob (including those used by other projects).
-    const list = await listProjects()
-    const usedIds = new Set()
-
-    for (const { id } of list) {
-        const project = await getProject(id)
-        for (const layer of project?.layers || []) {
-            if (layer.mediaId) {
-                usedIds.add(layer.mediaId)
-            }
-        }
-    }
-
-    return usedIds
 }
 
 /**
@@ -198,6 +115,7 @@ export async function saveProject(projectData, existingId = null) {
     const now = Date.now()
 
     const processedLayers = []
+    const mediaRecords = new Map()
     for (const layer of projectData.layers) {
         // drawingCanvas holds a live HTMLCanvasElement (rasterized strokes) which
         // is not structured-cloneable — IndexedDB put() would throw DataCloneError.
@@ -206,7 +124,13 @@ export async function saveProject(projectData, existingId = null) {
 
         if (layer.sourceType === 'media' && layer.mediaFile) {
             const mediaId = await generateMediaId(layer.mediaFile)
-            await saveMedia(mediaId, layer.mediaFile, layer.mediaFile.name, layer.mediaFile.type)
+            mediaRecords.set(mediaId, {
+                id: mediaId,
+                blob: layer.mediaFile,
+                name: layer.mediaFile.name,
+                type: layer.mediaFile.type,
+                savedAt: now,
+            })
             processedLayer.mediaId = mediaId
             processedLayer.mediaFileName = layer.mediaFile.name
             processedLayer.mediaFileType = layer.mediaFile.type
@@ -229,13 +153,11 @@ export async function saveProject(projectData, existingId = null) {
         layers: processedLayers
     }
 
-    return new Promise((resolve, reject) => {
-        const tx = database.transaction(STORE_PROJECTS, 'readwrite')
-        const store = tx.objectStore(STORE_PROJECTS)
-
-        const request = store.put(project)
-        request.onsuccess = () => resolve(projectId)
-        request.onerror = () => reject(request.error)
+    return writeTransaction(database, [STORE_PROJECTS, STORE_MEDIA], (tx) => {
+        const media = tx.objectStore(STORE_MEDIA)
+        for (const record of mediaRecords.values()) media.put(record)
+        tx.objectStore(STORE_PROJECTS).put(project)
+        return projectId
     })
 }
 
@@ -263,21 +185,31 @@ export async function getProject(projectId) {
  * @returns {Promise<{project: Project, mediaFiles: Map<string, File>}|null>}
  */
 export async function loadProject(projectId) {
-    const project = await getProject(projectId)
-    if (!project) return null
-
-    const mediaFiles = new Map()
-
-    for (const layer of project.layers) {
-        if (layer.sourceType === 'media' && layer.mediaId) {
-            const media = await loadMedia(layer.mediaId)
-            if (media) {
-                mediaFiles.set(layer.id, new File([media.blob], media.name, { type: media.type }))
+    const database = await initDB()
+    return new Promise((resolve, reject) => {
+        // The project and all its blobs form one read snapshot. Another tab
+        // may overwrite/delete them only after this transaction completes.
+        const tx = database.transaction([STORE_PROJECTS, STORE_MEDIA], 'readonly')
+        let result = null
+        tx.oncomplete = () => resolve(result)
+        tx.onabort = () => reject(tx.error || new DOMException('Project read aborted', 'AbortError'))
+        const request = tx.objectStore(STORE_PROJECTS).get(projectId)
+        request.onsuccess = () => {
+            if (!request.result) return
+            const project = request.result
+            const mediaFiles = new Map()
+            result = { project, mediaFiles }
+            for (const layer of project.layers) {
+                if (layer.sourceType !== 'media' || !layer.mediaId) continue
+                const media = tx.objectStore(STORE_MEDIA).get(layer.mediaId)
+                media.onsuccess = () => {
+                    if (!media.result) return
+                    const { blob, name, type } = media.result
+                    mediaFiles.set(layer.id, new File([blob], name, { type }))
+                }
             }
         }
-    }
-
-    return { project, mediaFiles }
+    })
 }
 
 /**
@@ -317,18 +249,12 @@ export async function listProjects() {
 export async function deleteProject(projectId) {
     const database = await initDB()
 
-    await new Promise((resolve, reject) => {
-        const tx = database.transaction(STORE_PROJECTS, 'readwrite')
-        const store = tx.objectStore(STORE_PROJECTS)
-
-        const request = store.delete(projectId)
-        request.onsuccess = () => resolve()
-        request.onerror = () => reject(request.error)
+    await writeTransaction(database, STORE_PROJECTS, (tx) => {
+        tx.objectStore(STORE_PROJECTS).delete(projectId)
     })
 
     try {
-        const usedIds = await getAllUsedMediaIds()
-        await cleanupUnusedMedia(usedIds)
+        await cleanupUnusedMedia()
     } catch (e) {
         console.warn('[ProjectStorage] Media cleanup failed:', e)
     }

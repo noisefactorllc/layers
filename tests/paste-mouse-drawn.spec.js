@@ -1,4 +1,5 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
+import { seedClipboardRead } from './helpers/clipboard.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -10,16 +11,7 @@ async function createTransparentProject(page) {
 }
 
 async function copyColorSquareToClipboard(page, color) {
-    await page.evaluate(async (fillColor) => {
-        const canvas = document.createElement('canvas')
-        canvas.width = 50
-        canvas.height = 50
-        const ctx = canvas.getContext('2d')
-        ctx.fillStyle = fillColor
-        ctx.fillRect(0, 0, 50, 50)
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
-        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
-    }, color)
+    await seedClipboardRead(page, { width: 50, height: 50, color })
 }
 
 async function drawMouseSelection(page, overlayBox, startOffset, endOffset) {
@@ -45,9 +37,7 @@ function getSelectionInfo() {
 }
 
 test.describe('Paste with real mouse-drawn selection', () => {
-    test('mouse-drawn selection matches pasted image dimensions', async ({ page, context }) => {
-        await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-
+    test('mouse-drawn selection matches pasted image dimensions', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
@@ -107,9 +97,7 @@ test.describe('Paste with real mouse-drawn selection', () => {
         expect(Math.abs(pastedInfo.offsetY - expectedOffsetY)).toBeLessThan(3)
     })
 
-    test('non-square mouse selection pastes correct aspect ratio', async ({ page, context }) => {
-        await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-
+    test('non-square mouse selection pastes correct aspect ratio', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)

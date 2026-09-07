@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // In-page unit tests of public/js/collab/docModel.js — the pure Layers <->
 // Seance node-doc mapping (dialect "layers", design doc §5). No app

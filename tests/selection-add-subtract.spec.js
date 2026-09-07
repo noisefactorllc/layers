@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 // Regression tests for two selection-manager defects:
 //  1. rect/oval/lasso mousedown cleared the existing selection BEFORE capturing

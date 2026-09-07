@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 test.describe('Export Image Dialog', () => {
     test.beforeEach(async ({ page }) => {
@@ -133,7 +133,7 @@ test.describe('Export Image Dialog', () => {
         })
     })
 
-    test('resolution restore failure releases the project lifecycle lease', async ({ page }) => {
+    test('full-resolution capture failure releases the project lifecycle lease', async ({ page }) => {
         await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '64')
@@ -142,17 +142,8 @@ test.describe('Export Image Dialog', () => {
         const result = await page.evaluate(async () => {
             const app = window.layersApp
             const dialog = app._exportImageDialog
-            const original = { ...dialog.originalResolution }
-            const setResolution = dialog.setResolution
-            let resized = false
             dialog.files.saveImage = () => {}
-            dialog.setResolution = (width, height) => {
-                setResolution(width, height)
-                if (resized && width === original.width && height === original.height) {
-                    throw new Error('image restore failed')
-                }
-                resized = true
-            }
+            dialog.captureCanvas = async () => { throw new Error('original capture failed') }
             let error = null
             try {
                 await dialog._export()
@@ -204,7 +195,7 @@ test.describe('Export Image Dialog', () => {
         })
     })
 
-    test('temporary export resize restores the begin-time canvas size', async ({ page }) => {
+    test('detached export preserves the begin-time canvas size', async ({ page }) => {
         await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '64')
@@ -233,7 +224,7 @@ test.describe('Export Image Dialog', () => {
         })
     })
 
-    test('temporary export resize rerenders the restored canvas while paused', async ({ page }) => {
+    test('detached export preserves the live canvas pixels while paused', async ({ page }) => {
         await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '64')
@@ -269,7 +260,7 @@ test.describe('Export Image Dialog', () => {
         expect(result.rendererRunning).toBe(false)
     })
 
-    test('job polling hides the temporary image export resolution', async ({ page }) => {
+    test('job polling retains document dimensions during detached image capture', async ({ page }) => {
         await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportImageMenuItem')
         await page.fill('#exportImageWidth', '64')
@@ -282,15 +273,15 @@ test.describe('Export Image Dialog', () => {
                 canvas: { width: app._canvas.width, height: app._canvas.height },
                 isPlaying: app._renderer.isRunning,
             }
-            const setResolution = dialog.setResolution
+            const captureCanvas = dialog.captureCanvas
             let pollPromise = null
-            dialog.setResolution = (width, height) => {
-                setResolution(width, height)
+            dialog.captureCanvas = async ({ width, height }) => {
                 if (width === 64 && height === 66) {
                     pollPromise = window.LayersAgent.getJob({
                         jobId: 'missing-image-export-observer',
                     })
                 }
+                return captureCanvas({ width, height })
             }
             dialog.files.saveImage = () => {}
             await dialog._export()

@@ -1,4 +1,4 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
 
 async function openFileMenuItem(page, menuItemId) {
     await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()

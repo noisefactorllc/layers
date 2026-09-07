@@ -1,4 +1,5 @@
-import { test, expect } from 'playwright/test'
+import { test, expect } from './fixtures.js'
+import { readFile } from 'node:fs/promises'
 
 // Differential render tests for CPU-side media transforms (scale/flip).
 //
@@ -13,7 +14,7 @@ import { test, expect } from 'playwright/test'
 // Both paths now draw into a shared per-media DOM canvas helper.
 // (Rotation is a shader uniform and unaffected throughout.)
 //
-// The video fixture is a MediaRecorder-captured webm whose every frame is
+// The checked-in video fixture is an indexed WebM whose every frame is
 // the same left-red / right-blue pattern, so pixel expectations are stable
 // regardless of playback position or looping.
 
@@ -30,43 +31,17 @@ async function bootApp(page) {
     }
 }
 
-/** Record a 64x64 left-red/right-blue webm and add it as a video layer. */
+/** Add the deterministic 64x64 left-red/right-blue video fixture. */
 async function addStripeVideoLayer(page) {
-    const setup = await page.evaluate(async () => {
-        const W = 64, H = 64
-        const c = document.createElement('canvas')
-        c.width = W
-        c.height = H
-        const ctx = c.getContext('2d')
-        const paint = () => {
-            ctx.fillStyle = '#ff0000'
-            ctx.fillRect(0, 0, W / 2, H)
-            ctx.fillStyle = '#0000ff'
-            ctx.fillRect(W / 2, 0, W / 2, H)
-        }
-        paint()
-        const stream = c.captureStream(20)
-        const rec = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' })
-        const chunks = []
-        rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data) }
-        const stopped = new Promise(r => { rec.onstop = r })
-        rec.start()
-        // Repaint on an interval so the captured stream keeps emitting frames.
-        const iv = setInterval(paint, 40)
-        await new Promise(r => setTimeout(r, 800))
-        clearInterval(iv)
-        rec.stop()
-        await stopped
-
-        const blob = new Blob(chunks, { type: 'video/webm' })
-        if (!blob.size) return { error: 'empty recording' }
-        const file = new File([blob], 'stripe.webm', { type: 'video/webm' })
+    const bytes = await readFile(new URL('./fixtures/stripe-video.webm', import.meta.url))
+    const setup = await page.evaluate(async base64 => {
+        const file = new File([Uint8Array.from(atob(base64), c => c.charCodeAt(0))],
+            'stripe.webm', { type: 'video/webm' })
         await window.layersApp._handleAddMediaLayer(file, 'video')
         const layer = window.layersApp._layers[window.layersApp._layers.length - 1]
         const media = window.layersApp._renderer.getMediaInfo(layer.id)
         return { layerId: layer.id, mediaW: media?.width, mediaH: media?.height }
-    })
-    expect(setup.error).toBeUndefined()
+    }, bytes.toString('base64'))
     expect(setup.mediaW).toBe(64)
     expect(setup.mediaH).toBe(64)
     return setup.layerId
