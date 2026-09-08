@@ -1,9 +1,11 @@
 import { test, expect } from './fixtures.js'
 
-async function createTransparentProject(page) {
+async function createTransparentProject(page, size = 1024) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    await page.fill('#canvas-width', String(size))
+    await page.fill('#canvas-height', String(size))
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await page.waitForTimeout(500)
@@ -85,8 +87,9 @@ test.describe('Move tool', () => {
     test('moving selection extracts pixels to new layer', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-        await createTransparentProject(page)
-        await addColorLayer(page, 'blue', 1024)
+        // Keep the complete selection and native pointer path inside the image.
+        await createTransparentProject(page, 256)
+        await addColorLayer(page, 'blue', 256)
 
         const initialLayerCount = await page.evaluate(() => window.layersApp._layers.length)
 

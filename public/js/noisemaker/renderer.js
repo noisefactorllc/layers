@@ -2039,10 +2039,9 @@ export class LayersRenderer {
      * Build DSL lines for a layer's visible child effects.
      *
      * A child carrying its own mask (captured from the marquee selection at
-     * apply time) must not alter pixels outside that mask: the effected
-     * frame's alpha is clipped to the mask, then composited back over the
-     * unaffected input (alphaMask mix:0 is Porter-Duff tex-over-input), so
-     * outside the mask the input passes through untouched.
+     * apply time) interpolates the original and effected premultiplied RGBA
+     * by that mask. Outside it the input passes through untouched; inside
+     * it the effect can change color or alpha without doubling coverage.
      * @param {object} layer - Parent layer
      * @param {number} currentOutput - Current output buffer index
      * @param {string[]} lines - DSL lines array to append to
@@ -2054,17 +2053,10 @@ export class LayersRenderer {
         for (const child of visibleChildren) {
             const effectCall = this._buildEffectCall(child)
             if (child.mask) {
-                // Note: the final composite's alpha is max(input, clipped fx)
-                // per the alphaMask shader, so an alpha-REDUCING child effect
-                // can't fully erase inside its mask — the original alpha wins
-                // proportionally to what the effect removed. Irrelevant for
-                // color filters, which preserve alpha.
                 const fxOutput = currentOutput + 1
-                const clippedOutput = currentOutput + 2
-                const composedOutput = currentOutput + 3
+                const composedOutput = currentOutput + 2
                 lines.push(`read(o${currentOutput}).${effectCall}.write(o${fxOutput})`)
-                lines.push(`read(o${fxOutput}).alphaMask(tex: media(), maskMode: 1).write(o${clippedOutput})`)
-                lines.push(`read(o${currentOutput}).alphaMask(tex: read(o${clippedOutput}), mix: 0).write(o${composedOutput})`)
+                lines.push(`read(o${fxOutput}).alphaMask(tex: media(), baseTex: read(o${currentOutput}), maskMode: 1).write(o${composedOutput})`)
                 currentOutput = composedOutput
             } else {
                 const nextOutput = currentOutput + 1

@@ -1,4 +1,9 @@
 import { test, expect } from './fixtures.js'
+import { installNoisemakerSource } from './noisemaker-source.js'
+
+test.beforeEach(async ({ page }) => {
+    await installNoisemakerSource(page, [['mixer/alphaMask', 'alphaMask']])
+})
 
 test('full-resolution image resource preserves native dimensions and original File with a bounded preview', async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })

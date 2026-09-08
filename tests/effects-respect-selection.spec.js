@@ -1,4 +1,9 @@
 import { test, expect } from './fixtures.js'
+import { installNoisemakerSource } from './noisemaker-source.js'
+
+test.beforeEach(async ({ page }) => {
+    await installNoisemakerSource(page, [['mixer/alphaMask', 'alphaMask']])
+})
 
 // Effects must never alter pixels outside the active selection marquee or
 // outside the target layer's mask. Applying an effect while a marquee

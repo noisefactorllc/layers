@@ -1,30 +1,13 @@
 import { test, expect } from './fixtures.js'
-import { readFile } from 'node:fs/promises'
-import path from 'node:path'
+import { installNoisemakerSource } from './noisemaker-source.js'
 import { PNG } from 'pngjs'
 
 const source = new PNG({ width: 64, height: 64 })
 for (let i = 0; i < source.data.length; i += 4) source.data.set([128, 64, 32, 128], i)
 const sourcePng = PNG.sync.write(source).toString('base64')
 
-// Release CI tests the exact pinned CDN artifact. A local source override can
-// certify a pending Noisemaker shader fix without building/publishing it.
 test.beforeEach(async ({ page }) => {
-    if (!process.env.LAYERS_NOISEMAKER_SOURCE) return
-    for (const [effect, program] of [['mixer/blendMode', 'blendMode'], ['synth/media', 'mediaInput']]) {
-        const root = path.join(process.env.LAYERS_NOISEMAKER_SOURCE, 'shaders/effects', effect)
-        const shaders = {
-            glsl: await readFile(path.join(root, `glsl/${program}.glsl`), 'utf8'),
-            wgsl: await readFile(path.join(root, `wgsl/${program}.wgsl`), 'utf8'),
-        }
-        await page.route(`https://shaders.noisedeck.app/*/effects/${effect}.js`, async route => {
-            const response = await route.fetch()
-            const source = await response.text()
-            const name = source.match(/export\s*\{\s*([\w$]+)\s+as\s+default\b/)?.[1]
-            if (!name) throw new Error('Cannot locate bundled effect export for source verification')
-            await route.fulfill({ response, body: `${source}\n${name}.shaders.${program} = ${JSON.stringify(shaders)};` })
-        })
-    }
+    await installNoisemakerSource(page, [['mixer/blendMode', 'blendMode'], ['synth/media', 'mediaInput']])
 })
 
 for (const opacity of [100, 50]) {

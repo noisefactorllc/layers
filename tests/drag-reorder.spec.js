@@ -4,6 +4,9 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    // Reorder geometry is independent of the rendered image size.
+    await page.fill('#canvas-width', '128')
+    await page.fill('#canvas-height', '128')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await page.waitForTimeout(500)
@@ -19,6 +22,8 @@ async function addEffectLayer(page, searchTerm) {
     await page.waitForSelector('.effect-item')
     await page.click('.effect-item')
     await page.waitForSelector('dialog[open]', { state: 'hidden' })
+    // The picker closes before shader compilation commits the new layer.
+    await page.evaluate(async () => { await window.layersApp._projectLifecycleTail })
 }
 
 test.describe('Layer drag reorder', () => {

@@ -1806,57 +1806,99 @@ test.describe('Atomic project replacement', () => {
         expect(result.storedLayerIds).toEqual(result.originalLayerIds)
     })
 
-    test('image export holds the lifecycle lease until its resolution is restored', async ({ page }) => {
+    test('image export holds the lifecycle lease through native capture and save', async ({ page }) => {
         await bootSolid(page)
 
         const result = await page.evaluate(async () => {
             const app = window.layersApp
-            const original = { width: app._canvas.width, height: app._canvas.height }
-            const originalRaf = window.requestAnimationFrame.bind(window)
-            let releaseExportFrame
-            let held = false
-            window.requestAnimationFrame = (callback) => {
-                if (!held) {
-                    held = true
-                    releaseExportFrame = () => originalRaf(callback)
-                    return 1
-                }
-                return originalRaf(callback)
-            }
-            app._files.saveImage = () => {}
-            app._exportImageDialog.open()
-            document.getElementById('exportImageWidth').value = '200'
-            document.getElementById('exportImageHeight').value = '100'
-            const exportPromise = app._exportImageDialog._export()
-            while (!held) await new Promise(resolve => setTimeout(resolve, 0))
-
+            const dialog = app._exportImageDialog
+            const original = [app._canvas.width, app._canvas.height]
+            const captureCanvas = dialog.captureCanvas
+            const saveImage = app._files.saveImage
+            const stageLayerSet = app._renderer.stageLayerSet
+            const resizeCanvas = app._resizeCanvas
+            let releaseCapture
+            const captureGate = new Promise(resolve => { releaseCapture = resolve })
+            let signalCaptured
+            const captured = new Promise(resolve => { signalCaptured = resolve })
             let replacementStageReached = false
-            const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
-            app._renderer.stageLayerSet = async (candidate) => {
-                replacementStageReached = true
-                return stageLayerSet(candidate)
-            }
-            const replacementPromise = app._handleCreateGradientBase(333, 222)
-            await new Promise(resolve => setTimeout(resolve, 30))
-            const replacementWaited = !replacementStageReached
-            releaseExportFrame()
-            await exportPromise
-            const restoredBeforeReplacement = app._canvas.width === original.width
-                && app._canvas.height === original.height
-            const status = await replacementPromise
-            window.requestAnimationFrame = originalRaf
-            return {
-                replacementWaited,
-                restoredBeforeReplacement,
-                status,
-                width: app._canvas.width,
-                height: app._canvas.height,
+            let dimensionsAtSave = null
+            let dimensionsAtReplacement = null
+            let savedResolution = null
+            let leaseHeldAtSave = false
+            let savedBeforeReplacement = false
+            let exportPromise
+            let replacementPromise
+            try {
+                dialog.captureCanvas = async options => {
+                    const canvas = await captureCanvas(options)
+                    signalCaptured()
+                    await captureGate
+                    return canvas
+                }
+                app._files.saveImage = canvas => {
+                    savedResolution = [canvas.width, canvas.height]
+                    dimensionsAtSave = [app._canvas.width, app._canvas.height]
+                    leaseHeldAtSave = Boolean(app._projectLifecycleActive)
+                }
+                app._renderer.stageLayerSet = async candidate => {
+                    replacementStageReached = true
+                    return stageLayerSet.call(app._renderer, candidate)
+                }
+                app._resizeCanvas = (width, height, ...args) => {
+                    if (width === 333 && height === 222) {
+                        dimensionsAtReplacement = [app._canvas.width, app._canvas.height]
+                        savedBeforeReplacement = savedResolution !== null
+                    }
+                    return resizeCanvas.call(app, width, height, ...args)
+                }
+                dialog.open()
+                document.getElementById('exportImageWidth').value = '200'
+                document.getElementById('exportImageHeight').value = '100'
+                exportPromise = dialog._export()
+                await Promise.race([
+                    captured,
+                    exportPromise.then(() => { throw new Error('Export finished before native capture was held') }),
+                ])
+                replacementPromise = app._handleCreateGradientBase(333, 222)
+                const deadline = performance.now() + 5000
+                while (!app._projectLifecycleWaiters && !replacementStageReached && !dimensionsAtReplacement) {
+                    if (performance.now() > deadline) throw new Error('Replacement neither queued nor started')
+                    await new Promise(resolve => setTimeout(resolve, 0))
+                }
+                const replacementWaited = !replacementStageReached && !dimensionsAtReplacement
+                    && app._projectLifecycleWaiters > 0
+                releaseCapture()
+                await exportPromise
+                const status = await replacementPromise
+                return {
+                    replacementWaited,
+                    originalPreservedThroughSave: JSON.stringify(dimensionsAtSave) === JSON.stringify(original),
+                    originalPreservedUntilReplacement: JSON.stringify(dimensionsAtReplacement) === JSON.stringify(original),
+                    savedResolution,
+                    leaseHeldAtSave,
+                    savedBeforeReplacement,
+                    status,
+                    width: app._canvas.width,
+                    height: app._canvas.height,
+                }
+            } finally {
+                releaseCapture()
+                await Promise.allSettled([exportPromise, replacementPromise])
+                dialog.captureCanvas = captureCanvas
+                app._files.saveImage = saveImage
+                app._renderer.stageLayerSet = stageLayerSet
+                app._resizeCanvas = resizeCanvas
             }
         })
 
         expect(result).toEqual({
             replacementWaited: true,
-            restoredBeforeReplacement: true,
+            originalPreservedThroughSave: true,
+            originalPreservedUntilReplacement: true,
+            savedResolution: [200, 100],
+            leaseHeldAtSave: true,
+            savedBeforeReplacement: true,
             status: 'opened',
             width: 333,
             height: 222,
