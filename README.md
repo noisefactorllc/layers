@@ -19,6 +19,14 @@ Layers is a browser-based media editor with non-destructive layer compositing, p
 - Undo/redo with debounced parameter tracking
 - Online collaboration (see below)
 
+## Saving, recovery, and export
+
+Save projects explicitly to keep them in this browser's IndexedDB storage. Layers also writes local recovery checkpoints while you edit. If unsaved work is available, use **File → recover unsaved work...** to restore it. **Keep for later** preserves a recovery copy for a later session. Checkpoints are asynchronous and can lag recent edits; they do not replace saving your project.
+
+Undo history retains up to 50 states, including the current state, within an estimated 128 MiB budget. Older states are removed first. A large document can exceed that budget on its own, leaving the current state with no undo step. This budget covers retained history data, not the editor's total memory use.
+
+Image imports retain the original file and dimensions while using a bounded interactive preview. Exports render at the requested dimensions, up to 8192 pixels per side and 33,554,432 pixels total, subject to the device's GPU limits. Large exports use tiles for supported layer combinations. Effects that cannot be tiled without changing their pixels must fit the GPU memory budget as a complete frame. If Layers rejects the requested size, choose smaller export dimensions; some original media can also exceed the device's texture limit.
+
 ## Requirements
 
 - Node.js and npm
@@ -44,6 +52,15 @@ End-to-end tests use Playwright:
 ```
 npm test
 ```
+
+On Linux, the Firefox and WebKit CI jobs use a virtual display. Run their suites with:
+
+```sh
+xvfb-run -a npm test -- --project=firefox --headed
+WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS=1 xvfb-run -a npm test -- --project=webkit --headed --workers=1
+```
+
+The WebKit command uses its upstream GLib test policy for offscreen video playback. These runs do not certify Apple Safari or default GTK offscreen-video behavior. CI runs the full Chromium, Firefox, and WebKit suites and requires every collected test to pass before releasing that source commit.
 
 ## Online collaboration
 
