@@ -43,7 +43,7 @@ This starts a local server on port 3002.
 
 ### Noisemaker
 
-Layers loads the shader pipeline at runtime from the [Noisemaker](https://github.com/noisefactorllc/noisemaker) CDN at `shaders.noisedeck.app`.
+Layers loads the shader pipeline at runtime from the [Noisemaker](https://github.com/noisefactorllc/noisemaker) CDN at `https://shaders.noisedeck.app/1`. This follows the version 1 release channel. Browser CI records the channel's release metadata before and after testing in its evidence artifact.
 
 ## Testing
 

@@ -7,7 +7,7 @@ for (let i = 0; i < source.data.length; i += 4) source.data.set([128, 64, 32, 12
 const sourcePng = PNG.sync.write(source).toString('base64')
 
 test.beforeEach(async ({ page }) => {
-    await installNoisemakerSource(page, [['mixer/blendMode', 'blendMode'], ['synth/media', 'mediaInput']])
+    await installNoisemakerSource(page, ['mixer/blendMode', 'synth/media'])
 })
 
 for (const opacity of [100, 50]) {

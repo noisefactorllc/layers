@@ -3,7 +3,7 @@ import { PNG } from 'pngjs'
 import { installNoisemakerSource } from './noisemaker-source.js'
 
 test.beforeEach(async ({ page }) => {
-    await installNoisemakerSource(page, [['mixer/alphaMask', 'alphaMask'], ['filter/invert', 'inv'], ['filter/tint', 'colorize']])
+    await installNoisemakerSource(page, ['mixer/alphaMask', 'filter/invert', 'filter/tint'])
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden' })
     await page.click('.media-option[data-type="solid"]')

@@ -39,32 +39,73 @@ test.describe('Image menu - Resize preserves animation', () => {
         const runningAfter = await page.evaluate(() => window.layersApp._renderer.isRunning)
         expect(runningAfter).toBe(true)
 
-        // Verify animation: poll until a captured frame differs from the
-        // first. Render synchronously and read in the same task (the export
-        // pipeline's idiom) — preserveDrawingBuffer is false, so reading the
-        // GL buffer between frames is undefined and flaked. Rendering at a
-        // fixed normalizedTime pins any time-driven animation, so a diff can
-        // only come from the per-frame video texture updates this test is
-        // about. Polling observes the fixture's red and blue frames across
-        // playback and loop wraps. A frozen canvas never changes and still
-        // fails the deadline.
-        const grabRow = () => page.evaluate(async () => {
+        // Observe within the browser: round trips and whole-row readbacks
+        // can repeatedly sample the same phase of this one-second clip.
+        // Render and read in one task because preserveDrawingBuffer is false.
+        // Fixed render time excludes shader animation; only live video texture
+        // updates can change this uniform-color fixture's center pixel.
+        const observation = await page.evaluate(async () => {
             const { readRenderPixels } = await import('/js/utils/canvas-readback.js')
             const app = window.layersApp
             const canvas = app._canvas
-            app._renderer.render(0)
-            const row = readRenderPixels(canvas, 0, Math.floor(canvas.height / 2), canvas.width, 1)
-            return Array.from(row)
+            const video = [...app._renderer.getVideoMediaIterator()][0]?.videoElement
+            const started = performance.now()
+            const samples = []
+            return new Promise((resolve, reject) => {
+                let raf = null
+                let timer = null
+                let settled = false
+                let first = null
+                let lastSample = -Infinity
+                const cleanup = () => {
+                    cancelAnimationFrame(raf)
+                    clearTimeout(timer)
+                }
+                const finish = (changed) => {
+                    if (settled) return
+                    settled = true
+                    cleanup()
+                    resolve({
+                        changed,
+                        elapsedMs: Math.round(performance.now() - started),
+                        samples,
+                        video: video ? {
+                            currentTime: video.currentTime,
+                            duration: video.duration,
+                            paused: video.paused,
+                            ended: video.ended,
+                            readyState: video.readyState,
+                        } : null,
+                    })
+                }
+                const sample = () => {
+                    if (settled) return
+                    const elapsedMs = performance.now() - started
+                    if (elapsedMs >= 4000) return finish(false)
+                    try {
+                        if (elapsedMs - lastSample >= 100) {
+                            app._renderer.render(0)
+                            const rgba = Array.from(readRenderPixels(canvas,
+                                Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1))
+                            samples.push({ elapsedMs: Math.round(elapsedMs), rgba,
+                                videoTime: video?.currentTime ?? null })
+                            lastSample = elapsedMs
+                            if (first && rgba.some((value, i) => value !== first[i])) return finish(true)
+                            first = rgba
+                        }
+                        raf = requestAnimationFrame(sample)
+                    } catch (error) {
+                        settled = true
+                        cleanup()
+                        reject(error)
+                    }
+                }
+                // RAF may stop in a stalled/hidden document; its absence must
+                // still fail this observation at the same four-second deadline.
+                timer = setTimeout(() => finish(false), 4000)
+                raf = requestAnimationFrame(sample)
+            })
         })
-
-        const frame1 = await grabRow()
-        let changed = false
-        const deadline = Date.now() + 4000
-        while (!changed && Date.now() < deadline) {
-            await page.waitForTimeout(300)
-            const next = await grabRow()
-            changed = next.some((b, i) => b !== frame1[i])
-        }
-        expect(changed).toBe(true)
+        expect(observation.changed, JSON.stringify(observation)).toBe(true)
     })
 })

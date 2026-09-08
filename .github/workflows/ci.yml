@@ -79,6 +79,10 @@ jobs:
         run: node --input-type=module -e "import { hasLocalSeanceHarness } from './tests/seanceLocal.js'; if (!hasLocalSeanceHarness()) throw new Error('Seance harness unavailable')"
       - name: Install locked browser
         run: npx --no-install playwright install --with-deps ${{ matrix.browser }}
+      - name: Record shader release before testing
+        run: |
+          mkdir -p dependency-evidence
+          curl --fail --silent --show-error --max-time 30 https://shaders.noisedeck.app/1/deployment-meta.json > dependency-evidence/shaders-before.json
       - name: Test all browser and pixel regressions
         run: |
           if [ '${{ matrix.browser }}' = 'webkit' ]; then
@@ -90,6 +94,11 @@ jobs:
           else
             npm test -- --project=${{ matrix.browser }}
           fi
+      - name: Record shader release after testing
+        if: always()
+        run: |
+          mkdir -p dependency-evidence
+          curl --fail --silent --show-error --max-time 30 https://shaders.noisedeck.app/1/deployment-meta.json > dependency-evidence/shaders-after.json
       - name: Preserve browser evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -98,4 +107,5 @@ jobs:
           path: |
             layers/playwright-report/
             layers/test-results/
+            layers/dependency-evidence/
           retention-days: 14
