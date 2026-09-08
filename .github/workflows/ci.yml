@@ -84,6 +84,9 @@ jobs:
           if [ '${{ matrix.browser }}' = 'webkit' ]; then
             # Match WebKit's GLib test runner for offscreen video textures.
             WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS=1 xvfb-run -a npm test -- --project=webkit --headed --workers=1
+          elif [ '${{ matrix.browser }}' = 'firefox' ]; then
+            # Provide a display for WebGL2 in the Linux CI environment.
+            xvfb-run -a npm test -- --project=firefox --headed
           else
             npm test -- --project=${{ matrix.browser }}
           fi
