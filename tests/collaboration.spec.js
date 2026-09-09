@@ -4,6 +4,16 @@ import { SEANCE_SDK_URL, hasLocalSeanceHarness, routeSeanceSdkLocal, startSeance
 
 let seance
 
+// Each case here boots its own Seance server and drives two pages through a
+// real convergence, so this is the most expensive file in the suite by a wide
+// margin. Sharding splits the run by file unless a file says otherwise, which
+// would pin the whole thing to one runner and make that shard the harness's
+// wall clock no matter how many shards the others get. Parallel mode makes
+// each case its own unit, so the shards can carry a share each. Nothing here
+// is shared between cases: `seance` is set per case below, and every case
+// gets its own page and its own database.
+test.describe.configure({ mode: 'parallel' })
+
 test.skip(!hasLocalSeanceHarness(), 'requires a local Seance checkout; set SEANCE_ROOT (or SEANCE_DIST_DIR + SEANCE_PYTHON)')
 
 test.beforeEach(async ({ baseURL }, testInfo) => {
@@ -69,8 +79,14 @@ async function createProject(page, type = 'transparent', size) {
 }
 
 async function openFileMenu(page) {
+    // The bar renders one panel per menu and the logo menu's panel is first in
+    // the DOM, so `.hf-menubar-panel` first() is a panel this click never
+    // opens: it stays hidden and the wait burns the whole test timeout. Wait
+    // on an item the File menu owns instead. That proves the right panel, and
+    // the id belongs to Layers rather than to the component's own markup, so a
+    // handfish release cannot quietly move it.
     await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
-    await page.locator('#menu .hf-menubar-panel').first().waitFor({ state: 'visible' })
+    await page.locator('#exportImageMenuItem').waitFor({ state: 'visible' })
 }
 
 async function openSeanceDialog(page) {

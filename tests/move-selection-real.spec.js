@@ -3,6 +3,13 @@ import { appReady, appState, layerCount } from './waits.js'
 
 test.describe('Move tool - real user flow', () => {
     test('draw selection then drag with move tool extracts to new layer', async ({ page }) => {
+        // The move drag extracts a full 1024 square selection into a new layer
+        // and rebuilds the renderer, which means a shader compile. On a CI
+        // runner with no GPU that compile is the single most expensive thing
+        // this suite asks for, and it lands inside one `mouse.move`, which
+        // cannot return until the page has processed the events. The default
+        // budget is right for every other test and too small for this one.
+        test.slow()
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
