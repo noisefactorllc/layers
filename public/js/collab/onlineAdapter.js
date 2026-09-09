@@ -159,8 +159,30 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             dialect: DIALECT,
             dialects: [DIALECT]
         })
+        // Status is also the only signal that a dropped connection came back.
+        // Tracked per layer, since each session transition builds its own.
+        let previousStatus = 'offline'
         layer.on('status', () => {
-            if (layer === online) refreshStatus()
+            const status = layer.getStatus?.() || 'offline'
+            const regainedWriteAccess = previousStatus !== 'online' && status === 'online'
+            previousStatus = status
+            if (layer !== online) return
+            refreshStatus()
+            if (!regainedWriteAccess) return
+            // Reconnected, or read-only was lifted. Two things are owed:
+            //
+            // 1. Anything edited meanwhile was never sent. schedulePublish()
+            //    returns early while the status is 'connecting' or 'readonly',
+            //    and nothing re-armed it, so those edits sat local forever.
+            //    The diff against lastPublished still describes them.
+            // 2. The SDK adopts the reconnect snapshot and emits
+            //    'node-snapshot' just before it flips the status to 'online',
+            //    so scheduleApply() bailed on !isOnline() and the peers' work
+            //    from the outage was never applied. Re-request it here.
+            //    (Upstream: the SDK should set the status before emitting the
+            //    snapshot. See findings sdk.md, _adoptPoly ordering.)
+            schedulePublish()
+            scheduleApply(currentSessionRequest(layer))
         })
         layer.on('error', (err) => console.error('[Layers] Seance error:', err))
         // Neither handler needs to pass its event payload through anymore:

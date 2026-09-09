@@ -553,3 +553,80 @@ test('agent newProject while online takes the session offline first, without wip
     expect((await layersState(pageB)).length).toBe(1)
     expect(await pageB.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('online')
 })
+
+// A socket drop is the one transition the app cannot see coming: the SDK
+// reconnects on its own, and both directions of the exchange used to be lost
+// with it. Driven by closing the socket directly, which is what a Caddy
+// reload, a server restart or a sleeping laptop look like from here.
+async function dropSocket(page) {
+    await page.evaluate(() => {
+        const online = window.layersApp._onlineAdapter.online
+        online.options.reconnectBaseMs = 2500
+        online.socket.close()
+    })
+    await expect.poll(() => page.evaluate(
+        () => window.layersApp._onlineAdapter?.getStatus()), { timeout: 15000 }).toBe('connecting')
+}
+
+async function setOpacity(page, layerId, value) {
+    await page.evaluate(async ({ id, v }) => {
+        await window.layersApp._handleLayerChange({ layerId: id, property: 'opacity', value: v })
+    }, { id: layerId, v: value })
+}
+
+const opacityOf = async (page, id) => (await layersState(page)).find(l => l.id === id)?.opacity
+
+test('an edit made while reconnecting is published once the socket returns', async ({ page, context }) => {
+    const pageA = page
+    const pageB = await context.newPage()
+    await preparePage(pageA)
+    await preparePage(pageB)
+
+    await gotoApp(pageA)
+    await createProject(pageA, 'solid', 128)
+    const sessionId = await takeOnline(pageA)
+
+    await gotoApp(pageB)
+    await createProject(pageB, 'solid', 128)
+    await joinById(pageB, sessionId)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
+    const layerId = (await layersState(pageB))[0].id
+
+    await dropSocket(pageB)
+    // schedulePublish() refuses to arm while the status is 'connecting', so
+    // without a re-arm on reconnect this edit was never sent at all.
+    await setOpacity(pageB, layerId, 42)
+    expect(await opacityOf(pageB, layerId)).toBe(42)
+
+    await expect.poll(() => pageB.evaluate(
+        () => window.layersApp._onlineAdapter?.getStatus()), { timeout: 60000 }).toBe('online')
+    await expect.poll(() => opacityOf(pageA, layerId), { timeout: 60000 }).toBe(42)
+    expect(await opacityOf(pageB, layerId)).toBe(42)
+})
+
+test('a peer edit made during an outage is adopted on reconnect', async ({ page, context }) => {
+    const pageA = page
+    const pageB = await context.newPage()
+    await preparePage(pageA)
+    await preparePage(pageB)
+
+    await gotoApp(pageA)
+    await createProject(pageA, 'solid', 128)
+    const sessionId = await takeOnline(pageA)
+
+    await gotoApp(pageB)
+    await createProject(pageB, 'solid', 128)
+    await joinById(pageB, sessionId)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
+    const layerId = (await layersState(pageB))[0].id
+
+    await dropSocket(pageB)
+    await setOpacity(pageA, layerId, 77)
+    await expect.poll(() => pageB.evaluate(
+        () => window.layersApp._onlineAdapter?.getStatus()), { timeout: 60000 }).toBe('online')
+
+    // The SDK adopts the reconnect snapshot and emits 'node-snapshot' just
+    // before it flips the status to 'online', so the apply has to be
+    // re-requested from the status transition or the outage stays invisible.
+    await expect.poll(() => opacityOf(pageB, layerId), { timeout: 60000 }).toBe(77)
+})
