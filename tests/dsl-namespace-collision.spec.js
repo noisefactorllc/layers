@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady } from './waits.js'
 
 // Short-name collision guard: DSL effect calls are unqualified short names
 // resolved first-match-wins over the program's `search` order, and _buildDsl
@@ -19,7 +20,7 @@ async function bootBlank(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1500)
+    await appReady(page)
 }
 
 test('classicNoisedeck/noise layer renders its own effect, not synth/noise', async ({ page }) => {

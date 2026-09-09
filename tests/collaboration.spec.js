@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, framePainted, quietWindow } from './waits.js'
 import { SEANCE_SDK_URL, hasLocalSeanceHarness, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
 
 let seance
@@ -64,12 +65,12 @@ async function createProject(page, type = 'transparent', size) {
     }
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 async function openFileMenu(page) {
     await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
-    await page.waitForTimeout(50)
+    await page.locator('#menu .hf-menubar-panel').first().waitFor({ state: 'visible' })
 }
 
 async function openSeanceDialog(page) {
@@ -133,7 +134,7 @@ async function addMediaLayer(page, color) {
         const file = new File([blob], 'test.png', { type: 'image/png' })
         await window.layersApp._handleAddMediaLayer(file, 'image')
     }, color)
-    await page.waitForTimeout(300)
+    await appState(page, () => window.layersApp._layers.some(l => l.sourceType === 'media'))
 }
 
 // ---------------------------------------------------------------------
@@ -343,7 +344,7 @@ test('go offline stops syncing', async ({ page, context }) => {
     await expect(pageB.locator('#seanceDialog .hf-seance-status-text')).toHaveText('Offline')
 
     await pageA.evaluate(async () => { await window.layersApp._handleAddEffectLayer('filter/blur') })
-    await pageA.waitForTimeout(1000) // give a would-be sync every chance to (wrongly) land
+    await quietWindow(pageA, 1000) // give a would-be sync every chance to (wrongly) land
     expect((await layersState(pageB)).length).toBe(1)
 })
 
@@ -353,7 +354,7 @@ test('?seance= boot join applies the shared composition directly, with no confir
     await gotoApp(pageA)
     await createProject(pageA, 'solid')
     await pageA.evaluate(async () => { await window.layersApp._handleAddEffectLayer('filter/blur') })
-    await pageA.waitForTimeout(300)
+    await appState(pageA, () => window.layersApp._layers.some(l => l.effectId === 'filter/blur'))
     const sessionId = await takeOnline(pageA)
     await expect.poll(() => layersState(pageA).then(l => l.length), { timeout: 60000 }).toBe(2)
 
@@ -389,7 +390,7 @@ test('media gating: an existing media layer blocks take-online, and adding media
         const media = app._layers.find(l => l.sourceType === 'media')
         await app._handleDeleteLayer(media.id)
     })
-    await page.waitForTimeout(300)
+    await appState(page, () => !window.layersApp._layers.some(l => l.sourceType === 'media'))
     await takeOnline(page)
 
     // Part 2: adding a media layer while online is blocked with a toast, and
@@ -436,7 +437,9 @@ test('effect-mask gating: a masked child effect blocks take-online until its mas
     }, childId)
     expect(await page.evaluate(() =>
         window.layersApp._layers[0].children[0].mask)).toBe(null)
-    await page.waitForTimeout(300)
+    // The model is asserted clear on the line above, so all that remains is the
+    // gate's view of it catching up: one painted frame, not a guess at 300ms.
+    await framePainted(page)
     await takeOnline(page)
     expect(await page.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('online')
 })
@@ -554,7 +557,7 @@ test('flatten gate: flattening while online shows a toast and leaves both pages 
     expect(stateA.some(l => l.sourceType === 'media')).toBe(false)
 
     // Nothing was published to corrupt page B either.
-    await pageA.waitForTimeout(500)
+    await quietWindow(pageA, 500)
     const stateB = await layersState(pageB)
     expect(stateB.length).toBe(countBefore)
     expect(stateB.some(l => l.sourceType === 'media')).toBe(false)
@@ -587,7 +590,7 @@ test('agent newProject while online takes the session offline first, without wip
 
     // Page B's composition must survive untouched — A's local reset must
     // never have been published as a wiping remote apply.
-    await pageA.waitForTimeout(500)
+    await quietWindow(pageA, 500)
     expect((await layersState(pageB)).length).toBe(1)
     expect(await pageB.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('online')
 })
@@ -768,7 +771,7 @@ test('read-only edits are held and published when write access returns', async (
         await window.layersApp._handleLayerChange({ layerId: id, property: 'opacity', value: 42 })
     }, blurId)
     await expect(pageB.locator('.toast-warning')).toBeVisible({ timeout: 30000 })
-    await pageB.waitForTimeout(1000)
+    await quietWindow(pageB, 1000)
     expect((await layersState(pageA)).find(l => l.id === blurId)?.opacity).toBe(100)
 
     // A peer keeps working while this guest has an unsent preview. The
@@ -782,7 +785,7 @@ test('read-only edits are held and published when write access returns', async (
         const node = window.layersApp._onlineAdapter.online.getNodes().find(node => node.id === `L${id}`)
         return node && JSON.parse(node.text).opacity
     }, baseId), { timeout: 60000 }).toBe(80)
-    await pageB.waitForTimeout(300)
+    await quietWindow(pageB, 300)
     expect((await layersState(pageB)).find(layer => layer.id === blurId)?.opacity).toBe(42)
 
     // Lifting read-only must replay the held work rather than strand it.

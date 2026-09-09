@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { quietWindow } from './waits.js'
 
 test.describe('agent: exportVideo', () => {
     test.beforeEach(async ({ page }) => {
@@ -363,7 +364,7 @@ test.describe('agent: exportVideo', () => {
         expect(typeof final.result.result.blobUrl).toBe('string')
         expect(final.result.result.blobUrl.startsWith('blob:')).toBe(true)
         // Give a stray download event time to surface before asserting.
-        await page.waitForTimeout(500)
+        await quietWindow(page, 500)
         expect(downloadFired).toBe(false)
     })
 

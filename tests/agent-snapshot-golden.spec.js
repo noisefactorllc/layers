@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from './fixtures.js'
+import { appReady } from './waits.js'
 
 const FIXTURE = path.resolve('tests/fixtures/agent-snapshot-blank.json')
 
@@ -12,7 +13,7 @@ async function bootBlankProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(300)
+    await appReady(page)
 }
 
 function normalize(snap) {

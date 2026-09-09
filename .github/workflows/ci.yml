@@ -9,6 +9,15 @@ on:
 permissions:
   contents: read
 
+# One run per ref. Without this every push started a parallel run and nothing
+# cancelled anything, so four commits in half an hour meant four overlapping
+# 100-minute webkit legs, about six and a half hours of runner time to learn
+# one thing. Only the newest commit's run survives, which also matches the
+# release guard: the newest green commit is the only deploy candidate.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   source:
     name: Source checks

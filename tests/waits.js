@@ -111,3 +111,22 @@ export function settled(page) {
 export function appState(page, predicate, arg = null, options = {}) {
     return page.waitForFunction(predicate, arg, { timeout: 15000, ...options })
 }
+
+/**
+ * Observe for a fixed window that something does NOT happen.
+ *
+ * This is the one place a duration is legitimate, and it is not a readiness
+ * guess: the window IS the measurement. "No sync landed within a second" has
+ * no condition to wait on, because the assertion is about absence. Naming it
+ * separates it from the sleeps this module exists to replace, so a reader can
+ * tell a deliberate observation window from someone hoping the app has caught
+ * up.
+ *
+ * Use it only for negative assertions, and prefer a barrier where one exists:
+ * if you can make something that SHOULD propagate and wait for it to arrive,
+ * that proves the channel had its chance, and it is both faster and stronger
+ * than any window.
+ */
+export function quietWindow(page, ms) {
+    return page.waitForTimeout(ms)
+}

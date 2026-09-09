@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady } from './waits.js'
 
 test.describe('Export Image Dialog', () => {
     test.beforeEach(async ({ page }) => {
@@ -11,7 +12,7 @@ test.describe('Export Image Dialog', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
     })
 
     test('opens via menu and shows current canvas dimensions', async ({ page }) => {

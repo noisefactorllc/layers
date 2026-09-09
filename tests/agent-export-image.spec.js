@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { quietWindow } from './waits.js'
 
 async function bootApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -141,7 +142,7 @@ test.describe('exportImage', () => {
         expect(env.result.bytes.startsWith('iVBOR')).toBe(true)
         expect(env.result.sizeBytes).toBeGreaterThan(0)
         // Give any rogue download event time to land before asserting.
-        await page.waitForTimeout(500)
+        await quietWindow(page, 500)
         expect(downloadFired).toBe(false)
     })
 
