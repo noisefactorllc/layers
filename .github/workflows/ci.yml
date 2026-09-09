@@ -89,7 +89,24 @@ jobs:
       - name: Require collaboration harness
         run: node --input-type=module -e "import { hasLocalSeanceHarness } from './tests/seanceLocal.js'; if (!hasLocalSeanceHarness()) throw new Error('Seance harness unavailable')"
       - name: Install locked browser
-        run: npx --no-install playwright install --with-deps ${{ matrix.browser }}
+        # `--with-deps` runs apt against external mirrors, and a mirror caught
+        # mid-regeneration serves an error page in place of a package index:
+        # "Hash Sum mismatch", exit 100, before a single test runs. That killed
+        # two consecutive runs of this suite outright. Retry rather than lose a
+        # hundred-minute run to a few seconds of upstream inconsistency. The
+        # sleep here is a backoff against someone else's server, not a guess at
+        # our own readiness.
+        run: |
+          for attempt in 1 2 3; do
+            if npx --no-install playwright install --with-deps ${{ matrix.browser }}; then
+              exit 0
+            fi
+            echo "::warning::browser install attempt $attempt failed; retrying"
+            sudo apt-get update || true
+            sleep $((attempt * 15))
+          done
+          echo "::error::browser install failed after 3 attempts"
+          exit 1
       - name: Record shader release before testing
         run: |
           mkdir -p dependency-evidence
