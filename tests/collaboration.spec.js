@@ -138,7 +138,12 @@ async function layersState(page) {
     })))
 }
 
-async function addMediaLayer(page, color) {
+// Adds a media layer and waits for it to land. The online gate is the one
+// caller that expects the add to be refused, and passing `refused` there keeps
+// the barrier honest: waiting for a layer the app is supposed to reject would
+// spend the whole test budget proving the app behaved correctly. That caller
+// waits for the toast instead, which is the observable result of a refusal.
+async function addMediaLayer(page, color, { refused = false } = {}) {
     await page.evaluate(async (fillColor) => {
         const canvas = document.createElement('canvas')
         canvas.width = 50
@@ -150,6 +155,7 @@ async function addMediaLayer(page, color) {
         const file = new File([blob], 'test.png', { type: 'image/png' })
         await window.layersApp._handleAddMediaLayer(file, 'image')
     }, color)
+    if (refused) return
     await appState(page, () => window.layersApp._layers.some(l => l.sourceType === 'media'))
 }
 
@@ -412,7 +418,7 @@ test('media gating: an existing media layer blocks take-online, and adding media
     // Part 2: adding a media layer while online is blocked with a toast, and
     // no layer is actually added.
     const countBefore = (await layersState(page)).length
-    await addMediaLayer(page, '#0000ff')
+    await addMediaLayer(page, '#0000ff', { refused: true })
     await expect(page.locator('.toast-warning')).toBeVisible()
     expect((await layersState(page)).length).toBe(countBefore)
 })

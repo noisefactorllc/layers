@@ -7,9 +7,9 @@ test.describe('Move tool - real user flow', () => {
         // and rebuilds the renderer, which means a shader compile. On a CI
         // runner with no GPU that compile is the single most expensive thing
         // this suite asks for, and it lands inside one `mouse.move`, which
-        // cannot return until the page has processed the events. The default
-        // budget is right for every other test and too small for this one.
-        test.slow()
+        // cannot return until the page has processed the events. Three
+        // minutes is a bound on that work, not a multiplier on the default.
+        test.setTimeout(180000)
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
