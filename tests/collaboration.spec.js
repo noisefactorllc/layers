@@ -5,7 +5,7 @@ let seance
 
 test.skip(!hasLocalSeanceHarness(), 'requires a local Seance checkout; set SEANCE_ROOT (or SEANCE_DIST_DIR + SEANCE_PYTHON)')
 
-test.beforeEach(async ({}, testInfo) => {
+test.beforeEach(async ({ baseURL }, testInfo) => {
     // Convergence tests chain several expect.poll() waits against a real
     // local server, and this suite must also survive CPU-starved parallel
     // full-suite runs (software WebGL × N workers), where a single boot or
@@ -14,7 +14,9 @@ test.beforeEach(async ({}, testInfo) => {
     testInfo.setTimeout(180000)
     // Each case gets an independent database and rate-limit window. Sharing
     // one server exhausted its real anonymous session-creation limit.
-    seance = await startSeanceServer()
+    // The server's allowed-origin list must match the origin the app is
+    // actually served from, which varies with the config in use.
+    seance = await startSeanceServer({ origin: baseURL })
 })
 
 test.afterEach(async () => {
