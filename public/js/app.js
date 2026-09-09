@@ -806,6 +806,15 @@ class LayersApp {
             if (markDirty) this._markDirty()
             if (pushUndo) this._pushUndoState()
             else this._updateUndoMenuState()
+            // _pushUndoState() is the publish hook for every mutation that
+            // records history, which left the commits that deliberately do not
+            // record one (undo, redo, mask-edit exit) changing local state
+            // without ever reaching the session. Undo in particular then sat
+            // local until an unrelated remote frame reverted it, or until the
+            // next local edit pushed the stale diff late. Publishing here
+            // covers both kinds; it is debounced and diffs to nothing when the
+            // model is unchanged.
+            this._onlineAdapter?.schedulePublish()
 
             await this._restoreRendererRunState(previous.rendererRunning)
             if (shouldCancel?.()) return await fail(new Error('Mutation cancelled'))

@@ -630,3 +630,34 @@ test('a peer edit made during an outage is adopted on reconnect', async ({ page,
     // re-requested from the status transition or the outage stays invisible.
     await expect.poll(() => opacityOf(pageB, layerId), { timeout: 60000 }).toBe(77)
 })
+
+test('undo and redo reach the session instead of sitting local', async ({ page, context }) => {
+    const pageA = page
+    const pageB = await context.newPage()
+    await preparePage(pageA)
+    await preparePage(pageB)
+
+    await gotoApp(pageA)
+    await createProject(pageA, 'solid', 128)
+    const sessionId = await takeOnline(pageA)
+
+    await gotoApp(pageB)
+    await createProject(pageB, 'solid', 128)
+    await joinById(pageB, sessionId)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
+
+    // Undo and redo commit with pushUndo:false, which used to bypass the
+    // publish funnel entirely: A's history moved and nobody else heard.
+    await pageA.evaluate(async () => { await window.layersApp._handleAddEffectLayer('filter/blur') })
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(2)
+
+    await pageA.evaluate(async () => { await window.layersApp._undo() })
+    await expect.poll(() => layersState(pageA).then(l => l.length), { timeout: 60000 }).toBe(1)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
+
+    await pageA.evaluate(async () => { await window.layersApp._redo() })
+    await expect.poll(() => layersState(pageA).then(l => l.length), { timeout: 60000 }).toBe(2)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(2)
+    await expect.poll(async () => (await layersState(pageB))[1]?.effectId, { timeout: 60000 })
+        .toBe('filter/blur')
+})
