@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appState, layerCount } from './waits.js'
 
 async function bootApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -87,7 +88,9 @@ test.describe('snapshot layers', () => {
             const layerId = window.layersApp._layers[0].id
             await window.layersApp._handleAddChildEffect(layerId, 'filter/blur')
         })
-        await page.waitForTimeout(200)
+        // The child the snapshot below is about to read is on the parent's
+        // children array.
+        await appState(page, () => window.layersApp?._layers?.[0]?.children?.length === 1)
         const snap = await page.evaluate(() => window.__buildSnapshot(window.layersApp))
         const layer = snap.layers[0]
         expect(layer.children.length).toBe(1)
@@ -105,7 +108,7 @@ test.describe('snapshot layers', () => {
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('synth/gradient')
         })
-        await page.waitForTimeout(200)
+        await layerCount(page, 2)
         const ids = await page.evaluate(() => window.__buildSnapshot(window.layersApp).layers.map(l => l.id))
         const internal = await page.evaluate(() => window.layersApp._layers.map(l => l.id))
         expect(ids).toEqual(internal)
@@ -120,7 +123,8 @@ test.describe('snapshot masks and selection', () => {
             const layerId = window.layersApp._layers[0].id
             await window.layersApp._addLayerMask(layerId)
         })
-        await page.waitForTimeout(200)
+        // The mask the snapshot below serializes.
+        await appState(page, () => !!window.layersApp?._layers?.[0]?.mask)
         const snap = await page.evaluate(() => window.__buildSnapshot(window.layersApp))
         const layer = snap.layers[0]
         expect(layer.mask).toMatchObject({
