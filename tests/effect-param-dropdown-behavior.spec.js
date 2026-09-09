@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState } from './waits.js'
 
 // Regression guard for effect-parameter dropdown controls (effect-params.js).
 // Three distinct "dropdown does nothing" bugs are covered:
@@ -25,7 +26,33 @@ async function loadWithSolidBase(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1500)
+    await appReady(page)
+}
+
+// The panel for a newly added layer renders through an async setEffect: the
+// effect definition may still be loading, and until it resolves the element
+// holds a loading placeholder with no control groups at all.
+function paramsPanelReady(page, layerId) {
+    return appState(page, (id) => {
+        const ep = [...document.querySelectorAll('effect-params')].find(e => e._layerId === id)
+        return !!ep && ep.querySelectorAll('.control-group').length > 0
+    }, layerId)
+}
+
+// A dropdown change dispatches into an unawaited pointer mutation: the
+// lifecycle waiter count rises synchronously with the change event, and is
+// only released once the model mutation, the DSL sync and any shader
+// recompile have finished. Idle again, with the new value in the model, is
+// the whole of the change the assertions then read.
+function paramChangeCommitted(page, layerId, paramKey, value) {
+    return appState(page, ({ id, key, expected }) => {
+        const app = window.layersApp
+        if (app._projectLifecycleWaiters !== 0) return false
+        if (app._projectLifecycleActive) return false
+        if (app._publishTransactionDepth !== 0) return false
+        const layer = app._layers.find(l => l.id === id)
+        return String(layer?.effectParams?.[key]) === String(expected)
+    }, { id: layerId, key: paramKey, expected: value })
 }
 
 // Read the disabled state of a control group by param key, from the
@@ -67,7 +94,7 @@ test('enabledBy greys out an inert control and re-evaluates when its dependency 
         await app._rebuild({ force: true })
         return app._layers[app._layers.length - 1].id
     })
-    await page.waitForTimeout(800)
+    await paramsPanelReady(page, layerId)
 
     // Default color mode (mode 0): `pattern` (enabledBy mode===1) is inert and
     // must be disabled; `cyanAngle` (enabledBy mode===0) is active.
@@ -76,7 +103,7 @@ test('enabledBy greys out an inert control and re-evaluates when its dependency 
 
     // Switch to mono mode via the real mode dropdown; the states must flip.
     expect((await driveDropdown(page, layerId, 'mode', 1)).ok).toBe(true)
-    await page.waitForTimeout(400)
+    await paramChangeCommitted(page, layerId, 'mode', 1)
 
     expect(await groupDisabled(page, layerId, 'pattern')).toEqual({ found: true, disabled: false })
     expect(await groupDisabled(page, layerId, 'cyanAngle')).toEqual({ found: true, disabled: true })
@@ -92,10 +119,10 @@ test('a numeric (float) choice dropdown emits a Number, serialized as a bare DSL
         await app._rebuild({ force: true })
         return app._layers[app._layers.length - 1].id
     })
-    await page.waitForTimeout(800)
+    await paramsPanelReady(page, layerId)
 
     expect((await driveDropdown(page, layerId, 'rotation', 1)).ok).toBe(true)
-    await page.waitForTimeout(500)
+    await paramChangeCommitted(page, layerId, 'rotation', 1)
 
     const result = await page.evaluate((layerId) => {
         const app = window.layersApp
@@ -121,7 +148,7 @@ test('a member-enum dropdown with no explicit choices is populated and emits a b
         await app._rebuild({ force: true })
         return app._layers[app._layers.length - 1].id
     })
-    await page.waitForTimeout(800)
+    await paramsPanelReady(page, layerId)
 
     // The index dropdown must have real options (the palette.* enum members).
     const opts = await page.evaluate((layerId) => {
@@ -136,7 +163,7 @@ test('a member-enum dropdown with no explicit choices is populated and emits a b
     // Selecting a member emits the fully-qualified identifier, serialized bare.
     const target = opts.options.find(o => o.value.endsWith('.vaporwave')) || opts.options[3]
     expect((await driveDropdown(page, layerId, 'index', target.value)).ok).toBe(true)
-    await page.waitForTimeout(500)
+    await paramChangeCommitted(page, layerId, 'index', target.value)
 
     const result = await page.evaluate((layerId) => {
         const app = window.layersApp

@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, framePainted } from './waits.js'
 
 // Regression guard: effect params declared with `define:` in the effect
 // definition (e.g. filter/halftone `mode` and `pattern`) become compile-time
@@ -55,7 +56,7 @@ async function loadWithSolidBase(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1500)
+    await appReady(page)
 }
 
 // Drive an effect-params change through the exact same path the UI dropdown and
@@ -76,7 +77,7 @@ async function changeParams(page, { layerId, parentLayerId, params }) {
         if (parentLayerId) detail.parentLayerId = parentLayerId
         await app._handleLayerChange(detail)
     }, { layerId, parentLayerId, params })
-    await page.waitForTimeout(600)
+    await framePainted(page)
 }
 
 test('top-level effect dropdowns (halftone mode/pattern) recompile and change render', async ({ page }) => {
@@ -97,7 +98,7 @@ test('top-level effect dropdowns (halftone mode/pattern) recompile and change re
     })
     expect(setup.status).toBe('added')
     expect(setup.effectId).toBe('filter/halftone')
-    await page.waitForTimeout(1000)
+    await framePainted(page)
 
     // mode 0 = color (CMYK) screen
     const sigColor = await captureFrozenSignature(page)
@@ -140,7 +141,7 @@ test('child effect dropdowns (nested halftone mode) recompile and change render'
     })
     expect(setup.status).toBe('committed')
     expect(setup.childId).toBeTruthy()
-    await page.waitForTimeout(1000)
+    await framePainted(page)
 
     const sigColor = await captureFrozenSignature(page)
     expect(sigColor).not.toBeNull()
@@ -174,7 +175,7 @@ test('undo/redo of a define-param change reverts and reapplies the render', asyn
         return { layerId: halftone.id, status: added.status }
     })
     expect(setup.status).toBe('added')
-    await page.waitForTimeout(1000)
+    await framePainted(page)
 
     const sigColor = await captureFrozenSignature(page)
 
@@ -189,7 +190,7 @@ test('undo/redo of a define-param change reverts and reapplies the render', asyn
         window.layersApp._finalizePendingUndo()
         await window.layersApp._undo()
     })
-    await page.waitForTimeout(600)
+    await framePainted(page)
     const sigUndone = await captureFrozenSignature(page)
     expect(sigUndone.hash,
         `undo should revert the define (recompile). color=${sigColor.hash} undone=${sigUndone.hash}`
@@ -197,7 +198,7 @@ test('undo/redo of a define-param change reverts and reapplies the render', asyn
 
     // Redo — the render must return to mode 1.
     await page.evaluate(async () => { await window.layersApp._redo() })
-    await page.waitForTimeout(600)
+    await framePainted(page)
     const sigRedone = await captureFrozenSignature(page)
     expect(sigRedone.hash,
         `redo should reapply the define (recompile). mono=${sigMono.hash} redone=${sigRedone.hash}`
