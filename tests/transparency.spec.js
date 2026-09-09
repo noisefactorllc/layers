@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, framePainted } from './waits.js'
 
 function readCenterAlpha(canvasEl) {
     const ctx = canvasEl.getContext('webgl2') || canvasEl.getContext('webgl')
@@ -28,7 +29,8 @@ test.describe('Base layer transparency', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(2000)
+        await appReady(page)
+        await framePainted(page)
 
         const layerItem = page.locator('layer-item').first()
         await expect(layerItem).toBeVisible()
@@ -50,9 +52,11 @@ test.describe('Base layer transparency', () => {
             return el.value
         })
         console.log('Slider value after set:', sliderValue)
-        await page.waitForTimeout(1000)
-
-        await page.waitForTimeout(500)
+        // The input handler mutates the model and then rebuilds; the publish
+        // transaction unwinds only once that rebuild has committed.
+        await appState(page, () => window.layersApp._layers[0].opacity === 50
+            && window.layersApp._publishTransactionDepth === 0)
+        await framePainted(page)
 
         // At 50% opacity, alpha should be around 128
         const reducedAlpha = await canvas.evaluate(readCenterAlpha)
@@ -65,7 +69,9 @@ test.describe('Base layer transparency', () => {
             el.value = 0
             el.dispatchEvent(new Event('input', { bubbles: true }))
         })
-        await page.waitForTimeout(500)
+        await appState(page, () => window.layersApp._layers[0].opacity === 0
+            && window.layersApp._publishTransactionDepth === 0)
+        await framePainted(page)
 
         // Should be fully transparent (checkerboard visible)
         const zeroAlpha = await canvas.evaluate(readCenterAlpha)

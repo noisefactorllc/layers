@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, framePainted } from './waits.js'
 
 // Round-trip regression tests for save -> reload page -> load.
 // Reloading the page is the realistic round-trip: it gives a fresh renderer
@@ -23,7 +24,7 @@ async function bootFromOpenDialog(page, type) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 // Reload the page (fresh renderer) and open a saved project by id.
@@ -225,7 +226,7 @@ test.describe('Child-effect mask round-trip', () => {
         expect(state.textureLoaded).toBe(true)
 
         // Confinement must hold on the freshly loaded renderer.
-        await page.waitForTimeout(4000)
+        await framePainted(page)
         const pixels = await page.evaluate(() => {
             const canvas = document.getElementById('canvas')
             const gl = canvas.getContext('webgl2')

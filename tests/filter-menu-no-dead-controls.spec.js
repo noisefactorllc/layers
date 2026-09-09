@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, framePainted, layerCount } from './waits.js'
 
 // No dead controls: every entry in the Filter menu must add a layer that
 // VISIBLY changes the rendered canvas. A menu item that compiles but renders
@@ -41,14 +42,15 @@ test('every filter menu entry visibly changes the render', async ({ page }) => {
     await page.locator('#canvas-height').fill('128')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1500)
+    await appReady(page)
 
     await page.evaluate(async () => {
         const app = window.layersApp
         await app._handleAddEffectLayer('synth/noise')
         await app._rebuild({ force: true })
     })
-    await page.waitForTimeout(800)
+    await layerCount(page, 2)
+    await framePainted(page)
 
     // Collect the menu's entries exactly as the click handler sees them.
     const entries = await page.evaluate(() =>
@@ -109,16 +111,17 @@ test('every filter menu entry visibly changes the render', async ({ page }) => {
         }
 
         // Async-overlay effects (fibers/scratches/strayHair) render their
-        // texture via CPU tracing that lands a beat after the layer compiles
-        // (~600ms observed), so an unchanged first capture gets bounded
-        // retries before the entry is declared dead. Alive entries exit on
-        // the first differing capture, so only genuinely dead controls pay
-        // the full retry cost.
-        await page.waitForTimeout(200)
+        // texture via CPU tracing that lands a beat after the layer compiles,
+        // and that beat has no observable signal of its own, so an unchanged
+        // first capture gets bounded retries before the entry is declared
+        // dead. The budget is counted in rendered frames rather than in
+        // milliseconds, so it stretches with the machine instead of expiring
+        // early on a slow one. Alive entries exit on the first differing
+        // capture, so only genuinely dead controls pay the full retry cost.
         let changed = false
-        for (let attempt = 0; attempt < 8; attempt++) {
+        for (let attempt = 0; attempt < 40; attempt++) {
             if ((await capture()) !== baseline) { changed = true; break }
-            await page.waitForTimeout(500)
+            await framePainted(page)
         }
         if (!changed) {
             dead.push(`${entry.label} (${entry.effectId})`)
@@ -131,7 +134,6 @@ test('every filter menu entry visibly changes the render', async ({ page }) => {
         await page.evaluate(async (layerId) => {
             await window.layersApp._handleDeleteLayer(layerId)
         }, outcome.layerId)
-        await page.waitForTimeout(120)
     }
 
     expect(failed, `menu entries that errored:\n${failed.join('\n')}`).toEqual([])

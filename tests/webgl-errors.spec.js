@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, framePainted } from './waits.js'
 
 function collectWebGLErrors(page) {
     const webglErrors = []
@@ -17,7 +18,7 @@ async function createProject(page, type) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(2000)
+    await appReady(page)
 }
 
 test.describe('WebGL error handling', () => {
@@ -41,7 +42,7 @@ test.describe('WebGL error handling', () => {
         expect(gradientState.params).toEqual({ type: 2 })
         expect(gradientState.dsl).toContain('gradient(type: 2)')
 
-        await page.waitForTimeout(500)
+        await framePainted(page)
         await page.screenshot({ path: testInfo.outputPath('webgl-gradient-test.png') })
 
         console.log('Console messages:', consoleMessages.filter(m =>
@@ -84,14 +85,15 @@ test.describe('WebGL error handling', () => {
         await expect(effectOption).toBeVisible()
         await effectOption.click()
 
-        await page.waitForTimeout(500)
+        // The picker's search field is what the click actually produces.
+        await page.waitForSelector('.effect-search-input')
 
         const firstEffect = page.locator('.effect-option').first()
         if (await firstEffect.isVisible()) {
             await firstEffect.click()
         }
 
-        await page.waitForTimeout(2000)
+        await framePainted(page)
         await page.screenshot({ path: testInfo.outputPath('webgl-add-layer-test.png') })
 
         if (webglErrors.length > 0) {
