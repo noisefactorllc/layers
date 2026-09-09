@@ -76,10 +76,19 @@ export function strokeCount(page, count = 1, options = {}) {
  * by wall-clock, so it costs nothing on a fast machine and still waits on a
  * slow one. Use where the next step reads pixels or measured geometry.
  */
-export function framePainted(page) {
-    return page.evaluate(() => new Promise((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-    }))
+export function framePainted(page, timeout = 15000) {
+    // Bounded on purpose. A sleep fails loudly when it runs out; a wait that
+    // can never finish hangs until something else kills the job, which on this
+    // suite means a six hour CI run rather than a red test. If frames are not
+    // being produced, say so here instead.
+    return page.evaluate((ms) => new Promise((resolve, reject) => {
+        const timer = setTimeout(
+            () => reject(new Error(`framePainted: no animation frame within ${ms}ms`)), ms)
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            clearTimeout(timer)
+            resolve()
+        }))
+    }), timeout)
 }
 
 /**
@@ -93,6 +102,10 @@ export function framePainted(page) {
 export function settled(page) {
     return page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)))
 }
+
+// Every helper above is bounded: the predicate waits carry an explicit timeout
+// and framePainted rejects rather than waiting forever. Keep it that way. A
+// condition that cannot become true must fail, not hang.
 
 /** A predicate over app state, for the cases these helpers do not cover. */
 export function appState(page, predicate, arg = null, options = {}) {

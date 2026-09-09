@@ -33,7 +33,9 @@ jobs:
     name: Browser (${{ matrix.browser }})
     needs: source
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    # Below GitHub's six hour default so a wedged browser job goes red in
+    # good time. Playwright's globalTimeout fires first and leaves a report.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
