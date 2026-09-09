@@ -1020,6 +1020,12 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         }
         const nextModel = buildNodeModel(app._layers, canvasDims())
         const { upserts, deletes } = diffNodeModels(lastPublished, nextModel)
+        // The versions these writes are being sent against. A pending write is
+        // retired once the server's copy of its node moves past this, which is
+        // what stops an already-published edit from being re-asserted over a
+        // peer's later change (see docModel.overlayPendingWrites).
+        const sentVersions = new Map(
+            request.layer.getNodes().map(node => [node.id, node.version]))
         for (const node of upserts) {
             if (pendingDeleteRejections.delete(node.id)) armPendingDeleteExpiryTimer()
             const rejectedHash = rejectedNodeHashes.get(node.id)
@@ -1030,13 +1036,15 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             request.layer.upsertNode(
                 node.id, { kind: node.kind, text: node.text, parentId: node.parentId })
             rememberPendingLocalWrite(node.id, {
-                op: 'upsert', kind: node.kind, text: node.text, parentId: node.parentId })
+                op: 'upsert', kind: node.kind, text: node.text, parentId: node.parentId,
+                baseVersion: sentVersions.get(node.id) ?? null })
         }
         for (const id of deletes) {
             rememberPendingDeleteRejection(id)
             rejectedNodeHashes.delete(id)
             request.layer.deleteNode(id)
-            rememberPendingLocalWrite(id, { op: 'delete' })
+            rememberPendingLocalWrite(id, {
+                op: 'delete', baseVersion: sentVersions.get(id) ?? null })
         }
         lastPublished = nextModel
     }

@@ -454,12 +454,24 @@ export function diffNodeModels(prev, next) {
  * author's own intent here keeps the local screen ahead of, never behind, the
  * writes it has already handed to the SDK.
  *
- * A write whose id already carries exactly the content we sent is confirmed;
- * its id is returned in `confirmed` so the caller can stop tracking it.
+ * Local intent is asserted only while the server demonstrably has not moved
+ * past it. Each write records the node `version` it was sent against, and a
+ * write stops being asserted as soon as either:
+ *
+ * - the set carries exactly the content we sent (our write landed), or
+ * - the node's version is newer than the one we sent against (the server has
+ *   accepted something later, so the set is ahead of us, not behind).
+ *
+ * Without the version test a write would be re-asserted forever: a client
+ * never applies its own writes, so nothing else would ever retire it, and the
+ * next genuine remote change to that node would be overwritten by a local
+ * value that had in fact been published long ago.
+ *
+ * Both cases return the id in `confirmed` so the caller stops tracking it.
  *
  * @param {Array} nodes - server-derived node set (e.g. online.getNodes())
  * @param {Map<string, {op: 'upsert'|'delete', kind?: string, text?: string,
- *   parentId?: string|null}>} pending - in send order
+ *   parentId?: string|null, baseVersion?: number|null}>} pending - in send order
  * @returns {{nodes: Array, confirmed: Array<string>}}
  */
 export function overlayPendingWrites(nodes, pending) {
@@ -468,11 +480,22 @@ export function overlayPendingWrites(nodes, pending) {
 
     const byId = new Map(list.map(node => [node.id, node]))
     const confirmed = []
+    // True when the server has accepted a write to this node later than the
+    // one we based ours on, so the set is ahead of our copy rather than behind.
+    const superseded = (node, write) => {
+        if (!node) return false
+        if (write.baseVersion === null || write.baseVersion === undefined) return true
+        return typeof node.version === 'number' && node.version > write.baseVersion
+    }
     for (const [id, write] of pending) {
         if (write.op === 'delete') {
             // The server cascades a delete to every dotted descendant, so a
             // pending delete has to hide the whole subtree, not just its root.
             if (!byId.has(id)) {
+                confirmed.push(id)
+                continue
+            }
+            if (superseded(byId.get(id), write)) {
                 confirmed.push(id)
                 continue
             }
@@ -487,6 +510,10 @@ export function overlayPendingWrites(nodes, pending) {
         const parentId = write.parentId ?? null
         if (current && current.kind === write.kind && current.text === write.text
             && (current.parentId ?? null) === parentId) {
+            confirmed.push(id)
+            continue
+        }
+        if (superseded(current, write)) {
             confirmed.push(id)
             continue
         }
