@@ -1,7 +1,8 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState } from './waits.js'
 
 async function addColorLayer(page, color, size = 512) {
-    await page.evaluate(async ({ color, size }) => {
+    const layerId = await page.evaluate(async ({ color, size }) => {
         const canvas = document.createElement('canvas')
         canvas.width = size
         canvas.height = size
@@ -10,9 +11,17 @@ async function addColorLayer(page, color, size = 512) {
         ctx.fillRect(0, 0, size, size)
         const blob = await new Promise(r => canvas.toBlob(r, 'image/png'))
         const file = new File([blob], `${color}.png`, { type: 'image/png' })
-        await window.layersApp._handleAddMediaLayer(file, 'image')
+        const outcome = await window.layersApp._handleAddMediaLayer(file, 'image')
+        return outcome.layerId
     }, { color, size })
-    await page.waitForTimeout(500)
+    // The add is awaited above; what this test reads next is the renderer's
+    // per-layer step mapping, which the same commit fills in when it stages
+    // the new layer set.
+    await appState(
+        page,
+        (id) => Boolean(window.layersApp?._renderer?._layerStepMap?.has(id)),
+        layerId,
+    )
 }
 
 test.describe('Layer reorder texture mapping', () => {
@@ -28,7 +37,7 @@ test.describe('Layer reorder texture mapping', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         await addColorLayer(page, 'red')
         await addColorLayer(page, 'blue')
@@ -59,7 +68,10 @@ test.describe('Layer reorder texture mapping', () => {
             app._startDrag(sourceId)
             await app._processDrop(targetId, 'below')
         })
-        await page.waitForTimeout(500)
+        // The reorder FSM only returns to IDLE once the candidate DSL has
+        // compiled and the model commit (which rebuilds the step map read
+        // below) has landed.
+        await appState(page, () => window.layersApp._reorderState === 'IDLE')
 
         // Get state after reorder
         const afterState = await page.evaluate(() => {
