@@ -1971,12 +1971,19 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
         const oldGeneration = app._replacementGeneration
         const oldUndoLength = app._undoManager._stack.length
 
+        // A mask adopted from the wire is republished as the bytes it arrived
+        // as, so it is never re-encoded and cannot fail here. The canonicalize
+        // step still runs for a mask the reader falls back to locally, which is
+        // what this drives: announce a mask whose chunk nodes are absent, so
+        // the torn read falls back to the live layer's own ImageData and the
+        // baseline has to encode it.
+        const maskedLocalLayer = app._layers[0]
         const remoteLayer = createEffectLayer('synth/gradient', 'Masked remote')
-        remoteLayer.id = 'layer-masked-remote'
+        remoteLayer.id = maskedLocalLayer.id
         remoteLayer.mask = new ImageData(4, 4)
         const failureNodes = buildNodeModel([remoteLayer], {
             width: app._canvas.width, height: app._canvas.height,
-        })
+        }).filter(node => node.kind !== 'layers-mask')
 
         const handlers = new Map()
         let status = 'offline'
@@ -2008,6 +2015,8 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
             stage.commit = () => { commitCalls++; return commit() }
             return stage
         }
+        // Only now, so the join's own model build cannot encode and cache it.
+        maskedLocalLayer.mask = new ImageData(4, 4)
         const toDataURL = HTMLCanvasElement.prototype.toDataURL
         HTMLCanvasElement.prototype.toDataURL = () => {
             throw new Error('injected candidate baseline failure')
