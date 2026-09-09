@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { seedClipboardRead } from './helpers/clipboard.js'
+import { appReady, framePainted, layerCount } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -7,7 +8,10 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1000)
+    // The dialog hides the moment it is dismissed; the project it asked for is
+    // still being installed. Wait for the app and its base layer.
+    await appReady(page)
+    await layerCount(page, 1)
 }
 
 async function copyColorSquareToClipboard(page, color) {
@@ -30,7 +34,9 @@ test.describe('Paste to selection', () => {
             sm._startAnimation()
         }, { size: selectionSize })
 
-        await page.waitForTimeout(500)
+        // The path is assigned synchronously; _startAnimation only schedules a
+        // frame, so a frame is all this ever needed.
+        await framePainted(page)
 
         // Verify selection is square
         const beforePaste = await page.evaluate(() => {
@@ -52,7 +58,9 @@ test.describe('Paste to selection', () => {
         await page.evaluate(async () => {
             await window.layersApp._handlePaste()
         })
-        await page.waitForTimeout(1000)
+        // The read below indexes the last layer, so wait for the paste to have
+        // added one.
+        await layerCount(page, 2)
 
         // Verify pasted layer is selection-sized with correct offset
         const pastedInfo = await page.evaluate(() => {
@@ -108,7 +116,9 @@ test.describe('Paste to selection', () => {
             sm._startAnimation()
         }, { x: selectionX, y: selectionY, w: selectionW, h: selectionH })
 
-        await page.waitForTimeout(500)
+        // The path is assigned synchronously; _startAnimation only schedules a
+        // frame, so a frame is all this ever needed.
+        await framePainted(page)
 
         expect(await page.evaluate(() => window.layersApp._selectionManager?.hasSelection())).toBe(true)
 
@@ -134,7 +144,9 @@ test.describe('Paste to selection', () => {
         expect(pasteResult.afterPasteHasSelection).toBe(false)
         expect(pasteResult.afterPasteLayerCount).toBe(2)
 
-        await page.waitForTimeout(500)
+        // The read below indexes the last layer, so wait for the paste to have
+        // added one.
+        await layerCount(page, 2)
 
         // Verify the pasted layer is selection-sized with correct offset
         const pixelCheck = await page.evaluate(({ selX, selY, selW, selH }) => {
@@ -211,7 +223,9 @@ test.describe('Paste to selection', () => {
         await page.evaluate(async () => {
             await window.layersApp._handlePaste()
         })
-        await page.waitForTimeout(1000)
+        // The read below indexes the last layer, so wait for the paste to have
+        // added one.
+        await layerCount(page, 2)
 
         // Check layer was added with centered offset
         const result = await page.evaluate(() => {
