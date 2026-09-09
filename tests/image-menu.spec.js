@@ -1,4 +1,16 @@
 import { test, expect } from './fixtures.js'
+import { appReady, layerCount } from './waits.js'
+
+// Every auto-correction path ends in exactly one toast: "Applied: <name>" when
+// it added a correction layer, "No correction needed" when the image already
+// measures flat. The assertions below accept either outcome, so this is the one
+// signal that covers both, and it is emitted after the layer commit lands.
+function autoCorrectionReported(page) {
+    return page.locator('#toast-container .toast-message')
+        .filter({ hasText: /Applied:|No correction needed/ })
+        .first()
+        .waitFor({ state: 'attached', timeout: 15000 })
+}
 
 test.describe('Image menu adjustments', () => {
     test.beforeEach(async ({ page }) => {
@@ -11,7 +23,7 @@ test.describe('Image menu adjustments', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
     })
 
     test('submenu appears on hover', async ({ page }) => {
@@ -43,7 +55,9 @@ test.describe('Image menu adjustments', () => {
         const toneItem = page.locator('#imageMenu .has-submenu', { hasText: 'tone' })
         await toneItem.hover()
         await page.click('[data-effect="filter/adjust"]')
-        await page.waitForTimeout(500)
+        // The menu item fires an unawaited pointer mutation; the layer landing
+        // in the model is the result the assertions read.
+        await layerCount(page, 2)
 
         // Should now have 2 layers
         const layersAfter = await page.evaluate(() => window.layersApp._layers.length)
@@ -60,10 +74,10 @@ test.describe('Image menu adjustments', () => {
         const stylizeItem = page.locator('#filterMenu .has-submenu', { hasText: 'stylize' })
         await stylizeItem.hover()
         await page.click('[data-effect="filter/emboss"]')
-        await page.waitForTimeout(500)
+        await layerCount(page, 2)
 
-        const layerCount = await page.evaluate(() => window.layersApp._layers.length)
-        expect(layerCount).toBe(2)
+        const layerCountAfter = await page.evaluate(() => window.layersApp._layers.length)
+        expect(layerCountAfter).toBe(2)
 
         const effectId = await page.evaluate(() => window.layersApp._layers[1].effectId)
         expect(effectId).toBe('filter/emboss')
@@ -74,10 +88,10 @@ test.describe('Image menu adjustments', () => {
         const colorItem = page.locator('#imageMenu .has-submenu', { hasText: 'color' })
         await colorItem.hover()
         await page.click('[data-effect="filter/colorReplace"]')
-        await page.waitForTimeout(500)
+        await layerCount(page, 2)
 
-        const layerCount = await page.evaluate(() => window.layersApp._layers.length)
-        expect(layerCount).toBe(2)
+        const layerCountAfter = await page.evaluate(() => window.layersApp._layers.length)
+        expect(layerCountAfter).toBe(2)
 
         const effectId = await page.evaluate(() => window.layersApp._layers[1].effectId)
         expect(effectId).toBe('filter/colorReplace')
@@ -86,11 +100,11 @@ test.describe('Image menu adjustments', () => {
     test('auto levels creates effect layer', async ({ page }) => {
         await page.click('#imageMenu .hf-menubar-trigger')
         await page.click('#autoLevelsMenuItem')
-        await page.waitForTimeout(500)
+        await autoCorrectionReported(page)
 
-        const layerCount = await page.evaluate(() => window.layersApp._layers.length)
+        const layers = await page.evaluate(() => window.layersApp._layers.length)
         // May be 1 (no correction needed for solid) or 2 (correction applied)
-        expect(layerCount).toBeGreaterThanOrEqual(1)
+        expect(layers).toBeGreaterThanOrEqual(1)
     })
 
     test('auto contrast creates effect layer', async ({ page }) => {
@@ -98,23 +112,23 @@ test.describe('Image menu adjustments', () => {
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('synth/gradient')
         })
-        await page.waitForTimeout(500)
+        await layerCount(page, 2)
 
         await page.click('#imageMenu .hf-menubar-trigger')
         await page.click('#autoContrastMenuItem')
-        await page.waitForTimeout(500)
+        await autoCorrectionReported(page)
 
-        const layerCount = await page.evaluate(() => window.layersApp._layers.length)
-        expect(layerCount).toBeGreaterThanOrEqual(2)
+        const layers = await page.evaluate(() => window.layersApp._layers.length)
+        expect(layers).toBeGreaterThanOrEqual(2)
     })
 
     test('auto white balance creates effect layer', async ({ page }) => {
         await page.click('#imageMenu .hf-menubar-trigger')
         await page.click('#autoWhiteBalanceMenuItem')
-        await page.waitForTimeout(500)
+        await autoCorrectionReported(page)
 
         // Should either add correction or report none needed
-        const layerCount = await page.evaluate(() => window.layersApp._layers.length)
-        expect(layerCount).toBeGreaterThanOrEqual(1)
+        const layers = await page.evaluate(() => window.layersApp._layers.length)
+        expect(layers).toBeGreaterThanOrEqual(1)
     })
 })
