@@ -69,11 +69,16 @@ async function cloneViaDrag(page, initialLayerCount, dragDistance = 100) {
     await page.mouse.move(box.x + 200, box.y + 200)
     await page.mouse.down()
 
-    // Wait for extraction to complete (new layer created, state transitions to DRAGGING)
-    await page.waitForFunction(
+    // Wait for extraction to complete (new layer created, state transitions to
+    // DRAGGING). The five second budget this used to carry was a guess, and a
+    // wrong one: the duplicate path measures 7.8 to 12.3 seconds on chromium
+    // under contention, so this failed on a busy machine while the app was
+    // working correctly. Use the shared default, which is generous enough for
+    // a loaded runner and still bounded.
+    await appState(
+        page,
         (expected) => window.layersApp._layers.length === expected,
         initialLayerCount + 1,
-        { timeout: 5000 }
     )
     // The duplicate lands in the model a beat before the tool leaves EXTRACTING,
     // and mousemove is dropped in any state but DRAGGING, so wait for the state
