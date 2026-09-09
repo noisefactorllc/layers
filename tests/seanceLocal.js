@@ -10,7 +10,7 @@ import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-export const SEANCE_SDK_URL = 'https://seance.noisefactor.io/sdk/0/index.js'
+export const SEANCE_SDK_URL = 'https://seance.noisefactor.io/sdk/0/index.js?v=0.2.2'
 
 export function resolveSeanceHarnessPaths({ env = process.env, cwd = process.cwd() } = {}) {
     const distDir = env.SEANCE_DIST_DIR ? resolve(env.SEANCE_DIST_DIR) : null

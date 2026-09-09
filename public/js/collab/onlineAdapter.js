@@ -29,7 +29,8 @@ import {
 } from './docModel.js'
 
 export const DEFAULT_SEANCE_URL = 'https://seance.noisefactor.io'
-export const DEFAULT_SEANCE_SDK_URL = 'https://seance.noisefactor.io/sdk/0/index.js'
+// Bypass SDK 0.2.0 cached before the rolling alias acquired a bounded cache policy.
+export const DEFAULT_SEANCE_SDK_URL = 'https://seance.noisefactor.io/sdk/0/index.js?v=0.2.2'
 
 const DIALECT = 'layers'
 const PUBLISH_DEBOUNCE_MS = 150
