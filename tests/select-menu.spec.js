@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState } from './waits.js'
 
 async function setupApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -8,7 +9,7 @@ async function setupApp(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 async function setRectSelection(page, x, y, w, h) {
@@ -17,14 +18,18 @@ async function setRectSelection(page, x, y, w, h) {
             type: 'rect', x, y, width: w, height: h
         })
     }, { x, y, w, h })
-    await page.waitForTimeout(100)
+    // No wait: setSelection calls onSelectionChange, which calls
+    // menuBar.refresh(), which rewrites every item's aria-disabled inline.
+    // The whole chain runs inside the evaluate above.
 }
 
 async function openSelectMenu(page) {
     // The Select menu dropdown is hidden by default (.hide class).
     // We need to click its title to reveal the menu items.
     await page.locator('#menu .hf-menubar-trigger', { hasText: 'select' }).click()
-    await page.waitForTimeout(50)
+    // The panel is hidden until the trigger opens it, so its items are not
+    // clickable before this.
+    await page.locator('#selectAllMenuItem').waitFor({ state: 'visible' })
 }
 
 test.describe('Select Menu', () => {
@@ -32,7 +37,7 @@ test.describe('Select Menu', () => {
         await setupApp(page)
         await openSelectMenu(page)
         await page.click('#selectAllMenuItem')
-        await page.waitForTimeout(100)
+        await appState(page, () => window.layersApp._selectionManager.hasSelection())
 
         const result = await page.evaluate(() => {
             const sel = window.layersApp._selectionManager.selectionPath
@@ -48,7 +53,7 @@ test.describe('Select Menu', () => {
         await setRectSelection(page, 10, 10, 100, 100)
         await openSelectMenu(page)
         await page.click('#selectNoneMenuItem')
-        await page.waitForTimeout(100)
+        await appState(page, () => !window.layersApp._selectionManager.hasSelection())
 
         const hasSelection = await page.evaluate(() =>
             window.layersApp._selectionManager.hasSelection()
@@ -61,7 +66,8 @@ test.describe('Select Menu', () => {
         await setRectSelection(page, 0, 0, 512, 512)
         await openSelectMenu(page)
         await page.click('#selectInverseMenuItem')
-        await page.waitForTimeout(100)
+        await appState(page,
+            () => window.layersApp._selectionManager.selectionPath?.type === 'mask')
 
         const result = await page.evaluate(() => {
             const sel = window.layersApp._selectionManager.selectionPath
@@ -88,7 +94,10 @@ test.describe('Select Menu', () => {
         await page.waitForSelector('.selection-param-dialog[open]', { timeout: 2000 })
         await page.fill('#selection-param-input', '10')
         await page.click('#selection-param-ok')
-        await page.waitForTimeout(200)
+        // Confirming replaces the rect with the expanded mask the pixel read
+        // below indexes into.
+        await appState(page,
+            () => window.layersApp._selectionManager.selectionPath?.type === 'mask')
 
         const selected = await page.evaluate(() => {
             const sel = window.layersApp._selectionManager.selectionPath
@@ -117,7 +126,10 @@ test.describe('Select Menu', () => {
                 return envelope
             })
         })
-        await page.waitForTimeout(100)
+        // The agent command takes the lifecycle lease before its handler runs,
+        // so it is provably queued behind the open dialog once it registers as
+        // a waiter. Sleeping instead only made "not settled yet" likely.
+        await appState(page, () => window.layersApp._projectLifecycleWaiters > 0)
 
         const whileOpen = await page.evaluate(() => ({
             settled: window.__selectionRaceSettled,
@@ -148,7 +160,10 @@ test.describe('Select Menu', () => {
         await page.waitForSelector('.selection-param-dialog[open]', { timeout: 2000 })
         await page.fill('#selection-param-input', '10')
         await page.click('#selection-param-ok')
-        await page.waitForTimeout(200)
+        // Confirming replaces the rect with the contracted mask the pixel read
+        // below indexes into.
+        await appState(page,
+            () => window.layersApp._selectionManager.selectionPath?.type === 'mask')
 
         const selected = await page.evaluate(() => {
             const sel = window.layersApp._selectionManager.selectionPath
@@ -195,7 +210,7 @@ test.describe('Select Menu', () => {
     test('Cmd+A selects all via keyboard', async ({ page }) => {
         await setupApp(page)
         await page.keyboard.press('Meta+a')
-        await page.waitForTimeout(100)
+        await appState(page, () => window.layersApp._selectionManager.hasSelection())
 
         const hasSelection = await page.evaluate(() =>
             window.layersApp._selectionManager.hasSelection()
