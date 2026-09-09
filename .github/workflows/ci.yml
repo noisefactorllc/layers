@@ -39,16 +39,52 @@ jobs:
       - run: npm run test:unit
 
   browser:
-    name: Browser (${{ matrix.browser }})
+    name: Browser (${{ matrix.browser }} ${{ matrix.shard }}/${{ matrix.shards }})
     needs: source
     runs-on: ubuntu-latest
-    # Backstop only, above Playwright's three hour globalTimeout so that fires
-    # first and leaves a report. Measured webkit legs run 79 to 100 minutes.
-    timeout-minutes: 200
+    # Backstop only, above Playwright's globalTimeout so that fires first and
+    # leaves a report. A shard is a fraction of a leg, so this is far above
+    # anything a healthy shard takes.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
+      # Shards, sized from measurement rather than symmetry. The whole suite is
+      # 963 tests per engine and the engines are not comparable: on run
+      # 34367638949 the test step took 76.7 minutes for webkit, 56.8 for
+      # chromium and 41.3 for firefox, while everything around it, both
+      # checkouts, the harness build, npm ci and the browser install, took 2.1.
+      # Setup is therefore nearly free and wall clock is almost entirely the
+      # test step, so splitting that step is the only lever that matters.
+      #
+      # Each engine gets the shard count that puts its slowest observed leg
+      # under about fifteen minutes, which leaves the whole harness inside
+      # twenty: webkit's worst leg was 100.4, chromium's 60.9, firefox's 48.8.
+      # Playwright splits by file and files differ in size, so the counts carry
+      # room for an uneven split rather than assuming a perfect one. Seventeen
+      # jobs is also deliberate: it stays under the twenty concurrent jobs a
+      # public repository gets, because a shard that queues costs exactly the
+      # wall clock this axis was added to save. Re-measure before changing
+      # these; a shard count picked to look tidy will either miss the target or
+      # burn runners for nothing.
       matrix:
-        browser: [chromium, firefox, webkit]
+        include:
+          - { browser: chromium, shard: 1, shards: 5 }
+          - { browser: chromium, shard: 2, shards: 5 }
+          - { browser: chromium, shard: 3, shards: 5 }
+          - { browser: chromium, shard: 4, shards: 5 }
+          - { browser: chromium, shard: 5, shards: 5 }
+          - { browser: firefox, shard: 1, shards: 4 }
+          - { browser: firefox, shard: 2, shards: 4 }
+          - { browser: firefox, shard: 3, shards: 4 }
+          - { browser: firefox, shard: 4, shards: 4 }
+          - { browser: webkit, shard: 1, shards: 8 }
+          - { browser: webkit, shard: 2, shards: 8 }
+          - { browser: webkit, shard: 3, shards: 8 }
+          - { browser: webkit, shard: 4, shards: 8 }
+          - { browser: webkit, shard: 5, shards: 8 }
+          - { browser: webkit, shard: 6, shards: 8 }
+          - { browser: webkit, shard: 7, shards: 8 }
+          - { browser: webkit, shard: 8, shards: 8 }
     defaults:
       run:
         working-directory: layers
@@ -121,16 +157,21 @@ jobs:
         run: |
           mkdir -p dependency-evidence
           curl --fail --silent --show-error --max-time 30 https://shaders.noisedeck.app/1/deployment-meta.json > dependency-evidence/shaders-before.json
-      - name: Test all browser and pixel regressions
+      - name: Test this shard of the browser and pixel regressions
+        env:
+          SHARD: --shard=${{ matrix.shard }}/${{ matrix.shards }}
         run: |
           if [ '${{ matrix.browser }}' = 'webkit' ]; then
             # Match WebKit's GLib test runner for offscreen video textures.
-            WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS=1 xvfb-run -a npm test -- --project=webkit --headed --workers=1
+            # One worker stays: WebKit's parallelism comes from the shard axis,
+            # not from crowding a four core runner with software rendered
+            # engines that then time each other out.
+            WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS=1 xvfb-run -a npm test -- --project=webkit --headed --workers=1 "$SHARD"
           elif [ '${{ matrix.browser }}' = 'firefox' ]; then
             # Provide a display for WebGL2 in the Linux CI environment.
-            xvfb-run -a npm test -- --project=firefox --headed
+            xvfb-run -a npm test -- --project=firefox --headed "$SHARD"
           else
-            npm test -- --project=${{ matrix.browser }}
+            npm test -- --project=${{ matrix.browser }} "$SHARD"
           fi
       - name: Record shader release after testing
         if: always()
@@ -141,7 +182,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: browser-${{ matrix.browser }}-${{ github.sha }}
+          name: browser-${{ matrix.browser }}-${{ matrix.shard }}-of-${{ matrix.shards }}-${{ github.sha }}
           path: |
             layers/playwright-report/
             layers/test-results/
