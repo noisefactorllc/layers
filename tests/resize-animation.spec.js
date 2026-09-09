@@ -15,7 +15,16 @@ test.describe('Image menu - Resize preserves animation', () => {
         const fileInput = await page.locator('.open-dialog-backdrop input[type="file"]')
         await fileInput.setInputFiles(fileURLToPath(new URL('./fixtures/resize-animation.webm', import.meta.url)))
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 15000 })
-        await page.waitForTimeout(1000)
+        // Wait for the video to exist and be playing, rather than sleeping. The
+        // fixture is one second long, so a fixed sleep spends the clip: by the
+        // time the observation below starts, playback has already reached the
+        // end, and a browser that does not restart the loop leaves a frozen
+        // frame that looks exactly like the regression this test hunts.
+        await page.waitForFunction(() => {
+            const media = [...(window.layersApp?._renderer?.getVideoMediaIterator?.() ?? [])]
+            const video = media[0]?.videoElement
+            return !!video && video.readyState >= 2
+        }, null, { timeout: 15000 })
 
         // Verify renderer is running before resize
         const runningBefore = await page.evaluate(() => window.layersApp._renderer.isRunning)
@@ -25,7 +34,6 @@ test.describe('Image menu - Resize preserves animation', () => {
         await page.evaluate(async () => {
             await window.layersApp._resizeImage(720, 720)
         })
-        await page.waitForTimeout(500)
 
         // Verify canvas dimensions
         const dims = await page.evaluate(() => ({
@@ -44,6 +52,21 @@ test.describe('Image menu - Resize preserves animation', () => {
         // Render and read in one task because preserveDrawingBuffer is false.
         // Fixed render time excludes shader animation; only live video texture
         // updates can change this uniform-color fixture's center pixel.
+        // Start the clip from a known point and confirm it is advancing, so the
+        // observation measures the texture path rather than whatever phase the
+        // one-second fixture happened to be in. A stalled loop at the end of the
+        // clip is a browser behaviour, not the resize regression under test.
+        await page.evaluate(async () => {
+            const video = [...window.layersApp._renderer.getVideoMediaIterator()][0]?.videoElement
+            if (!video) return
+            video.currentTime = 0
+            await video.play().catch(() => {})
+        })
+        await page.waitForFunction(() => {
+            const video = [...window.layersApp._renderer.getVideoMediaIterator()][0]?.videoElement
+            return !!video && !video.paused && video.currentTime > 0
+        }, null, { timeout: 10000 })
+
         const observation = await page.evaluate(async () => {
             const { readRenderPixels } = await import('/js/utils/canvas-readback.js')
             const app = window.layersApp
