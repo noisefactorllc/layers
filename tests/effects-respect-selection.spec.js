@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { installNoisemakerSource } from './noisemaker-source.js'
+import { appReady, appState, framePainted, layerCount } from './waits.js'
 
 test.beforeEach(async ({ page }) => {
     await installNoisemakerSource(page, ['mixer/alphaMask'])
@@ -42,7 +43,10 @@ async function bootSolidProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1500)
+    // The dialog hides the moment it is dismissed; the project it asked for is
+    // still being installed, and the line below indexes its base layer.
+    await appReady(page)
+    await layerCount(page, 1)
 
     // Deterministic opaque dark-gray base
     await page.evaluate(async () => {
@@ -50,7 +54,8 @@ async function bootSolidProject(page) {
         app._layers[0].effectParams = { color: [0.25, 0.25, 0.25], alpha: 1 }
         await app._rebuild()
     })
-    await page.waitForTimeout(800)
+    // The rebuild is awaited; callers read pixels, so what is left is a frame.
+    await framePainted(page)
 
     return page.evaluate(() => {
         const canvas = document.getElementById('canvas')
@@ -68,7 +73,9 @@ async function addLightSolidLayer(page) {
         await app._rebuild()
         return layer.id
     })
-    await page.waitForTimeout(800)
+    // The rebuild is awaited; callers read pixels, so what is left is a frame.
+    await layerCount(page, 2)
+    await framePainted(page)
     return layerId
 }
 
@@ -95,7 +102,8 @@ async function setLeftHalfMask(page, layerId) {
         app._renderer.uploadMaskTexture(id, mask)
         await app._rebuild()
     }, [layerId])
-    await page.waitForTimeout(800)
+    // The rebuild is awaited; callers read pixels, so what is left is a frame.
+    await framePainted(page)
 }
 
 async function bootSolidProjectSized(page, width, height) {
@@ -108,14 +116,23 @@ async function bootSolidProjectSized(page, width, height) {
     await page.fill('#canvas-height', String(height))
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1500)
+    // The dialog hides the moment it is dismissed; the project it asked for is
+    // still being installed. The tests sample pixels by canvas coordinate, so
+    // the requested size has to have landed too.
+    await appReady(page)
+    await appState(page, ([w, h]) => {
+        const app = window.layersApp
+        return app._layers.length === 1
+            && app._canvas.width === w && app._canvas.height === h
+    }, [width, height])
 
     await page.evaluate(async () => {
         const app = window.layersApp
         app._layers[0].effectParams = { color: [0.25, 0.25, 0.25], alpha: 1 }
         await app._rebuild()
     })
-    await page.waitForTimeout(800)
+    // The rebuild is awaited; callers read pixels, so what is left is a frame.
+    await framePainted(page)
 }
 
 test.describe('Effects respect selection marquee and layer mask', () => {
