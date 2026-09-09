@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, framePainted, layerCount } from './waits.js'
 
 // "Compiling shaders..." overlay (a la noisedeck): shown over the canvas
 // while the renderer is legitimately recompiling the DSL, and ONLY then.
@@ -19,7 +20,10 @@ async function loadWithSolidBase(page, size) {
     }
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1000)
+    // The dialog hides the moment it is dismissed; the project it asked for is
+    // still being installed. Wait for the app and its base layer.
+    await appReady(page)
+    await layerCount(page, 1)
 }
 
 // Start observing the overlay's class attribute; returns whether 'visible'
@@ -99,7 +103,10 @@ test('uniform-only param changes update without compiling or showing the overlay
         return { layerId: halftone.id, status: added.status }
     })
     expect(setup.status).toBe('added')
-    await page.waitForTimeout(800)
+    // The baseline compile count below is only meaningful once the setup's own
+    // compiling is over, which the overlay reports directly.
+    await expect(page.locator('#compile-overlay')).not.toHaveClass(/visible/, { timeout: 15000 })
+    await framePainted(page)
 
     await armOverlayWatch(page)
     const compilesBefore = dslCompiles.length
@@ -117,7 +124,10 @@ test('uniform-only param changes update without compiling or showing the overlay
             layer,
         })
     }, { layerId: setup.layerId })
-    await page.waitForTimeout(600)
+    // _handleLayerChange is awaited, so a rebuild it chose would already have
+    // compiled and flashed the overlay by now. The frame is the render the
+    // cheap path does instead, and it is the last chance for a late flash.
+    await framePainted(page)
 
     const overlayFlashed = await readOverlayWatch(page)
     expect(overlayFlashed, 'uniform-only change must not show the compile overlay').toBe(false)
@@ -141,11 +151,15 @@ test('hovering over param controls never compiles or shows the overlay', async (
         })
         await app._rebuild({ force: true })
     })
-    await page.waitForTimeout(800)
+    // The baseline compile count below is only meaningful once the setup's own
+    // compiling is over, which the overlay reports directly.
+    await expect(page.locator('#compile-overlay')).not.toHaveClass(/visible/, { timeout: 15000 })
 
     // Expand the top layer's params so the controls are hoverable
     await page.locator('layer-item .layer-params-toggle').first().click({ force: true })
-    await page.waitForTimeout(400)
+    // The next line measures the params panel, so wait for it to be on screen.
+    await page.locator('layer-item effect-params').first().waitFor({ state: 'visible', timeout: 15000 })
+    await framePainted(page)
 
     const box = await page.evaluate(() => {
         const el = document.querySelector('layer-item effect-params')
@@ -163,7 +177,10 @@ test('hovering over param controls never compiles or shows the overlay', async (
             box.x + 4 + ((box.width - 8) * (i % 30)) / 30,
             box.y + 4 + ((box.height - 8) * ((i * 7) % 30)) / 30)
     }
-    await page.waitForTimeout(500)
+    // Hover handlers run synchronously with each move, so a compile any of them
+    // started would already own the overlay. The frame is the last chance for a
+    // late flash to be recorded.
+    await framePainted(page)
 
     const overlayFlashed = await readOverlayWatch(page)
     expect(overlayFlashed, 'hover must not show the compile overlay').toBe(false)
