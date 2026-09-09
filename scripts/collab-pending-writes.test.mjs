@@ -158,3 +158,41 @@ test('a create whose id a peer already claimed yields to the peer', () => {
     assert.deepEqual(confirmed, ['L1'])
     assert.equal(byId(nodes).get('L1').text, 'peer got there first')
 })
+
+test('an authoritative SDK pending write survives a peer advancing its node version', () => {
+    const pending = new Map([['L1', { op: 'upsert', kind: 'layers-layer', text: 'mine', parentId: null }]])
+    const { nodes, confirmed } = overlayPendingWrites(
+        [node('L1', 'peer wrote first', null, 'layers-layer', 7)], pending,
+        { authoritative: true })
+    assert.equal(byId(nodes).get('L1').text, 'mine')
+    assert.deepEqual(confirmed, [])
+})
+
+test('an authoritative FIFO queue preserves a parent deletion after child creation', () => {
+    const pending = [
+        { id: 'L1', op: 'upsert', kind: 'layers-layer', text: 'parent', parentId: null },
+        { id: 'L1.C1', op: 'upsert', kind: 'layers-child', text: 'child', parentId: 'L1' },
+        { id: 'L1', op: 'delete' },
+    ]
+    const result = overlayPendingWrites([node('meta', '{}')], pending, { authoritative: true })
+    assert.deepEqual(result.nodes.map(node => node.id), ['meta'])
+})
+
+test('delete then recreate in the authoritative queue does not restore old children', () => {
+    const pending = [
+        { id: 'L1', op: 'delete' },
+        { id: 'L1', op: 'upsert', kind: 'layers-layer', text: 'new parent', parentId: null },
+    ]
+    const result = overlayPendingWrites([
+        node('L1', 'old parent'), node('L1.C1', 'old child', 'L1', 'layers-child'),
+    ], pending, { authoritative: true })
+    assert.deepEqual(result.nodes.map(node => [node.id, node.text]), [['L1', 'new parent']])
+})
+
+test('an authoritative pending delete removes descendants even when its root is absent', () => {
+    const pending = new Map([['L1', { id: 'L1', op: 'delete' }]])
+    const result = overlayPendingWrites([
+        node('L1.C1', 'child', 'L1', 'layers-child'), node('L10', 'unrelated'),
+    ], pending, { authoritative: true })
+    assert.deepEqual(result.nodes.map(node => node.id), ['L10'])
+})

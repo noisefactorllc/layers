@@ -5,10 +5,12 @@
  */
 
 let strokeCounter = 0
+const strokeIdNamespace = Array.from(crypto.getRandomValues(new Uint32Array(4)),
+    value => value.toString(16).padStart(8, '0')).join('')
 
 export function createPathStroke({ color, size, opacity = 1, points = [], mode = 'brush' }) {
     return {
-        id: `stroke-${strokeCounter++}`,
+        id: `stroke-${strokeCounter++}-${strokeIdNamespace}`,
         type: 'path',
         color,
         size,
@@ -20,7 +22,7 @@ export function createPathStroke({ color, size, opacity = 1, points = [], mode =
 
 export function createShapeStroke({ type, color, size, opacity = 1, x, y, width, height, filled = false }) {
     return {
-        id: `stroke-${strokeCounter++}`,
+        id: `stroke-${strokeCounter++}-${strokeIdNamespace}`,
         type,
         color,
         size,
@@ -33,7 +35,7 @@ export function createShapeStroke({ type, color, size, opacity = 1, x, y, width,
 
 export function createLineStroke({ type = 'line', color, size, opacity = 1, points = [] }) {
     return {
-        id: `stroke-${strokeCounter++}`,
+        id: `stroke-${strokeCounter++}-${strokeIdNamespace}`,
         type,
         color,
         size,

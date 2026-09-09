@@ -10,6 +10,81 @@ async function bootSolid(page) {
     await backdrop.waitFor({ state: 'hidden' })
 }
 
+test('an SDK-pending local edit survives a peer version advance until its own acknowledgement', async ({ page }) => {
+    await bootSolid(page)
+    const result = await page.evaluate(async () => {
+        const app = window.layersApp
+        const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
+        const { buildNodeModel } = await import('/js/collab/docModel.js')
+        const handlers = new Map()
+        const pending = new Map()
+        let status = 'offline'
+        let pendingReads = 0
+        let nodes = buildNodeModel(app._layers, {
+            width: app._canvas.width, height: app._canvas.height,
+        }).map(node => ({ ...node, version: 1 }))
+        const layerId = app._layers[0].id
+        const nodeId = `L${layerId}`
+        const online = {
+            on: (event, handler) => handlers.set(event, handler),
+            getStatus: () => status,
+            getSessionId: () => 'pending1',
+            getShareUrl: () => 'https://layers.test/?seance=pending1',
+            getNodes: () => nodes,
+            getPendingNodeWrites: () => { pendingReads++; return [...pending.values()] },
+            joinSession: async () => { status = 'online' },
+            goOffline: () => { status = 'offline' },
+            writeSessionToUrl: url => url,
+            upsertNode: (id, node) => pending.set(id, { id, op: 'upsert', ...node }),
+            deleteNode: id => pending.set(id, { id, op: 'delete' }),
+        }
+        const adapter = createLayersOnlineAdapter(app, {
+            location: new URL('https://layers.test/'), history: { replaceState() {} },
+            dialog: null, importSdk: async () => ({ createOnlineDslLayer: () => online }),
+        })
+        app._onlineAdapter = adapter
+        await adapter.joinSession('pending1', { skipConfirm: true })
+        const wait = async predicate => {
+            const deadline = performance.now() + 10000
+            while (!predicate()) {
+                if (performance.now() > deadline) throw new Error('collaboration apply did not settle')
+                await new Promise(resolve => setTimeout(resolve, 10))
+            }
+        }
+        let applied = 0
+        const stage = app._renderer.stageLayerSet.bind(app._renderer)
+        app._renderer.stageLayerSet = async (...args) => {
+            const result = await stage(...args)
+            applied++
+            return result
+        }
+        await app._handleLayerChange({ layerId, property: 'opacity', value: 42 })
+        await wait(() => pending.has(nodeId))
+        const advanceNode = (opacity, version) => {
+            nodes = nodes.map(node => node.id === nodeId ? {
+                ...node, version, text: JSON.stringify({ ...JSON.parse(node.text), opacity }),
+            } : node)
+        }
+        const applyEvent = async event => {
+            const before = pendingReads
+            handlers.get(event)?.({ id: nodeId, op: 'upsert' })
+            await wait(() => pendingReads > before && !adapter.isApplyingRemote())
+            return app._layers[0].opacity
+        }
+        advanceNode(55, 2)
+        const whilePending = await applyEvent('remote-node')
+        advanceNode(42, 3)
+        pending.delete(nodeId)
+        const afterAck = await applyEvent('node-ack')
+        const unchangedStages = applied
+        advanceNode(65, 4)
+        const afterLaterPeer = await applyEvent('remote-node')
+        adapter.goOffline()
+        return { whilePending, afterAck, afterLaterPeer, unchangedStages, changedStages: applied }
+    })
+    expect(result).toEqual({ whilePending: 42, afterAck: 42, afterLaterPeer: 65, unchangedStages: 0, changedStages: 1 })
+})
+
 test('remote apply waits until the project lifecycle lease is released', async ({ page }) => {
     await bootSolid(page)
 
@@ -407,7 +482,7 @@ test('remote commit finalizes the last local debounced state before its undo ent
     expect(result).toEqual({
         remoteIds: ['layer-710'],
         undoOk: true,
-        restoredId: 'layer-0',
+        restoredId: expect.stringMatching(/^layer-0-[a-f0-9]{32}$/),
         restoredOpacity: 37,
         restoredCanvas: { width: 1024, height: 1024 },
     })
@@ -486,11 +561,11 @@ test('remote post-push failure restores exact finalized history without candidat
     })
 
     expect(result).toEqual({
-        localId: 'layer-0',
-        layerId: 'layer-0',
+        localId: expect.stringMatching(/^layer-0-[a-f0-9]{32}$/),
+        layerId: result.localId,
         opacity: 37,
         sameUndoStack: true,
-        historyLayerIds: ['layer-0', 'layer-0'],
+        historyLayerIds: [result.localId, result.localId],
         historyOpacities: [100, 37],
         undoIndex: 1,
         pendingUndo: false,

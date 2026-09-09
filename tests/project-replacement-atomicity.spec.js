@@ -669,7 +669,8 @@ test.describe('Atomic project replacement', () => {
             return window.layersApp._layers.map(layer => layer.id)
         })
 
-        expect(ids).toEqual(['layer-0', 'layer-2'])
+        expect(ids[0]).toBe('layer-0')
+        expect(ids[1]).toMatch(/^layer-2-[a-f0-9]{32}$/)
     })
 
     test('a persisted ID whose successor is unsafe is rejected', async ({ page }) => {
@@ -731,7 +732,7 @@ test.describe('Atomic project replacement', () => {
         })
 
         expect(result.cloneError).toContain('safe integer')
-        expect(result.finalId).toBe(`layer-${Number.MAX_SAFE_INTEGER}`)
+        expect(result.finalId).toMatch(new RegExp(`^layer-${Number.MAX_SAFE_INTEGER}-[a-f0-9]{32}$`))
         expect(result.exhaustedError).toContain('safe integer')
     })
 

@@ -116,6 +116,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     let pendingDeleteExpiryTimer = null
     let rejectToastCooldown = false    // coalesces a burst of node-reject events into one toast
     let readOnlyToastCooldown = false  // one notice per spell of read-only editing
+    let readOnlyDraftHeld = false
     let remoteLifecycleToken = null
     let sessionEpoch = 0
     let transitionIntentGeneration = 0
@@ -144,7 +145,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     function refreshStatus(status = getStatus()) {
         if (!dialog) return
         const onlineish = status === 'online' || status === 'readonly'
-        dialog.state = onlineish ? 'online' : (status === 'connecting' ? 'connecting' : 'offline')
+        dialog.state = onlineish ? status : (status === 'connecting' ? 'connecting' : 'offline')
         dialog.sessionId = onlineish ? (online?.getSessionId?.() || '') : ''
         dialog.sessionUrl = onlineish ? (online?.getShareUrl?.() || '') : ''
     }
@@ -152,7 +153,12 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     // -- SDK bootstrap --------------------------------------------------
 
     async function createOnlineLayer() {
-        if (!sdkPromise) sdkPromise = importSdk(config.sdkUrl)
+        if (!sdkPromise) {
+            sdkPromise = importSdk(config.sdkUrl).catch(error => {
+                sdkPromise = null
+                throw error
+            })
+        }
         const sdk = await sdkPromise
         const layer = sdk.createOnlineDslLayer({
             seanceUrl: config.seanceUrl,
@@ -208,6 +214,9 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             scheduleApply(currentSessionRequest(layer))
         })
         layer.on('remote-node', () => {
+            if (layer === online) scheduleApply(currentSessionRequest(layer))
+        })
+        layer.on('node-ack', () => {
             if (layer === online) scheduleApply(currentSessionRequest(layer))
         })
         // Emitted for a write the SDK refuses to queue at all. No adapter has
@@ -315,6 +324,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
 
     function activateSessionTransition(layer, baseline) {
         online = layer
+        readOnlyDraftHeld = false
         sessionEpoch++
         clearScheduledSessionWork()
         rejectedNodeHashes.clear()
@@ -344,6 +354,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         return {
             online,
             lastPublished,
+            readOnlyDraftHeld,
             rejectedNodeHashes: new Map(rejectedNodeHashes),
             pendingLocalWrites: new Map(pendingLocalWrites),
             pendingDeleteRejections: new Map(pendingDeleteRejections),
@@ -363,6 +374,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         pendingDeleteRejections = new Map(state.pendingDeleteRejections)
         armPendingDeleteExpiryTimer()
         lastPublished = state.lastPublished
+        readOnlyDraftHeld = state.readOnlyDraftHeld
         if (state.publishPending) schedulePublish()
         if (state.applyPending) scheduleApply(currentSessionRequest())
     }
@@ -417,6 +429,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
 
     function shouldDeferApply() {
         return app._projectInstallActive || app._projectReplacementActive
+            || (!applyingJoinedSession && getStatus() === 'readonly' && readOnlyDraftHeld)
             || (!applyingJoinedSession && app._projectLifecycleWaiters > 0)
             || (app._projectLifecycleActive
                 && app._projectLifecycleOwner !== remoteLifecycleToken)
@@ -558,6 +571,14 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             applyingJoinedSession = false
             remoteLifecycleToken = null
             applyTaskRunning = false
+            // A room can change while its initial candidate is loading. Keep
+            // the validated join atomic, then apply its freshest state after
+            // this transition releases the lifecycle lease.
+            const rerunRequest = applyRerunRequested
+            applyRerunRequested = null
+            if (rerunRequest && isCurrentSession(rerunRequest) && isOnline()) {
+                scheduleApply(rerunRequest)
+            }
         }
         if (needsRerun) {
             return {
@@ -583,21 +604,57 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             if (isCurrentSession(request)) refuseSession(request.layer)
             return false
         }
+        // Read acknowledged state, pending intent, and the local model in one
+        // synchronous turn. An acknowledgement during semantic loading must
+        // not combine old nodes with an already-retired pending write.
+        const nodeRev = request.layer.getNodeRev?.()
+        const authoritative = typeof request.layer.getPendingNodeWrites === 'function'
+        const pending = authoritative
+            ? request.layer.getPendingNodeWrites()
+            : new Map(pendingLocalWrites)
+        const currentModel = buildNodeModel(app._layers, canvasDims())
+        if (!applyingJoinedSession && getStatus() === 'readonly') {
+            const localChanges = diffNodeModels(lastPublished, currentModel)
+            if (localChanges.upserts.length || localChanges.deletes.length) {
+                readOnlyDraftHeld = true
+                notifyReadOnly()
+                return false
+            }
+        }
+        const before = JSON.stringify(currentModel)
         await assertRemoteCompositionSemantics(nodes)
         if (!isCurrentSession(request)) return false
+        if (JSON.stringify(buildNodeModel(app._layers, canvasDims())) !== before) return true
+        const latestPending = authoritative ? request.layer.getPendingNodeWrites() : null
+        const pendingChanged = authoritative && (
+            latestPending.length !== pending.length || latestPending.some((write, index) => {
+                const captured = pending[index]
+                return write.id !== captured.id || write.op !== captured.op
+                    || write.kind !== captured.kind || write.text !== captured.text
+                    || (write.parentId ?? null) !== (captured.parentId ?? null)
+            }))
+        const serverChanged = request.layer.getNodeRev && request.layer.getNodeRev() !== nodeRev
+        if (serverChanged || pendingChanged) {
+            if (!applyingJoinedSession) return true
+            applyRerunRequested = request
+        }
 
-        // Bounds and semantics are checked against what peers actually sent;
-        // only then is this client's own in-flight intent layered back on, so
-        // a queued local edit is not reverted on screen by an unrelated remote
-        // change (and is not dropped from the next publish diff either).
+        // Validate peer data before layering back local intent. Keep the full
+        // SDK FIFO: collapsing repeated IDs can resurrect deleted descendants.
         const { nodes: effectiveNodes, confirmed } =
-            overlayPendingWrites(nodes, pendingLocalWrites)
-        for (const id of confirmed) pendingLocalWrites.delete(id)
+            overlayPendingWrites(nodes, pending, { authoritative })
+        if (authoritative) pendingLocalWrites.clear()
+        else for (const id of confirmed) pendingLocalWrites.delete(id)
 
-        // Abort-on-race backstop: snapshot the live composition now, so we
-        // can tell — right before the synchronous commit below — whether a
-        // local mutation landed while we were awaiting.
-        const before = JSON.stringify(buildNodeModel(app._layers, canvasDims()))
+        // The SDK now acknowledges our own accepted writes. An ack (or a
+        // peer update covered by pending local intent) often changes nothing
+        // visible: rebuilding here would add a duplicate undo entry and
+        // rerasterize every drawing for each accepted node.
+        const changes = diffNodeModels(currentModel, effectiveNodes)
+        if (authoritative && !changes.upserts.length && !changes.deletes.length) {
+            lastPublished = currentModel
+            return false
+        }
 
         const { layers, canvas, mediaPlaceholderLayerIds } =
             applyNodesToComposition(effectiveNodes, app._layers)
@@ -788,6 +845,12 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 if (restoreError) throw restoreError
                 return false
             }
+            if (shouldDeferApply()) {
+                const restoreError = await rollback()
+                app._restoreProjectCommitState(previousAppState)
+                if (restoreError) throw restoreError
+                return true
+            }
             app._layers = layers
             app._updateLayerStack()
             const nextSelection = app._validSelectionForLayers(
@@ -893,7 +956,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
 
     // -- node-reject handling ---------------------------------------------
 
-    function handleNodeReject({ id }) {
+    function handleNodeReject({ id, reason }) {
         // Never confirmed, so it must stop overriding the server's copy.
         pendingLocalWrites.delete(id)
         // Remember what we last tried to send for this id so a later,
@@ -903,7 +966,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         // publishComposition() below skips resending while the hash matches.
         const rejected = lastPublished.find(n => n.id === id)
         if (rejected) {
-            rejectedNodeHashes.set(id, fnv1a(rejected.text))
+            if (reason === 'readonly') rejectedNodeHashes.delete(id)
+            else rejectedNodeHashes.set(id, fnv1a(rejected.text))
             lastPublished = lastPublished.filter(n => n.id !== id)
         } else {
             prunePendingDeleteRejections()
@@ -916,6 +980,13 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             }
         }
 
+        if (reason === 'readonly') {
+            // Permission loss is temporary, so retain a publish diff and
+            // retry the unchanged draft when write access returns.
+            readOnlyDraftHeld = true
+            notifyReadOnly()
+            return
+        }
         if (!rejectToastCooldown) {
             rejectToastCooldown = true
             toast.warning('Some changes couldn’t be synced')
@@ -929,7 +1000,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         if (readOnlyToastCooldown) return
         readOnlyToastCooldown = true
         bestEffortSessionEffect('Failed to show read-only notice',
-            () => toast.warning('You have view only access in this session, so your changes stay on this device'))
+            () => toast.warning('Your view-only changes stay on this device, and live updates are paused. Save your project before rejoining, or wait for write access to return.', { duration: 10000 }))
         setTimeout(() => { readOnlyToastCooldown = false }, READ_ONLY_TOAST_COOLDOWN_MS)
     }
 
@@ -1035,17 +1106,17 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             schedulePublish()
             return
         }
-        if (getStatus() === 'readonly') {
-            // The SDK drops writes from a read-only connection. Returning
-            // before lastPublished advances keeps the diff describing this
-            // work, so it publishes if write access comes back (the status
-            // handler re-arms then); advancing it would strand the edits and
-            // let the next remote apply erase them with no trace.
-            notifyReadOnly()
-            return
-        }
         const nextModel = buildNodeModel(app._layers, canvasDims())
         const { upserts, deletes } = diffNodeModels(lastPublished, nextModel)
+        if (getStatus() === 'readonly') {
+            // Keep both the draft and its retry baseline. SDK queues refuse
+            // read-only writes, so incoming peer state must wait on this client.
+            if (upserts.length || deletes.length) {
+                readOnlyDraftHeld = true
+                notifyReadOnly()
+            }
+            return
+        }
         // The versions these writes are being sent against. A pending write is
         // retired once the server's copy of its node moves past this, which is
         // what stops an already-published edit from being re-asserted over a
@@ -1073,6 +1144,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 op: 'delete', baseVersion: sentVersions.get(id) ?? null })
         }
         lastPublished = nextModel
+        readOnlyDraftHeld = false
     }
 
     // -- media gating -------------------------------------------------
@@ -1169,9 +1241,17 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             }
             const { layer, previous } = transition
             const transitionIntent = captureSessionTransitionIntent(intentGeneration)
-            const nodes = buildNodeModel(app._layers, canvasDims())
+            let nodes
             let committedSessionId
             try {
+                nodes = buildNodeModel(app._layers, canvasDims())
+                // The host must meet the same allocation limits as its peers;
+                // otherwise creation succeeds but nobody can adopt the room.
+                try {
+                    assertRemoteCompositionWithinBounds(nodes)
+                } catch (error) {
+                    throw new Error(`This composition cannot be shared: ${error.message.replace(/^Remote composition rejected: /, '')}`)
+                }
                 expectedSeedSnapshots.set(layer, nodes)
                 await layer.takeOnline({ poly: { programText: '', nodes } })
                 if (!isCurrentSessionTransitionIntent(transitionIntent)) {
@@ -1353,7 +1433,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         pendingSessionTransitionGeneration = null
         expectedSeedSnapshots.clear()
         pendingSeedSnapshotApplies.clear()
-        if (!online) return
+        if (!online) { readOnlyDraftHeld = false; return }
         let disconnectError = null
         try {
             online.goOffline()

@@ -165,6 +165,42 @@ test('take online creates a session and shows a share URL in the dialog', async 
     await expect.poll(() => page.evaluate(() => window.__clipboardText)).toBe(shareUrl)
 })
 
+test('concurrent layer additions from independent peers both survive', async ({ page, context }) => {
+    const peer = await context.newPage()
+    await preparePage(page)
+    await preparePage(peer)
+    await gotoApp(page)
+    await createProject(page, 'solid', 128)
+    const sessionId = await takeOnline(page)
+    await gotoApp(peer, { seance: sessionId })
+    await expect.poll(() => layersState(peer).then(layers => layers.length), { timeout: 60000 }).toBe(1)
+    await expect.poll(() => peer.evaluate(() => window.layersApp._onlineAdapter.getStatus())).toBe('online')
+
+    // Hold only the publish funnel, so both real app mutations allocate and
+    // render before either peer can learn about the other's new IDs.
+    const ids = await Promise.all([page, peer].map((client, index) => client.evaluate(async (name) => {
+        const app = window.layersApp
+        const publish = app._onlineAdapter.schedulePublish
+        app._onlineAdapter.schedulePublish = () => {}
+        window.__releasePublish = () => {
+            app._onlineAdapter.schedulePublish = publish
+            publish()
+        }
+        await app._handleAddEffectLayer('filter/blur')
+        const layer = app._layers.at(-1)
+        layer.name = name
+        return layer.id
+    }, `Peer ${index + 1}`)))
+    expect(ids[0]).not.toBe(ids[1])
+    await Promise.all([page, peer].map(client => client.evaluate(() => window.__releasePublish())))
+    const expected = ['Peer 1', 'Peer 2']
+    for (const client of [page, peer]) {
+        await expect.poll(async () => (await layersState(client))
+            .filter(layer => ids.includes(layer.id)).map(layer => layer.name).sort(),
+        { timeout: 60000 }).toEqual(expected)
+    }
+})
+
 test('two-page convergence: add layer, opacity, blend mode, reorder, delete', async ({ page, context }) => {
     const pageA = page
     const pageB = await context.newPage()
@@ -733,10 +769,26 @@ test('read-only edits are held and published when write access returns', async (
     await pageB.waitForTimeout(1000)
     expect((await layersState(pageA)).find(l => l.id === blurId)?.opacity).toBe(100)
 
+    // A peer keeps working while this guest has an unsent preview. The
+    // guest must retain that draft, then catch up unrelated nodes afterward.
+    const baseId = (await layersState(pageA))[0].id
+    await pageA.evaluate(async ({ blurId, baseId }) => {
+        await window.layersApp._handleLayerChange({ layerId: blurId, property: 'opacity', value: 75 })
+        await window.layersApp._handleLayerChange({ layerId: baseId, property: 'opacity', value: 80 })
+    }, { blurId, baseId })
+    await expect.poll(() => pageB.evaluate(id => {
+        const node = window.layersApp._onlineAdapter.online.getNodes().find(node => node.id === `L${id}`)
+        return node && JSON.parse(node.text).opacity
+    }, baseId), { timeout: 60000 }).toBe(80)
+    await pageB.waitForTimeout(300)
+    expect((await layersState(pageB)).find(layer => layer.id === blurId)?.opacity).toBe(42)
+
     // Lifting read-only must replay the held work rather than strand it.
     await setReadonly(false)
     await expect.poll(() => pageB.evaluate(
         () => window.layersApp._onlineAdapter?.getStatus()), { timeout: 30000 }).toBe('online')
     await expect.poll(async () => (await layersState(pageA)).find(l => l.id === blurId)?.opacity,
         { timeout: 60000 }).toBe(42)
+    await expect.poll(async () => (await layersState(pageB)).find(layer => layer.id === baseId)?.opacity,
+        { timeout: 60000 }).toBe(80)
 })

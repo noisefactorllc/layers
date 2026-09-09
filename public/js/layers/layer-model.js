@@ -6,6 +6,11 @@
  */
 
 let layerCounter = 0
+// Counters alone collide when two peers create before receiving each other's
+// writes. Keep a page-local namespace in persisted IDs; adopted legacy IDs
+// remain valid and are never rewritten.
+const layerIdNamespace = Array.from(crypto.getRandomValues(new Uint32Array(4)),
+    value => value.toString(16).padStart(8, '0')).join('')
 
 const DEFAULT_EFFECT_PARAMS = {
     'synth/gradient': { type: 2 }
@@ -19,7 +24,7 @@ function allocateLayerIds(count = 1) {
     }
     const first = layerCounter
     layerCounter += count
-    return Array.from({ length: count }, (_, index) => `layer-${first + index}`)
+    return Array.from({ length: count }, (_, index) => `layer-${first + index}-${layerIdNamespace}`)
 }
 
 /**

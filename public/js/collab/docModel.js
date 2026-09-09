@@ -468,30 +468,34 @@ export function diffNodeModels(prev, next) {
  * value that had in fact been published long ago.
  *
  * Both cases return the id in `confirmed` so the caller stops tracking it.
+ * With an authoritative SDK queue, a peer's newer version proves nothing
+ * about our outstanding write; only the SDK can retire that write. Pass the
+ * full ordered array: repeated IDs can bracket child writes or cascade deletes.
  *
  * @param {Array} nodes - server-derived node set (e.g. online.getNodes())
- * @param {Map<string, {op: 'upsert'|'delete', kind?: string, text?: string,
- *   parentId?: string|null, baseVersion?: number|null}>} pending - in send order
+ * @param {Map|Array} pending - legacy map, or SDK records with id/op in FIFO order
  * @returns {{nodes: Array, confirmed: Array<string>}}
  */
-export function overlayPendingWrites(nodes, pending) {
+export function overlayPendingWrites(nodes, pending, { authoritative = false } = {}) {
     const list = nodes || []
-    if (!pending || pending.size === 0) return { nodes: list, confirmed: [] }
+    if (!pending || pending.size === 0 || pending.length === 0) return { nodes: list, confirmed: [] }
+    const entries = Array.isArray(pending) ? pending.map(write => [write.id, write]) : pending
 
     const byId = new Map(list.map(node => [node.id, node]))
     const confirmed = []
     // True when the server has accepted a write to this node later than the
     // one we based ours on, so the set is ahead of our copy rather than behind.
     const superseded = (node, write) => {
+        if (authoritative) return false
         if (!node) return false
         if (write.baseVersion === null || write.baseVersion === undefined) return true
         return typeof node.version === 'number' && node.version > write.baseVersion
     }
-    for (const [id, write] of pending) {
+    for (const [id, write] of entries) {
         if (write.op === 'delete') {
             // The server cascades a delete to every dotted descendant, so a
             // pending delete has to hide the whole subtree, not just its root.
-            if (!byId.has(id)) {
+            if (!byId.has(id) && !authoritative) {
                 confirmed.push(id)
                 continue
             }
@@ -510,7 +514,7 @@ export function overlayPendingWrites(nodes, pending) {
         const parentId = write.parentId ?? null
         if (current && current.kind === write.kind && current.text === write.text
             && (current.parentId ?? null) === parentId) {
-            confirmed.push(id)
+            if (!authoritative) confirmed.push(id)
             continue
         }
         if (superseded(current, write)) {

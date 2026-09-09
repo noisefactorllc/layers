@@ -1679,6 +1679,6 @@ for (const operation of ['take-online', 'join']) {
         expect(result.status).toBe('offline')
         expect(result.isOnline).toBe(false)
         expect(result.disconnects).toBe(2)
-        expect(result.layerIds).toEqual(['layer-0'])
+        expect(result.layerIds).toEqual([expect.stringMatching(/^layer-0-[a-f0-9]{32}$/)])
     })
 }
