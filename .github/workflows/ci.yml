@@ -89,14 +89,24 @@ jobs:
       - name: Require collaboration harness
         run: node --input-type=module -e "import { hasLocalSeanceHarness } from './tests/seanceLocal.js'; if (!hasLocalSeanceHarness()) throw new Error('Seance harness unavailable')"
       - name: Install locked browser
-        # `--with-deps` runs apt against external mirrors, and a mirror caught
-        # mid-regeneration serves an error page in place of a package index:
-        # "Hash Sum mismatch", exit 100, before a single test runs. That killed
-        # two consecutive runs of this suite outright. Retry rather than lose a
-        # hundred-minute run to a few seconds of upstream inconsistency. The
-        # sleep here is a backoff against someone else's server, not a guess at
-        # our own readiness.
+        # `--with-deps` runs apt, so this step depends on external mirrors
+        # being consistent. One of them was not, and it cost four consecutive
+        # runs before a single test executed. Two defences, in order: remove
+        # the repository that broke, then retry what remains. The sleep in the
+        # retry is a backoff against someone else's server, not a guess at our
+        # own readiness, which is the distinction the rest of this suite turns
+        # on.
         run: |
+          # The runner image carries Google's Chrome apt repository, and every
+          # apt-get update consults it, including the ones inside this retry.
+          # Nothing here needs it: Playwright installs its own pinned browser
+          # binaries, and --with-deps only wants system libraries from the
+          # Ubuntu archive. It served a stale index for four consecutive runs
+          # of this suite, failing all three browser jobs before any test ran,
+          # and retrying could not help because the mismatch persisted across
+          # the whole window. Drop the source rather than keep asking it.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
+                     /etc/apt/sources.list.d/google-chrome*.sources
           for attempt in 1 2 3; do
             if npx --no-install playwright install --with-deps ${{ matrix.browser }}; then
               exit 0
