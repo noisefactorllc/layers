@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, framePainted, layerCount } from './waits.js'
 
 async function bootBase(page, type = 'solid') {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -23,7 +24,7 @@ test.describe('Layer menu - rasterize layer', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         // Verify it's an effect layer
         const layerTypeBefore = await page.evaluate(() => window.layersApp._layers[0]?.sourceType)
@@ -36,7 +37,9 @@ test.describe('Layer menu - rasterize layer', () => {
             const layerId = window.layersApp._layers[0].id
             window.layersApp._layerStack.selectedLayerId = layerId
         })
-        await page.waitForTimeout(100)
+        // No wait: the selectedLayerId setter fires selection-change, whose
+        // handler calls menuBar.refresh(), which rewrites the item's label and
+        // aria-disabled inline. The whole chain runs inside the evaluate.
 
         // Verify menu shows "rasterize layer" and is enabled
         const menuText = await page.locator('#layerActionMenuItem').textContent()
@@ -50,7 +53,8 @@ test.describe('Layer menu - rasterize layer', () => {
             const layerId = window.layersApp._layers[0].id
             await window.layersApp._rasterizeLayer(layerId)
         })
-        await page.waitForTimeout(500)
+        // The conversion the three reads below are about.
+        await appState(page, () => window.layersApp._layers?.[0]?.sourceType === 'media')
 
         // Verify layer is now media type
         const layerTypeAfter = await page.evaluate(() => window.layersApp._layers[0]?.sourceType)
@@ -75,19 +79,22 @@ test.describe('Layer menu - rasterize layer', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         await page.evaluate(() => {
             window.layersApp._layers[0].effectParams = { color: [1, 0, 0] }
             window.layersApp._renderer.setLayers(window.layersApp._layers)
         })
-        await page.waitForTimeout(300)
+        // The red base only matters as the leak detector the corner samples
+        // below use, so it has to reach a painted frame.
+        await framePainted(page)
 
         // Add a text layer on top
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('filter/text')
         })
-        await page.waitForTimeout(1000)
+        // The second row the next line reads its id from.
+        await layerCount(page, 2)
 
         const textLayerId = await page.evaluate(() => window.layersApp._layers[1].id)
 
@@ -95,7 +102,8 @@ test.describe('Layer menu - rasterize layer', () => {
         await page.evaluate(async (id) => {
             await window.layersApp._rasterizeLayer(id)
         }, textLayerId)
-        await page.waitForTimeout(500)
+        // The conversion, and the mediaFile the pixels below are decoded from.
+        await appState(page, () => window.layersApp._layers?.[1]?.sourceType === 'media')
 
         // The rasterized layer must be a media layer
         const rasterized = await page.evaluate(() => {
@@ -246,7 +254,8 @@ test.describe('Layer menu - rasterize layer', () => {
             const file = new File([blob], 'test.png', { type: 'image/png' })
             await window.layersApp._handleOpenMedia(file, 'image')
         })
-        await page.waitForTimeout(500)
+        // The media layer the disabled-state assertion below depends on.
+        await appState(page, () => window.layersApp._layers?.[0]?.sourceType === 'media')
 
         // Verify it's a media layer
         const layerType = await page.evaluate(() => window.layersApp._layers[0]?.sourceType)
@@ -257,7 +266,7 @@ test.describe('Layer menu - rasterize layer', () => {
             const layerId = window.layersApp._layers[0].id
             window.layersApp._layerStack.selectedLayerId = layerId
         })
-        await page.waitForTimeout(100)
+        // Synchronous through menuBar.refresh(), as above.
 
         // Verify menu shows "rasterize layer" but is disabled
         const menuText = await page.locator('#layerActionMenuItem').textContent()
