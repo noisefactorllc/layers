@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState } from './waits.js'
 
 test.describe('Image menu - Crop to Selection', () => {
     test('crop to selection resizes canvas to selection bounds', async ({ page }) => {
@@ -11,22 +12,25 @@ test.describe('Image menu - Crop to Selection', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
+        const widthBeforeCrop = await page.evaluate(() => window.layersApp._canvas.width)
 
-        // Programmatically set a rectangular selection (100,100 to 612,612 = 512x512)
+        // Programmatically set a rectangular selection (100,100 to 612,612 = 512x512).
+        // Both statements are synchronous, and _cropToSelection reads that
+        // selection on the next line, so there is nothing left to wait for.
         await page.evaluate(() => {
             window.layersApp._selectionManager._selectionPath = {
                 type: 'rect', x: 100, y: 100, width: 512, height: 512
             }
             window.layersApp._selectionManager._drawMarchingAnts()
         })
-        await page.waitForTimeout(200)
 
         // Crop to selection
         await page.evaluate(async () => {
             await window.layersApp._cropToSelection()
         })
-        await page.waitForTimeout(500)
+        // The crop's canvas resize is what the dimensions below are read from.
+        await appState(page, (w) => window.layersApp._canvas.width !== w, widthBeforeCrop)
 
         // Verify canvas is now 512x512
         const dims = await page.evaluate(() => ({
