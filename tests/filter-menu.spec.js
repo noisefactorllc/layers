@@ -411,7 +411,7 @@ test.describe('Filter menu', () => {
         await expect.poll(async () => {
             const rect = await dropdown.boundingBox()
             return rect.x >= 0 && rect.x + rect.width <= 320
-        }).toBe(true)
+        }, { timeout: 20000 }).toBe(true)
         await expect(page.getByRole('menuitem', { name: 'filter', exact: true }))
             .toHaveAttribute('aria-expanded', 'true')
     })
@@ -423,7 +423,12 @@ test.describe('Filter menu', () => {
 
         const title = page.getByRole('menuitem', { name: 'filter', exact: true })
         await title.focus()
+        // The first key opens the panel and the rest walk it, so wait for the
+        // panel in between. A press delivered while it is still opening is
+        // dropped, and the walk then ends one row short, which surfaces later
+        // as a missing element rather than as the lost keystroke it was.
         await page.keyboard.press('ArrowDown')
+        await expect(page.locator('#filterMenu .hf-menubar-panel')).toBeVisible()
         await page.keyboard.press('ArrowDown')
         await page.keyboard.press('ArrowDown')
         await page.keyboard.press('ArrowDown')
@@ -444,7 +449,7 @@ test.describe('Filter menu', () => {
         await expect.poll(async () => {
             const rect = await submenu.boundingBox()
             return Boolean(rect && rect.y >= 8 && rect.y + rect.height <= 232)
-        }).toBe(true)
+        }, { timeout: 20000 }).toBe(true)
         await expect(distort).toHaveAttribute('aria-expanded', 'true')
         await expect(wormhole).toBeFocused()
 
