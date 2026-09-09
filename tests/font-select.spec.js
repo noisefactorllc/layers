@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, layerCount } from './waits.js'
 
 test.describe('Font Select', () => {
     test.beforeEach(async ({ page }) => {
@@ -11,20 +12,24 @@ test.describe('Font Select', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         // Add a text layer
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('filter/text')
         })
-        await page.waitForTimeout(500)
+        await layerCount(page, 2)
 
         // Expand the text layer params
         const layerItem = page.locator('layer-item.effect-layer:not(.base-layer)')
         const toggleBtn = layerItem.locator('.layer-params-toggle')
         await toggleBtn.click()
         await expect(layerItem).toHaveClass(/params-expanded/)
-        await page.waitForTimeout(300)
+        // effect-params fetches the text effect's definition asynchronously and
+        // paints a "Loading parameters..." placeholder meanwhile; font-select is
+        // only created once the real controls render.
+        await layerItem.locator('effect-params .effect-params-controls')
+            .waitFor({ state: 'attached' })
     })
 
     test('text layer shows font-select component', async ({ page }) => {
