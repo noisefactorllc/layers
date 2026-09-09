@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import * as dependencies from '../public/js/dependency-versions.js'
 export function validateDependencyBases(values = dependencies) {
     if (values.NOISEMAKER_VERSION !== '1') throw new Error('Shader dependency must use the /1 release channel')
-    if (!/^\d+\.\d+\.\d+$/.test(values.HANDFISH_VERSION)) throw new Error('Invalid Handfish dependency version')
+    if (values.HANDFISH_VERSION !== '0') throw new Error('Handfish dependency must use the /0 release channel')
     if (values.NOISEMAKER_BASE !== `https://shaders.noisedeck.app/${values.NOISEMAKER_VERSION}`
         || values.HANDFISH_BASE !== `https://handfish.noisefactor.io/${values.HANDFISH_VERSION}`) {
         throw new Error('Dependency base URLs must match their declared versions')
