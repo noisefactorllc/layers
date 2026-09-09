@@ -23,6 +23,7 @@ import {
     assertRemoteNodeModelWithinBounds,
     assertRemoteNodeSemantics,
     isLayersSession,
+    overlayPendingWrites,
     fnv1a
 } from './docModel.js'
 
@@ -41,6 +42,11 @@ const APPLY_COALESCE_MS = 120
 const REJECT_TOAST_COOLDOWN_MS = 2000
 const DELETE_REJECTION_WINDOW_MS = 2000
 const MAX_PENDING_DELETE_REJECTIONS = 256
+// Bounds the in-flight write map. A composition big enough to exceed this is
+// already past the server's own node cap; dropping the oldest entries only
+// costs those ids the local-intent overlay, and the normal publish diff still
+// converges them.
+const MAX_PENDING_LOCAL_WRITES = 4096
 const SESSION_ID_CASE_STORAGE_KEY = 'layers.seance.sessionIdCaseMap'
 const NOT_A_LAYERS_SESSION_MESSAGE = "This session isn't a Layers composition, so Layers can't open it."
 
@@ -98,6 +104,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     let publishTimer = null
     let deferredApplyRequest = null
     let deferredPollTimer = null
+    // Writes handed to the SDK but not yet observed in its node set: the
+    // local author's intent, re-asserted over a server-derived snapshot so an
+    // unrelated remote apply cannot revert an edit that is still in flight
+    // (see docModel.overlayPendingWrites).
+    let pendingLocalWrites = new Map()
     let rejectedNodeHashes = new Map() // node id -> fnv1a(text) of content the server last rejected; suppresses resending unchanged rejected content (cleared once the content changes)
     let pendingDeleteRejections = new Map() // deleted node id -> rejection deadline
     let pendingDeleteExpiryTimer = null
@@ -256,6 +267,14 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         armPendingDeleteExpiryTimer()
     }
 
+    function rememberPendingLocalWrite(id, write) {
+        pendingLocalWrites.delete(id)
+        while (pendingLocalWrites.size >= MAX_PENDING_LOCAL_WRITES) {
+            pendingLocalWrites.delete(pendingLocalWrites.keys().next().value)
+        }
+        pendingLocalWrites.set(id, write)
+    }
+
     function bestEffortSessionEffect(label, effect) {
         try {
             effect()
@@ -269,6 +288,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         sessionEpoch++
         clearScheduledSessionWork()
         rejectedNodeHashes.clear()
+        pendingLocalWrites.clear()
         clearPendingDeleteRejections()
         for (const candidate of expectedSeedSnapshots.keys()) {
             if (candidate !== layer) expectedSeedSnapshots.delete(candidate)
@@ -295,6 +315,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             online,
             lastPublished,
             rejectedNodeHashes: new Map(rejectedNodeHashes),
+            pendingLocalWrites: new Map(pendingLocalWrites),
             pendingDeleteRejections: new Map(pendingDeleteRejections),
             publishPending: publishTimer !== null,
             applyPending: applyDebounceTimer !== null || deferredApplyRequest !== null
@@ -307,6 +328,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         sessionEpoch++
         clearScheduledSessionWork()
         rejectedNodeHashes = new Map(state.rejectedNodeHashes)
+        pendingLocalWrites = new Map(state.pendingLocalWrites)
         clearPendingDeleteRejections()
         pendingDeleteRejections = new Map(state.pendingDeleteRejections)
         armPendingDeleteExpiryTimer()
@@ -534,12 +556,21 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         await assertRemoteCompositionSemantics(nodes)
         if (!isCurrentSession(request)) return false
 
+        // Bounds and semantics are checked against what peers actually sent;
+        // only then is this client's own in-flight intent layered back on, so
+        // a queued local edit is not reverted on screen by an unrelated remote
+        // change (and is not dropped from the next publish diff either).
+        const { nodes: effectiveNodes, confirmed } =
+            overlayPendingWrites(nodes, pendingLocalWrites)
+        for (const id of confirmed) pendingLocalWrites.delete(id)
+
         // Abort-on-race backstop: snapshot the live composition now, so we
         // can tell — right before the synchronous commit below — whether a
         // local mutation landed while we were awaiting.
         const before = JSON.stringify(buildNodeModel(app._layers, canvasDims()))
 
-        const { layers, canvas, mediaPlaceholderLayerIds } = applyNodesToComposition(nodes, app._layers)
+        const { layers, canvas, mediaPlaceholderLayerIds } =
+            applyNodesToComposition(effectiveNodes, app._layers)
         await decodeMasks(layers)
         if (!isCurrentSession(request)) return false
 
@@ -810,6 +841,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     // -- node-reject handling ---------------------------------------------
 
     function handleNodeReject({ id }) {
+        // Never confirmed, so it must stop overriding the server's copy.
+        pendingLocalWrites.delete(id)
         // Remember what we last tried to send for this id so a later,
         // unrelated publish tick doesn't silently skip resending it just
         // because it still (optimistically) matches lastPublished — but
@@ -950,11 +983,14 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             }
             request.layer.upsertNode(
                 node.id, { kind: node.kind, text: node.text, parentId: node.parentId })
+            rememberPendingLocalWrite(node.id, {
+                op: 'upsert', kind: node.kind, text: node.text, parentId: node.parentId })
         }
         for (const id of deletes) {
             rememberPendingDeleteRejection(id)
             rejectedNodeHashes.delete(id)
             request.layer.deleteNode(id)
+            rememberPendingLocalWrite(id, { op: 'delete' })
         }
         lastPublished = nextModel
     }
@@ -1252,6 +1288,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         sessionEpoch++
         clearScheduledSessionWork()
         rejectedNodeHashes.clear()
+        pendingLocalWrites.clear()
         clearPendingDeleteRejections()
         lastPublished = []
         bestEffortSessionEffect('Failed to clear collaboration session URL',

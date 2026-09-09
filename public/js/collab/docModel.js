@@ -268,6 +268,7 @@ function encodeMaskToBase64(mask) {
     return canvas.toDataURL('image/png')
 }
 
+
 // ---------------------------------------------------------------------
 // buildNodeModel
 // ---------------------------------------------------------------------
@@ -398,6 +399,70 @@ export function diffNodeModels(prev, next) {
     }
 
     return { upserts, deletes }
+}
+
+// ---------------------------------------------------------------------
+// Pending local writes
+// ---------------------------------------------------------------------
+
+/**
+ * Overlay the writes this client has sent but has not yet seen confirmed onto
+ * a server-derived node set.
+ *
+ * `online.getNodes()` reports only what the server has acknowledged: a write
+ * still queued behind the SDK's ~120ms send pacing, or sent and awaiting its
+ * `poly-ack`, is simply absent from it. Applying that set verbatim reverts the
+ * local user's own unfinished edit on screen, and (because the apply also
+ * rebases the publish baseline) the edit is never sent again, so the server
+ * and every peer keep a value the author can no longer see. Re-asserting the
+ * author's own intent here keeps the local screen ahead of, never behind, the
+ * writes it has already handed to the SDK.
+ *
+ * A write whose id already carries exactly the content we sent is confirmed;
+ * its id is returned in `confirmed` so the caller can stop tracking it.
+ *
+ * @param {Array} nodes - server-derived node set (e.g. online.getNodes())
+ * @param {Map<string, {op: 'upsert'|'delete', kind?: string, text?: string,
+ *   parentId?: string|null}>} pending - in send order
+ * @returns {{nodes: Array, confirmed: Array<string>}}
+ */
+export function overlayPendingWrites(nodes, pending) {
+    const list = nodes || []
+    if (!pending || pending.size === 0) return { nodes: list, confirmed: [] }
+
+    const byId = new Map(list.map(node => [node.id, node]))
+    const confirmed = []
+    for (const [id, write] of pending) {
+        if (write.op === 'delete') {
+            // The server cascades a delete to every dotted descendant, so a
+            // pending delete has to hide the whole subtree, not just its root.
+            if (!byId.has(id)) {
+                confirmed.push(id)
+                continue
+            }
+            byId.delete(id)
+            const prefix = `${id}.`
+            for (const key of [...byId.keys()]) {
+                if (key.startsWith(prefix)) byId.delete(key)
+            }
+            continue
+        }
+        const current = byId.get(id)
+        const parentId = write.parentId ?? null
+        if (current && current.kind === write.kind && current.text === write.text
+            && (current.parentId ?? null) === parentId) {
+            confirmed.push(id)
+            continue
+        }
+        byId.set(id, {
+            id,
+            kind: write.kind,
+            text: write.text,
+            parentId,
+            version: current?.version
+        })
+    }
+    return { nodes: [...byId.values()], confirmed }
 }
 
 // ---------------------------------------------------------------------
