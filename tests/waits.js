@@ -130,3 +130,42 @@ export function appState(page, predicate, arg = null, options = {}) {
 export function quietWindow(page, ms) {
     return page.waitForTimeout(ms)
 }
+
+/**
+ * The in-page equivalent of the helpers above, as source text.
+ *
+ * Some waits cannot be expressed from the Playwright side at all: a test that
+ * instruments a race has to observe it from inside the same evaluate that set
+ * the trap, because the thing it is waiting for is a local variable in that
+ * closure. Those places kept raw `setTimeout` sleeps long after the
+ * Playwright-side ones were converted, for the simple reason that a grep for
+ * `waitForTimeout` cannot see them.
+ *
+ * Inline this at the top of such an evaluate and wait on the predicate. It
+ * polls rather than sleeping a guessed duration, so it returns as soon as the
+ * condition holds, and it rejects with the label when it cannot, which is the
+ * property a sleep never had: an unmet condition fails the test instead of
+ * silently letting the next line read a value that never arrived.
+ *
+ *     await page.evaluate(async () => {
+ *         const until = ${IN_PAGE_UNTIL}
+ *         ...
+ *         await until(() => calls.length === 2, 'both writes issued')
+ *     })
+ *
+ * Note it must be interpolated into the evaluate body, not imported: the
+ * function passed to evaluate is serialized and runs in the page, where this
+ * module does not exist.
+ */
+export const IN_PAGE_UNTIL = `(async (predicate, label, timeout = 10000) => {
+    const deadline = performance.now() + timeout
+    for (;;) {
+        let value
+        try { value = await predicate() } catch (error) { value = false }
+        if (value) return value
+        if (performance.now() > deadline) {
+            throw new Error('timed out after ' + timeout + 'ms waiting for: ' + label)
+        }
+        await new Promise(resolve => requestAnimationFrame(resolve))
+    }
+})`

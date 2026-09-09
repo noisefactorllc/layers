@@ -114,6 +114,10 @@ test.describe('Layer menu - Flatten Image', () => {
             const renderer = app._renderer
             renderer.stop()
             const stoppedPhase = renderer.getPausedNormalizedTime()
+            // Deliberate: the elapsed time IS the measurement. A paused phase
+            // must not drift while the clock runs, and the unpaused fallback is
+            // derived from performance.now(), so the assertion below says
+            // nothing unless real time passes between the two reads.
             await new Promise(resolve => setTimeout(resolve, 100))
             const laterPhase = renderer.getPausedNormalizedTime()
             const render = renderer.render.bind(renderer)

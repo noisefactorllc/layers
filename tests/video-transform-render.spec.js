@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { framePainted } from './waits.js'
 import { readFile } from 'node:fs/promises'
 
 // Differential render tests for CPU-side media transforms (scale/flip).
@@ -49,12 +50,17 @@ async function addStripeVideoLayer(page) {
 
 /**
  * Sample the composited canvas inside the left and right halves of the
- * centered 64px video after letting several per-frame uploads land.
+ * centered 64px video after letting per-frame uploads land.
+ *
+ * _updateVideoTextures re-uploads every video layer once per animation
+ * frame, and that upload is exactly what used to clobber the CPU flip after
+ * one frame, so a painted frame is the condition this sample needs. A fixed
+ * duration was only ever a guess at how long that frame takes.
  */
 async function sampleMediaHalves(page) {
+    await framePainted(page)
     return page.evaluate(async () => {
         const { readRenderPixels } = await import('/js/utils/canvas-readback.js')
-        await new Promise(r => setTimeout(r, 300))
         const app = window.layersApp
         const canvas = app._canvas
         // Render synchronously and read in the same task —
@@ -154,9 +160,11 @@ test.describe('video layer CPU transforms vs per-frame uploads', () => {
             window.LayersAgent.setLayerTransform({ layerId: id, transform: { scaleX: 2, scaleY: 2, flipH: true } }), layerId)
         expect(env.ok).toBe(true)
 
+        // Same condition as sampleMediaHalves: one painted frame carries the
+        // per-frame upload that the transform has to survive.
+        await framePainted(page)
         const out = await page.evaluate(async () => {
             const { readRenderPixels } = await import('/js/utils/canvas-readback.js')
-            await new Promise(r => setTimeout(r, 300))
             const app = window.layersApp
             const canvas = app._canvas
             app._renderer.render(0) // defined readback: render + read same task

@@ -129,11 +129,9 @@ test.describe('exportImage', () => {
 
     test('captureOnly suppresses download but still returns bytes', async ({ page }) => {
         await bootApp(page)
-        // If a download did fire, this listener would catch it and our
-        // assertion below would see downloadFired === true. We need a
-        // longer-running test path to be confident no event fires; here we
-        // give 500ms after the command completes for any pending download
-        // to surface.
+        // The assertion here is an absence: captureOnly must fire no download
+        // at all. An absence has no arrival to wait on, so the window below is
+        // the measurement itself, not a guess that the app has caught up.
         let downloadFired = false
         page.on('download', () => { downloadFired = true })
         const env = await page.evaluate(() =>
@@ -141,7 +139,9 @@ test.describe('exportImage', () => {
         expect(env.ok).toBe(true)
         expect(env.result.bytes.startsWith('iVBOR')).toBe(true)
         expect(env.result.sizeBytes).toBeGreaterThan(0)
-        // Give any rogue download event time to land before asserting.
+        // exportImage has already returned its bytes, so anything it was going
+        // to trigger has been triggered; this window only covers the trip a
+        // rogue download event would take from the browser to the test.
         await quietWindow(page, 500)
         expect(downloadFired).toBe(false)
     })

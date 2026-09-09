@@ -42,6 +42,10 @@ test('context restoration restores content and respects playback changes while l
             if (iteration === 1) renderer.stop()
             if (iteration === 2) renderer.start()
             const restored = new Promise(resolve => canvas.addEventListener('webglcontextrestored', resolve, { once: true }))
+            // Deliberate: this is the lost window the test applies, not a
+            // readiness guess. restoreContext() is only honoured once the
+            // contextlost dispatch has finished, and the playback change above
+            // is made while the context is down, which is what this checks.
             await new Promise(resolve => setTimeout(resolve, 100))
             extension.restoreContext()
             await restored

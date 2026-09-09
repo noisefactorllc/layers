@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { IN_PAGE_UNTIL } from './waits.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -12,7 +13,8 @@ async function bootSolid(page) {
 
 test('an SDK-pending local edit survives a peer version advance until its own acknowledgement', async ({ page }) => {
     await bootSolid(page)
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -44,13 +46,6 @@ test('an SDK-pending local edit survives a peer version advance until its own ac
         })
         app._onlineAdapter = adapter
         await adapter.joinSession('pending1', { skipConfirm: true })
-        const wait = async predicate => {
-            const deadline = performance.now() + 10000
-            while (!predicate()) {
-                if (performance.now() > deadline) throw new Error('collaboration apply did not settle')
-                await new Promise(resolve => setTimeout(resolve, 10))
-            }
-        }
         let applied = 0
         const stage = app._renderer.stageLayerSet.bind(app._renderer)
         app._renderer.stageLayerSet = async (...args) => {
@@ -59,7 +54,7 @@ test('an SDK-pending local edit survives a peer version advance until its own ac
             return result
         }
         await app._handleLayerChange({ layerId, property: 'opacity', value: 42 })
-        await wait(() => pending.has(nodeId))
+        await until(() => pending.has(nodeId), 'the local edit reached the SDK as a pending write')
         const advanceNode = (opacity, version) => {
             nodes = nodes.map(node => node.id === nodeId ? {
                 ...node, version, text: JSON.stringify({ ...JSON.parse(node.text), opacity }),
@@ -68,7 +63,8 @@ test('an SDK-pending local edit survives a peer version advance until its own ac
         const applyEvent = async event => {
             const before = pendingReads
             handlers.get(event)?.({ id: nodeId, op: 'upsert' })
-            await wait(() => pendingReads > before && !adapter.isApplyingRemote())
+            await until(() => pendingReads > before && !adapter.isApplyingRemote(),
+                `the ${event} apply read pending writes and settled`)
             return app._layers[0].opacity
         }
         advanceNode(55, 2)
@@ -81,26 +77,31 @@ test('an SDK-pending local edit survives a peer version advance until its own ac
         const afterLaterPeer = await applyEvent('remote-node')
         adapter.goOffline()
         return { whilePending, afterAck, afterLaterPeer, unchangedStages, changedStages: applied }
-    })
+    }, IN_PAGE_UNTIL)
     expect(result).toEqual({ whilePending: 42, afterAck: 42, afterLaterPeer: 65, unchangedStages: 0, changedStages: 1 })
 })
 
 test('remote apply waits until the project lifecycle lease is released', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
         const { createEffectLayer } = await import('/js/layers/layer-model.js')
         const handlers = new Map()
         let status = 'offline'
+        // The adapter reads the session status every time its apply pipeline
+        // wakes up, so counting reads is how this test watches that pipeline
+        // run without asking the clock.
+        let statusReads = 0
         let nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
         const online = {
             on: (event, handler) => handlers.set(event, handler),
-            getStatus: () => status,
+            getStatus: () => { statusReads++; return status },
             getSessionId: () => 'remote1',
             getShareUrl: () => 'https://layers.test/?seance=remote1',
             getNodes: () => nodes,
@@ -121,22 +122,28 @@ test('remote apply waits until the project lifecycle lease is released', async (
         nodes = buildNodeModel([remoteLayer], { width: 275, height: 155 })
         const token = await app._acquireProjectLifecycle()
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 300))
+        // The lease is held, so the apply must NOT land: this is a barrier for
+        // a negative claim, not a readiness guess. Two status reads apart are
+        // the adapter's coalesce timer firing and then its deferral poll
+        // running, which is the chance a sleep here only assumed it had given.
+        const tick = async label => {
+            const seen = statusReads
+            await until(() => statusReads > seen, label)
+        }
+        await tick('the coalesced apply woke up')
+        await tick('the deferral poll ran again')
         const deferredIds = app._layers.map(layer => layer.id)
         const deferredSize = [app._canvas.width, app._canvas.height]
         token.release()
-        const applyDeadline = performance.now() + 5000
-        while ((app._layers.length !== 1 || app._layers[0].id !== 'layer-500')
-            && performance.now() < applyDeadline) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => app._layers.length === 1 && app._layers[0].id === 'layer-500',
+            'the released lease let the remote apply land', 5000)
         return {
             deferredIds,
             deferredSize,
             finalIds: app._layers.map(layer => layer.id),
             finalSize: [app._canvas.width, app._canvas.height],
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.deferredIds).not.toEqual(['layer-500'])
     expect(result.deferredSize).not.toEqual([275, 155])
@@ -147,7 +154,8 @@ test('remote apply waits until the project lifecycle lease is released', async (
 test('job polling snapshots hide a remote candidate canvas that later rolls back', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -214,9 +222,7 @@ test('job polling snapshots hide a remote candidate canvas that later rolls back
         const liveDuring = { width: app._canvas.width, height: app._canvas.height }
         const polled = await window.LayersAgent.getJob({ jobId: 'missing-job' })
         releaseStage()
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => !adapter.isApplyingRemote(), 'the rolled-back remote apply settled')
         app._renderer.stageLayerSet = stageLayerSet
         return {
             original,
@@ -233,7 +239,7 @@ test('job polling snapshots hide a remote candidate canvas that later rolls back
             afterPixel: readCenter(),
             running: app._renderer.isRunning,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.liveDuring).toEqual({ width: 275, height: 155 })
     expect(result.snapshot).toEqual(result.original)
@@ -245,7 +251,8 @@ test('job polling snapshots hide a remote candidate canvas that later rolls back
 test('session cancellation after remote resize redraws the paused project', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -308,9 +315,7 @@ test('session cancellation after remote resize redraws the paused project', asyn
 
         handlers.get('remote-node')?.({})
         await cancellation
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => !adapter.isApplyingRemote(), 'the cancelled remote apply settled')
         return {
             cancelled,
             before,
@@ -321,7 +326,7 @@ test('session cancellation after remote resize redraws the paused project', asyn
             },
             running: app._renderer.isRunning,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.cancelled).toBe(true)
     expect(result.after).toEqual(result.before)
@@ -331,7 +336,8 @@ test('session cancellation after remote resize redraws the paused project', asyn
 test('job polling hides a remote model while post-swap rollback is unsettled', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -411,12 +417,10 @@ test('job polling hides a remote model while post-swap rollback is unsettled', a
         const liveDuring = app._layers.map(layer => layer.id)
         const during = await readState()
         releaseRollback()
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => !adapter.isApplyingRemote(), 'the post-swap rollback settled')
         const after = await readState()
         return { before, liveDuring, during, after }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.liveDuring).toEqual(['layer-710'])
     expect(result.during).toEqual(result.before)
@@ -426,7 +430,8 @@ test('job polling hides a remote model while post-swap rollback is unsettled', a
 test('remote commit finalizes the last local debounced state before its undo entry', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -464,10 +469,8 @@ test('remote commit finalizes the last local debounced state before its undo ent
         remoteLayer.id = 'layer-710'
         nodes = buildNodeModel([remoteLayer], { width: 275, height: 155 })
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 400))
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => app._layers[0]?.id === remoteLayer.id && !adapter.isApplyingRemote(),
+            'the remote project replaced the local one')
         const remoteIds = app._layers.map(layer => layer.id)
         const undo = await window.LayersAgent.undo()
         return {
@@ -477,7 +480,7 @@ test('remote commit finalizes the last local debounced state before its undo ent
             restoredOpacity: app._layers[0]?.opacity,
             restoredCanvas: { width: app._canvas.width, height: app._canvas.height },
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         remoteIds: ['layer-710'],
@@ -491,7 +494,8 @@ test('remote commit finalizes the last local debounced state before its undo ent
 test('remote post-push failure restores exact finalized history without candidate redo', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -533,17 +537,17 @@ test('remote post-push failure restores exact finalized history without candidat
             height: app._canvas.height,
         })
         const pushUndoState = app._pushUndoState.bind(app)
+        let postPushFailureInjected = false
         app._pushUndoState = () => {
             pushUndoState()
             if (app._layers[0]?.id === remoteLayer.id) {
+                postPushFailureInjected = true
                 throw new Error('injected post-push remote failure')
             }
         }
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 400))
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => postPushFailureInjected, 'the remote apply reached its post-push commit')
+        await until(() => !adapter.isApplyingRemote(), 'the failed remote apply settled')
         app._pushUndoState = pushUndoState
         return {
             localId,
@@ -558,7 +562,7 @@ test('remote post-push failure restores exact finalized history without candidat
             pendingUndo: Boolean(app._undoDebounceTimer),
             canRedo: app._undoManager.canRedo(),
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         localId: expect.stringMatching(/^layer-0-[a-f0-9]{32}$/),
@@ -576,7 +580,8 @@ test('remote post-push failure restores exact finalized history without candidat
 test('remote apply preserves surviving layer selection and falls back after replacement', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         await app._handleAddEffectLayer('synth/gradient', { name: 'Selected survivor' })
         const selectedId = app._layers.at(-1).id
@@ -614,10 +619,8 @@ test('remote apply preserves surviving layer selection and falls back after repl
             height: app._canvas.height,
         })
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 350))
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => app._layers.at(-1)?.name === 'Still selected remotely'
+            && !adapter.isApplyingRemote(), 'the surviving layer took its remote name')
         const surviving = {
             selectedLayerIds: app._layerStack.selectedLayerIds,
             activeLayerId: app._layerStack.selectedLayerId,
@@ -631,10 +634,8 @@ test('remote apply preserves surviving layer selection and falls back after repl
         replacement.id = 'layer-730'
         nodes = buildNodeModel([replacement], { width: 275, height: 155 })
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 350))
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => app._layers.length === 1 && app._layers[0]?.id === replacement.id
+            && !adapter.isApplyingRemote(), 'the remote replacement took over the stack')
         return {
             selectedId,
             surviving,
@@ -645,7 +646,7 @@ test('remote apply preserves surviving layer selection and falls back after repl
                 hasCanvasSelection: app._selectionManager.hasSelection(),
             },
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.surviving).toEqual({
         selectedLayerIds: [result.selectedId],
@@ -663,13 +664,17 @@ test('remote apply preserves surviving layer selection and falls back after repl
 test('publish waits for a failing local mutation to roll back', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
         const handlers = new Map()
         const publishedVisibility = []
         let status = 'offline'
+        // Every publish reads the session's nodes to stamp base versions, so a
+        // read is the publish funnel having actually run.
+        let nodeReads = 0
         const nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
@@ -678,7 +683,7 @@ test('publish waits for a failing local mutation to roll back', async ({ page })
             getStatus: () => status,
             getSessionId: () => 'publish-rollback',
             getShareUrl: () => 'https://layers.test/?seance=publish-rollback',
-            getNodes: () => nodes,
+            getNodes: () => { nodeReads++; return nodes },
             joinSession: async () => { status = 'online' },
             upsertNode: (_id, node) => {
                 if (node.kind !== 'layers-layer') return
@@ -703,6 +708,8 @@ test('publish waits for a failing local mutation to roll back', async ({ page })
         app._rebuild = async (...args) => {
             rebuildCalls += 1
             if (rebuildCalls === 1) {
+                // Fixture behaviour, not a wait: a compile slow enough that the
+                // publish debounce elapses while the mutation is still in flight.
                 await new Promise(resolve => setTimeout(resolve, 220))
                 return { success: false, error: 'injected slow compile failure' }
             }
@@ -713,14 +720,18 @@ test('publish waits for a failing local mutation to roll back', async ({ page })
             layerId,
             props: { visible: false },
         })
-        await new Promise(resolve => setTimeout(resolve, 350))
+        // The rollback's rebuild arms a publish. Waiting for that publish to
+        // read the node set proves the funnel had its chance to send the
+        // provisional visibility and sent nothing, which a sleep only assumed.
+        const publishedFrom = nodeReads
+        await until(() => nodeReads > publishedFrom, 'the publish funnel ran after the rollback')
         return {
             agentOk: envelope.ok,
             finalVisibility: app._layers[0].visible,
             publishedVisibility,
             lifecycleActive: app._projectLifecycleActive,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         agentOk: false,
@@ -733,7 +744,8 @@ test('publish waits for a failing local mutation to roll back', async ({ page })
 test('stable gesture updates publish while the pointer lifecycle remains active', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -770,7 +782,7 @@ test('stable gesture updates publish while the pointer lifecycle remains active'
         const token = app._tryAcquireProjectLifecycle()
         app._layers[0].offsetX = 42
         app._pushUndoStateDebounced()
-        await new Promise(resolve => setTimeout(resolve, 220))
+        await until(() => publishedOffsets.length > 0, 'the gesture update published')
         const lifecycleDuringPublish = app._projectLifecycleActive
         token.release()
         if (app._undoDebounceTimer) {
@@ -778,7 +790,7 @@ test('stable gesture updates publish while the pointer lifecycle remains active'
             app._undoDebounceTimer = null
         }
         return { publishedOffsets, lifecycleDuringPublish }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         publishedOffsets: [42],
@@ -790,7 +802,8 @@ for (const tool of ['move', 'transform']) {
     test(`${tool} cancellation republishes the restored position after a progressive update`, async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async (toolName) => {
+        const result = await page.evaluate(async ([toolName, untilSrc]) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const added = await window.LayersAgent.addLayer({
                 kind: 'drawing', name: 'Gesture layer',
@@ -851,16 +864,12 @@ for (const tool of ['move', 'transform']) {
             }
             fireMouse('mousedown', 512, 512)
             fireMouse('mousemove', 560, 540)
-            const firstDeadline = performance.now() + 1500
-            while (publishedOffsets.length < 1 && performance.now() < firstDeadline) {
-                await new Promise(resolve => setTimeout(resolve, 10))
-            }
+            await until(() => publishedOffsets.length >= 1,
+                'the provisional gesture offset published', 1500)
             const provisionalOffset = app._layers.find(layer => layer.id === layerId).offsetX
             overlay.dispatchEvent(new Event('pointercancel', { bubbles: true }))
-            const secondDeadline = performance.now() + 5000
-            while (publishedOffsets.at(-1) !== 0 && performance.now() < secondDeadline) {
-                await new Promise(resolve => setTimeout(resolve, 10))
-            }
+            await until(() => publishedOffsets.at(-1) === 0,
+                'the cancelled gesture republished the restored offset', 5000)
             const restoredOffset = app._layers.find(layer => layer.id === layerId).offsetX
             return {
                 provisionalOffset,
@@ -868,7 +877,7 @@ for (const tool of ['move', 'transform']) {
                 publishedOffsets,
                 lifecycleReleased: !app._projectLifecycleActive,
             }
-        }, tool)
+        }, [tool, IN_PAGE_UNTIL])
 
         expect(result.provisionalOffset).not.toBe(0)
         expect(result.restoredOffset).toBe(0)
@@ -882,7 +891,8 @@ for (const tool of ['move', 'transform']) {
 test('text move cancellation restores and republishes the exact original params', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const added = await window.LayersAgent.addLayer({
             kind: 'text', text: 'Cancel me', name: 'Gesture text',
@@ -937,28 +947,24 @@ test('text move cancellation restores and republishes the exact original params'
         }
         fireMouse('mousedown', 512, 512)
         fireMouse('mousemove', 560, 540)
-        const firstDeadline = performance.now() + 1500
-        while (publishedParams.length < 1 && performance.now() < firstDeadline) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => publishedParams.length >= 1,
+            'the provisional text params published', 1500)
         const provisionalParams = { ...app._layers.find(layer => layer.id === layerId).effectParams }
         overlay.dispatchEvent(new Event('pointercancel', { bubbles: true }))
-        const secondDeadline = performance.now() + 5000
         const hasExactRestoredPublish = () => {
             const latest = publishedParams.at(-1)
             return latest?.text === 'Cancel me'
                 && Object.keys(latest).length === 1
         }
-        while (!hasExactRestoredPublish() && performance.now() < secondDeadline) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(hasExactRestoredPublish,
+            'the cancelled move republished the exact original params', 5000)
         return {
             provisionalParams,
             restoredParams: app._layers.find(layer => layer.id === layerId).effectParams,
             publishedParams,
             lifecycleReleased: !app._projectLifecycleActive,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.provisionalParams).toMatchObject({ text: 'Cancel me' })
     expect(result.provisionalParams).toHaveProperty('posX')
@@ -975,12 +981,16 @@ test('unsafe remote numeric layer ids are rejected before local state changes', 
     page.on('pageerror', error => pageErrors.push(error.message))
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
         const handlers = new Map()
         let status = 'offline'
+        // An apply attempt reads the node set before it validates anything, so
+        // a read is the announced composition having reached the apply path.
+        let nodeReads = 0
         let nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
@@ -989,7 +999,7 @@ test('unsafe remote numeric layer ids are rejected before local state changes', 
             getStatus: () => status,
             getSessionId: () => 'remote2',
             getShareUrl: () => 'https://layers.test/?seance=remote2',
-            getNodes: () => nodes,
+            getNodes: () => { nodeReads++; return nodes },
             joinSession: async () => { status = 'online' },
             goOffline: () => { status = 'offline' },
             writeSessionToUrl: (url) => url,
@@ -1008,8 +1018,10 @@ test('unsafe remote numeric layer ids are rejected before local state changes', 
         const invalid = structuredClone(app._layers[0])
         invalid.id = `layer-${Number.MAX_SAFE_INTEGER}`
         nodes = buildNodeModel([invalid], { width: 275, height: 155 })
+        const readsBefore = nodeReads
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 350))
+        await until(() => nodeReads > readsBefore, 'the unsafe node set reached an apply attempt')
+        await until(() => !adapter.isApplyingRemote(), 'the refused apply settled')
         return {
             before,
             after: {
@@ -1017,7 +1029,7 @@ test('unsafe remote numeric layer ids are rejected before local state changes', 
                 size: [app._canvas.width, app._canvas.height],
             },
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.after).toEqual(result.before)
     expect(pageErrors).toEqual([])
@@ -1026,7 +1038,8 @@ test('unsafe remote numeric layer ids are rejected before local state changes', 
 test('remote replacement exits mask mode synchronously before a local mutation', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1073,20 +1086,20 @@ test('remote replacement exits mask mode synchronously before a local mutation',
             return exitMaskEditMode(options)
         }
         handlers.get('remote-node')?.({})
-        while (!exitCalled) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => exitCalled, 'the remote apply began exiting mask mode')
         const addPromise = window.LayersAgent.addLayer({
             kind: 'effect', effectId: 'filter/blur', name: 'Local after remote',
         })
         releaseUnsafeExit?.()
         const envelope = await addPromise
-        await new Promise(resolve => setTimeout(resolve, 250))
+        await until(() => !adapter.isApplyingRemote(), 'the remote replacement apply settled')
         return {
             usedDiscardExit,
             agentOk: envelope.ok,
             effects: app._layers.map(layer => layer.effectId),
             maskEditMode: app._maskEditMode,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.usedDiscardExit).toBe(true)
     expect(result.agentOk).toBe(true)
@@ -1097,7 +1110,8 @@ test('remote replacement exits mask mode synchronously before a local mutation',
 test('remote drawing apply owns lifecycle until candidate rasterization finishes', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1151,9 +1165,13 @@ test('remote drawing apply owns lifecycle until candidate rasterization finishes
             return stageLayerSet(candidate)
         }
         handlers.get('remote-node')?.({})
-        while (!rasterizeStarted) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => rasterizeStarted, 'the remote drawing began rasterizing')
         const replacementPromise = app._handleCreateGradientBase(333, 222)
-        await new Promise(resolve => setTimeout(resolve, 40))
+        // The replacement parks in the lifecycle queue before it can stage, so
+        // its being queued is the moment "it has not staged yet" means
+        // anything. A sleep here could expire before it had even asked.
+        await until(() => app._projectLifecycleWaiters > 0,
+            'the replacement queued behind the remote apply')
         const replacementWaited = !replacementStageReached
         releaseRasterize()
         const replacementStatus = await replacementPromise
@@ -1165,7 +1183,7 @@ test('remote drawing apply owns lifecycle until candidate rasterization finishes
             height: app._canvas.height,
             lifecycleActive: app._projectLifecycleActive,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         replacementWaited: true,
@@ -1180,20 +1198,25 @@ test('remote drawing apply owns lifecycle until candidate rasterization finishes
 test('queued remote rerun yields to an agent replacement and stays discarded after offline commit', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
         const { createDrawingLayer, createEffectLayer } = await import('/js/layers/layer-model.js')
         const handlers = new Map()
         let status = 'offline'
+        // The adapter reads the session status every time its apply pipeline
+        // wakes up, so counting reads is how this test watches that pipeline
+        // run without asking the clock.
+        let statusReads = 0
         let nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
         let disconnects = 0
         const online = {
             on: (event, handler) => handlers.set(event, handler),
-            getStatus: () => status,
+            getStatus: () => { statusReads++; return status },
             getSessionId: () => 'remote5',
             getShareUrl: () => 'https://layers.test/?seance=remote5',
             getNodes: () => nodes,
@@ -1233,7 +1256,7 @@ test('queued remote rerun yields to an agent replacement and stays discarded aft
         }
 
         handlers.get('remote-node')?.({})
-        while (!rasterizeStarted) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => rasterizeStarted, 'the remote drawing began rasterizing')
 
         const replacementPromise = window.LayersAgent.newProject({
             width: 320,
@@ -1245,11 +1268,16 @@ test('queued remote rerun yields to an agent replacement and stays discarded aft
         rerunLayer.id = 'layer-900'
         nodes = buildNodeModel([rerunLayer], { width: 555, height: 444 })
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 180))
+        // The rerun has to be queued behind the in-flight apply before the
+        // rasterize is released. The adapter reads the status when its
+        // coalesce timer fires, so one read after the event is that timer.
+        const coalesceFrom = statusReads
+        await until(() => statusReads > coalesceFrom, 'the rerun coalesce timer fired')
         releaseRasterize()
 
         const replacement = await replacementPromise
-        await new Promise(resolve => setTimeout(resolve, 400))
+        await until(() => !adapter.isApplyingRemote() && !app._projectLifecycleActive,
+            'the remote apply and the replacement both released the lifecycle')
         return {
             replacementOk: replacement.ok,
             replacementError: replacement.error?.code || null,
@@ -1261,7 +1289,7 @@ test('queued remote rerun yields to an agent replacement and stays discarded aft
             applyingRemote: adapter.isApplyingRemote(),
             lifecycleActive: app._projectLifecycleActive,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         replacementOk: true,
@@ -1279,7 +1307,8 @@ test('queued remote rerun yields to an agent replacement and stays discarded aft
 test('remote drawing rasterization failure preserves the live project and generation', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1350,8 +1379,8 @@ test('remote drawing rasterization failure preserves the live project and genera
         }
 
         handlers.get('remote-node')?.({})
-        while (!failureReached) await new Promise(resolve => setTimeout(resolve, 10))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => failureReached, 'the candidate rasterization failed')
+        await until(() => !adapter.isApplyingRemote(), 'the failed remote apply settled')
 
         return {
             layerIds: app._layers.map(layer => layer.id),
@@ -1364,7 +1393,7 @@ test('remote drawing rasterization failure preserves the live project and genera
             generation: app._replacementGeneration,
             initialGeneration: generation,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.layerIds).toHaveLength(1)
     expect(result.sameAppLayers).toBe(true)
@@ -1377,7 +1406,8 @@ test('remote drawing rasterization failure preserves the live project and genera
 test('remote candidate rebuild failure preserves the live project and generation', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1442,8 +1472,8 @@ test('remote candidate rebuild failure preserves the live project and generation
         }
 
         handlers.get('remote-node')?.({})
-        while (!failureReached) await new Promise(resolve => setTimeout(resolve, 10))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => failureReached, 'the candidate rebuild failed')
+        await until(() => !adapter.isApplyingRemote(), 'the failed remote apply settled')
 
         return {
             layerIds: app._layers.map(layer => layer.id),
@@ -1456,7 +1486,7 @@ test('remote candidate rebuild failure preserves the live project and generation
             generation: app._replacementGeneration,
             initialGeneration: generation,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.layerIds).toHaveLength(1)
     expect(result.sameAppLayers).toBe(true)
@@ -1469,7 +1499,8 @@ test('remote candidate rebuild failure preserves the live project and generation
 test('post-settlement remote cleanup failure preserves the committed remote project', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1503,27 +1534,27 @@ test('post-settlement remote cleanup failure preserves the committed remote proj
             height: app._canvas.height,
         })
         const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
+        let cleanupFailureInjected = false
         app._renderer.stageLayerSet = async (candidate) => {
             const stage = await stageLayerSet(candidate)
             const commit = stage.commit.bind(stage)
             stage.commit = () => {
                 commit()
+                cleanupFailureInjected = true
                 throw new Error('injected settled-stage cleanup failure')
             }
             return stage
         }
 
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 450))
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => cleanupFailureInjected, 'the settled stage failed its cleanup')
+        await until(() => !adapter.isApplyingRemote(), 'the committed remote apply settled')
         return {
             layerName: app._layers[0]?.name,
             sameLayers: app._renderer._layers === app._layers,
             online: adapter.isOnline(),
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         layerName: 'Remote committed',
@@ -1535,7 +1566,8 @@ test('post-settlement remote cleanup failure preserves the committed remote proj
 test('remote rollback releases the renderer stage when live canvas restoration throws', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1614,12 +1646,13 @@ test('remote rollback releases the renderer stage when live canvas restoration t
         }
 
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 180))
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => rollbackCalls > 0, 'the failed remote apply reached its rollback')
+        await until(() => !adapter.isApplyingRemote(), 'the rolled-back remote apply settled')
         console.error = consoleError
 
+        // An observation window, not a readiness guess: a stage the rollback
+        // failed to release would never resolve, so the only way to report
+        // "blocked" instead of hanging is to race the call against a duration.
         const stageGateResult = await Promise.race([
             app._renderer.setLayers(oldLayers, { force: true }).then(() => 'released'),
             new Promise(resolve => setTimeout(() => resolve('blocked'), 100)),
@@ -1633,7 +1666,7 @@ test('remote rollback releases the renderer stage when live canvas restoration t
             oldSize,
             loggedErrors,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.rollbackCalls).toBe(1)
     expect(result.stageGateResult).toBe('released')
@@ -1649,7 +1682,8 @@ test('remote rollback releases the renderer stage when live canvas restoration t
 test('successful remote whole-composition apply advances replacement generation once', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1682,10 +1716,8 @@ test('successful remote whole-composition apply advances replacement generation 
         remoteLayer.id = 'layer-remote-generation'
         nodes = buildNodeModel([remoteLayer], { width: 275, height: 155 })
         handlers.get('remote-node')?.({})
-        while (app._layers[0]?.id !== remoteLayer.id) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => app._layers[0]?.id === remoteLayer.id, 'the remote layer landed')
+        await until(() => !adapter.isApplyingRemote(), 'the remote apply settled')
 
         return {
             initialGeneration,
@@ -1693,7 +1725,7 @@ test('successful remote whole-composition apply advances replacement generation 
             layerIds: app._layers.map(layer => layer.id),
             sameRendererLayers: app._renderer._layers === app._layers,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.layerIds).toEqual(['layer-remote-generation'])
     expect(result.sameRendererLayers).toBe(true)
@@ -1703,7 +1735,8 @@ test('successful remote whole-composition apply advances replacement generation 
 test('invalid remote bounds preserve live layers, resources, canvas, and generation before decode or stage', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel, fnv1a } = await import('/js/collab/docModel.js')
@@ -1731,6 +1764,9 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
 
         const handlers = new Map()
         let status = 'offline'
+        // An apply attempt reads the node set before it validates anything, so
+        // a read is the announced composition having reached the apply path.
+        let nodeReads = 0
         let nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
@@ -1739,7 +1775,7 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
             getStatus: () => status,
             getSessionId: () => 'bound1',
             getShareUrl: () => 'https://layers.test/?seance=bound1',
-            getNodes: () => nodes,
+            getNodes: () => { nodeReads++; return nodes },
             joinSession: async () => { status = 'online' },
             goOffline: () => { status = 'offline' },
             writeSessionToUrl: (url) => url,
@@ -1758,11 +1794,9 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
             stageCalls++
             return stageLayerSet(...args)
         }
-        const waitForApply = async () => {
-            await new Promise(resolve => setTimeout(resolve, 180))
-            while (adapter.isApplyingRemote()) {
-                await new Promise(resolve => setTimeout(resolve, 10))
-            }
+        const waitForApply = async (readsBefore, label) => {
+            await until(() => nodeReads > readsBefore, `${label} reached an apply attempt`)
+            await until(() => !adapter.isApplyingRemote(), `${label} apply settled`)
         }
 
         const invalidCanvasLayer = createEffectLayer('synth/gradient', 'Invalid canvas')
@@ -1772,8 +1806,9 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
         const canvasJson = JSON.parse(canvasMeta.text)
         canvasJson.canvas.w = 10.5
         canvasMeta.text = JSON.stringify(canvasJson)
+        const canvasReadsBefore = nodeReads
         handlers.get('remote-node')?.({})
-        await waitForApply()
+        await waitForApply(canvasReadsBefore, 'the invalid canvas node set')
 
         const pngHeader = (width, height) => {
             const bytes = new Uint8Array([
@@ -1810,8 +1845,9 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
                 queueMicrotask(() => this.onerror?.(new Error('decode attempted')))
             }
         }
+        const maskReadsBefore = nodeReads
         handlers.get('remote-node')?.({})
-        await waitForApply()
+        await waitForApply(maskReadsBefore, 'the invalid mask node set')
         window.Image = NativeImage
         app._renderer.stageLayerSet = stageLayerSet
 
@@ -1827,7 +1863,7 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
             stageCalls,
             imageAllocations,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.sameAppLayers).toBe(true)
     expect(result.sameRendererLayers).toBe(true)
@@ -1841,7 +1877,8 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
 test('malicious remote renderer fields are rejected before resource preparation, stage, or compile', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1849,6 +1886,9 @@ test('malicious remote renderer fields are rejected before resource preparation,
         const oldSize = [app._canvas.width, app._canvas.height]
         const handlers = new Map()
         let status = 'offline'
+        // An apply attempt reads the node set before it validates anything, so
+        // a read is the announced composition having reached the apply path.
+        let nodeReads = 0
         let nodes = buildNodeModel(oldLayers, {
             width: oldSize[0], height: oldSize[1],
         })
@@ -1857,7 +1897,7 @@ test('malicious remote renderer fields are rejected before resource preparation,
             getStatus: () => status,
             getSessionId: () => 'safe01',
             getShareUrl: () => '',
-            getNodes: () => nodes,
+            getNodes: () => { nodeReads++; return nodes },
             joinSession: async () => { status = 'online' },
             goOffline: () => { status = 'offline' },
             writeSessionToUrl: url => url,
@@ -1931,13 +1971,13 @@ test('malicious remote renderer fields are rejected before resource preparation,
             }], { width: oldSize[0], height: oldSize[1] }),
         ]
 
-        for (const attack of attacks) {
+        for (const [index, attack] of attacks.entries()) {
             nodes = attack
+            const readsBefore = nodeReads
             handlers.get('remote-node')?.({})
-            await new Promise(resolve => setTimeout(resolve, 180))
-            while (adapter.isApplyingRemote()) {
-                await new Promise(resolve => setTimeout(resolve, 10))
-            }
+            await until(() => nodeReads > readsBefore,
+                `attack ${index} reached an apply attempt`)
+            await until(() => !adapter.isApplyingRemote(), `attack ${index} apply settled`)
         }
 
         return {
@@ -1950,7 +1990,7 @@ test('malicious remote renderer fields are rejected before resource preparation,
             size: [app._canvas.width, app._canvas.height],
             oldSize,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.stageCalls).toBe(0)
     expect(result.compileCalls).toBe(0)
@@ -1964,7 +2004,8 @@ test('malicious remote renderer fields are rejected before resource preparation,
 test('duplicate remote node ids are rejected before last-value reconstruction can bypass bounds', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1985,6 +2026,9 @@ test('duplicate remote node ids are rejected before last-value reconstruction ca
 
         const handlers = new Map()
         let status = 'offline'
+        // An apply attempt reads the node set before it validates anything, so
+        // a read is the announced composition having reached the apply path.
+        let nodeReads = 0
         let nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
@@ -1993,7 +2037,7 @@ test('duplicate remote node ids are rejected before last-value reconstruction ca
             getStatus: () => status,
             getSessionId: () => 'dupe01',
             getShareUrl: () => 'https://layers.test/?seance=dupe01',
-            getNodes: () => nodes,
+            getNodes: () => { nodeReads++; return nodes },
             joinSession: async () => { status = 'online' },
             goOffline: () => { status = 'offline' },
             writeSessionToUrl: (url) => url,
@@ -2012,9 +2056,10 @@ test('duplicate remote node ids are rejected before last-value reconstruction ca
             return stageLayerSet(...args)
         }
         nodes = invalidNodes
+        const readsBefore = nodeReads
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 250))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => nodeReads > readsBefore, 'the duplicate node set reached an apply attempt')
+        await until(() => !adapter.isApplyingRemote(), 'the refused apply settled')
         app._renderer.stageLayerSet = stageLayerSet
 
         return {
@@ -2025,7 +2070,7 @@ test('duplicate remote node ids are rejected before last-value reconstruction ca
             oldGeneration,
             stageCalls,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.sameLayers).toBe(true)
     expect(result.size).toEqual(result.oldSize)
@@ -2036,7 +2081,8 @@ test('duplicate remote node ids are rejected before last-value reconstruction ca
 test('candidate baseline encoding failure occurs before remote app or renderer commit', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -2062,6 +2108,9 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
 
         const handlers = new Map()
         let status = 'offline'
+        // An apply attempt reads the node set before it validates anything, so
+        // a read is the announced composition having reached the apply path.
+        let nodeReads = 0
         let nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
@@ -2070,7 +2119,7 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
             getStatus: () => status,
             getSessionId: () => 'base01',
             getShareUrl: () => 'https://layers.test/?seance=base01',
-            getNodes: () => nodes,
+            getNodes: () => { nodeReads++; return nodes },
             joinSession: async () => { status = 'online' },
             goOffline: () => { status = 'offline' },
             writeSessionToUrl: (url) => url,
@@ -2097,9 +2146,10 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
             throw new Error('injected candidate baseline failure')
         }
         nodes = failureNodes
+        const readsBefore = nodeReads
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 250))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => nodeReads > readsBefore, 'the failing node set reached an apply attempt')
+        await until(() => !adapter.isApplyingRemote(), 'the failed remote apply settled')
         HTMLCanvasElement.prototype.toDataURL = toDataURL
         app._renderer.stageLayerSet = stageLayerSet
 
@@ -2112,7 +2162,7 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
             oldUndoLength,
             commitCalls,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.sameLayers).toBe(true)
     expect(result.sameRendererLayers).toBe(true)
@@ -2126,7 +2176,8 @@ test('post-commit renderer restart and media warning failures do not reject the 
     page.on('pageerror', error => pageErrors.push(error.message))
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -2196,10 +2247,9 @@ test('post-commit renderer restart and media warning failures do not reject the 
         }
 
         handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 180))
-        while (adapter.isApplyingRemote()) {
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => startAttempts > 0,
+            'the committed remote project tried to restart the renderer')
+        await until(() => !adapter.isApplyingRemote(), 'the committed remote apply settled')
 
         app._renderer.start = rendererStart
         toast.warning = toastWarning
@@ -2212,7 +2262,7 @@ test('post-commit renderer restart and media warning failures do not reject the 
             startAttempts,
             warningMessages,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.layerIds).toEqual(['layer-remote-media'])
     expect(result.sameRendererLayers).toBe(true)

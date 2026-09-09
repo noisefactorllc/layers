@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { IN_PAGE_UNTIL } from './waits.js'
 
 test.describe('headless video-exporter', () => {
     test.beforeEach(async ({ page }) => {
@@ -67,7 +68,8 @@ test.describe('headless video-exporter', () => {
         // export, so the exporter itself must refuse overlap. Two concurrent
         // runs would fight over the shared canvas resolution and the
         // renderer's pause/restart.
-        const out = await page.evaluate(async () => {
+        const out = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const { runVideoExport } = await import('/js/ui/video-exporter.js')
             const app = window.LayersAgent._app
             const mk = (duration, ac) => ({
@@ -85,11 +87,19 @@ test.describe('headless video-exporter', () => {
             })
 
             const ac1 = new AbortController()
-            const p1 = runVideoExport(mk(5, ac1))
+            let firstExportStarted = false
+            const p1 = runVideoExport({
+                ...mk(5, ac1),
+                onProgress: () => { firstExportStarted = true },
+            })
             p1.catch(() => {}) // aborted below; keep the rejection handled
 
-            // Let the first export get past startup.
-            await new Promise(r => setTimeout(r, 30))
+            // The refusal has to come from an export that is genuinely
+            // running, not one still in startup. The exporter's first
+            // onProgress lands immediately after the encoder starts, so that
+            // callback is the startup barrier a fixed sleep was standing in
+            // for.
+            await until(() => firstExportStarted, 'the first export started encoding')
 
             let second
             try {
@@ -112,7 +122,7 @@ test.describe('headless video-exporter', () => {
             }
 
             return { second, first, third }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(out.second.threw).toBe(true)
         expect(out.second.code).toBe('CONFLICT_EXPORT_IN_PROGRESS')

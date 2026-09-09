@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { IN_PAGE_UNTIL } from './waits.js'
 
 async function bootApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -48,6 +49,8 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
         await bootApp(page)
         const r = await page.evaluate(async () => {
             const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async () => {
+                // Fixture duration, not a wait: the job has to outlive the
+                // 50ms waitForJob below for the timedOut envelope to exist.
                 await new Promise(r => setTimeout(r, 500))
                 return { ok: 1 }
             })
@@ -59,21 +62,24 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
 
     test('waitForJob does not hold the project lifecycle while it waits', async ({ page }) => {
         await bootApp(page)
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             let releaseJob
             const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async () => {
                 await new Promise(resolve => { releaseJob = resolve })
                 return { ok: 1 }
             })
-            while (!releaseJob) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => Boolean(releaseJob), 'job body parked on its gate')
             const waitPromise = window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 30000 })
             const replacementPromise = app._handleCreateGradientBase(333, 222)
             let deadline
             let replacementCompletedWhileJobPending
             try {
                 // Keep the job pending until replacement actually completes.
-                // Shader compilation speed is not the lifecycle contract.
+                // Shader compilation speed is not the lifecycle contract. The
+                // timer is this race's failure bound, not a wait: it wins only
+                // if the replacement never completes.
                 replacementCompletedWhileJobPending = await Promise.race([
                     replacementPromise.then(() => true),
                     new Promise(resolve => { deadline = setTimeout(() => resolve(false), 15000) }),
@@ -91,7 +97,7 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
                 replacementStatus,
                 jobStatus: waitEnvelope.result.status,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             replacementCompletedWhileJobPending: true,
@@ -102,34 +108,51 @@ test.describe('LayersAgent job commands (registry-backed)', () => {
 
     test('cancelJob transitions to cancelled', async ({ page }) => {
         await bootApp(page)
-        const final = await page.evaluate(async () => {
-            const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async (api) => {
-                while (!api.abortSignal.aborted) await new Promise(r => setTimeout(r, 5))
+        const final = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
+            const jobs = window.__LAYERS_TEST_HOOKS.jobs
+            const { id } = jobs.createJob('test-kind', async (api) => {
+                // Runs until cancelled. Parked on the abort event rather than
+                // polling a timer, so the job notices the cancel at once.
+                if (!api.abortSignal.aborted) {
+                    await new Promise(resolve => {
+                        api.abortSignal.addEventListener('abort', resolve, { once: true })
+                    })
+                }
                 api.checkAbort()
             })
-            await new Promise(r => setTimeout(r, 20))
+            await until(() => jobs.getJob(id)?.status === 'running', 'job running')
             await window.LayersAgent.cancelJob({ jobId: id })
             const settled = await window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 1000 })
             return settled.result
-        })
+        }, IN_PAGE_UNTIL)
         expect(final.status).toBe('cancelled')
     })
 
     test('cancelJob can interrupt a concurrent waitForJob command', async ({ page }) => {
         await bootApp(page)
-        const result = await page.evaluate(async () => {
-            const { id } = window.__LAYERS_TEST_HOOKS.jobs.createJob('test-kind', async (api) => {
-                while (!api.abortSignal.aborted) {
-                    await new Promise(resolve => setTimeout(resolve, 5))
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
+            const jobs = window.__LAYERS_TEST_HOOKS.jobs
+            const { id } = jobs.createJob('test-kind', async (api) => {
+                // Runs until cancelled. Parked on the abort event rather than
+                // polling a timer, so the job notices the cancel at once.
+                if (!api.abortSignal.aborted) {
+                    await new Promise(resolve => {
+                        api.abortSignal.addEventListener('abort', resolve, { once: true })
+                    })
                 }
                 api.checkAbort()
             })
             const waitPromise = window.LayersAgent.waitForJob({ jobId: id, timeoutMs: 2000 })
-            await new Promise(resolve => setTimeout(resolve, 25))
+            // waitForJob registers its waiter synchronously, so holding here
+            // until the job is running leaves the cancel interrupting a live
+            // wait, which is the contract under test.
+            await until(() => jobs.getJob(id)?.status === 'running', 'job running')
             const cancelEnvelope = await window.LayersAgent.cancelJob({ jobId: id })
             const waitEnvelope = await waitPromise
             return { cancelEnvelope, waitEnvelope }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result.cancelEnvelope.ok).toBe(true)
         expect(result.waitEnvelope.ok).toBe(true)

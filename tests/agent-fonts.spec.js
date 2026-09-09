@@ -67,11 +67,15 @@ test.describe('agent: installFontBundle', () => {
         await page.evaluate(async () => {
             const m = await import('/js/layers/fontaine-loader.js')
             const loader = m.getFontaineLoader()
+            // The stub only has to report its phases from separate turns of
+            // the event loop, the way a real install does. Yields do that;
+            // the durations they replaced were wall-clock the assertions
+            // below never looked at.
             loader.install = async ({ onProgress }) => {
                 onProgress(25, 'Downloading: 35 / 140 MB')
-                await new Promise(r => setTimeout(r, 30))
+                await new Promise(r => setTimeout(r, 0))
                 onProgress(75, 'Extracting fonts...')
-                await new Promise(r => setTimeout(r, 30))
+                await new Promise(r => setTimeout(r, 0))
                 loader.installedVersion = 'test-2'
                 loader.catalog = { fonts: [] }
                 loader.fontsLoaded = true

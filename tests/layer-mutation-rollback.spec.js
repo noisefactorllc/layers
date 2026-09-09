@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { IN_PAGE_UNTIL } from './waits.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -257,7 +258,8 @@ for (const entry of drawingMutationFailures) {
     test(`${entry.name} restores exact drawing state when rebuild fails`, async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async ({ operation }) => {
+        const result = await page.evaluate(async ({ operation, untilSrc }) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const renderer = app._renderer
             const baseline = await window.LayersAgent.paintStroke({
@@ -366,9 +368,11 @@ for (const entry of drawingMutationFailures) {
                 })
                 tool._onMouseDown(event('mousedown', 60, 50))
                 tool._onMouseUp(event('mouseup', 60, 50))
-                while (app._projectLifecycleActive) {
-                    await new Promise(resolve => setTimeout(resolve, 10))
-                }
+                // Bounded: an unbounded poll on a flag that never clears hangs
+                // the run rather than failing it, and this same flag is what
+                // the lifecycleReleased assertion below reads.
+                await until(() => !app._projectLifecycleActive,
+                    'the erase gesture released the project lifecycle')
             }
 
             const currentLayer = app._layers.find(candidate => candidate.id === layerId)
@@ -387,7 +391,7 @@ for (const entry of drawingMutationFailures) {
                 allCandidateResourcesDisposed: candidateResources.every(candidate =>
                     disposedResources.has(candidate)),
             }
-        }, { operation: entry.operation })
+        }, { operation: entry.operation, untilSrc: IN_PAGE_UNTIL })
 
         expect(result.rebuildCalls).toBeGreaterThanOrEqual(2)
         expect(result.after).toEqual(result.before)
@@ -408,7 +412,8 @@ for (const entry of drawingMutationFailures) {
 test('drawing rollback re-arms a pending undo and later records only its preexisting change', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const baseline = await window.LayersAgent.paintStroke({
             points: [[30, 30], [90, 90]],
@@ -460,7 +465,12 @@ test('drawing rollback re-arms a pending undo and later records only its preexis
             pendingUndo: Boolean(app._undoDebounceTimer),
         }
 
-        await new Promise(resolve => setTimeout(resolve, 650))
+        // The re-armed undo is a 500ms debounce: wait for it to commit rather
+        // than for a duration a loaded machine can outrun. The timer nulls
+        // itself and pushes in the same turn, so both halves land together.
+        await until(() => !app._undoDebounceTimer
+            && app._undoManager._stack.length > before.undoStackLength,
+            'the re-armed undo debounce committed its step')
         const committed = app._undoManager._stack.at(-1)
         const committedLayer = committed.layers.find(candidate => candidate.id === layerId)
         return {
@@ -475,7 +485,7 @@ test('drawing rollback re-arms a pending undo and later records only its preexis
             committedStrokeIds: committedLayer.strokes.map(stroke => stroke.id),
             baselineStrokeIds,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.envelope.ok).toBe(false)
     expect(result.envelope.error.code).toBe('INTERNAL_ERROR')

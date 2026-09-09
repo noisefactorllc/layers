@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js'
-import { appReady, appState } from './waits.js'
+import { appReady, appState, IN_PAGE_UNTIL } from './waits.js'
 
 test.describe('Eyedropper tool', () => {
     test('eyedropper button exists', async ({ page }) => {
@@ -78,7 +78,8 @@ test.describe('Eyedropper tool', () => {
 
         // Dispatch a click mapped exactly to canvas pixel row y=0 (the top row).
         // Pre-fix this read bottom-up row `height` (out of bounds) -> black.
-        const color = await page.evaluate(async () => {
+        const color = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const overlay = document.getElementById('selectionOverlay')
             const rect = overlay.getBoundingClientRect()
@@ -87,9 +88,14 @@ test.describe('Eyedropper tool', () => {
             const clientX = rect.left + (overlay.width / 2) * scaleX
             const clientY = rect.top + 0.5 * scaleY // floor(0.5) -> row 0
             overlay.dispatchEvent(new MouseEvent('click', { clientX, clientY, bubbles: true }))
-            await new Promise(r => setTimeout(r, 150))
+            // The sampler sets the foreground colour and only then restores the
+            // previous tool, so the tool flipping back is this click having
+            // landed. Waiting on that reads the colour the click produced
+            // instead of whatever is there after a guessed 150ms.
+            await until(() => app._currentTool !== 'eyedropper',
+                'the eyedropper restored the previous tool')
             return app._foregroundColor
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(color).not.toBe('#000000')
     })

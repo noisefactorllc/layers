@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { IN_PAGE_UNTIL } from './waits.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -149,7 +150,8 @@ test('rejected join preserves the active session', async ({ page }) => {
 test('rejected take-online preserves an armed publish for the old session', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
         const app = window.layersApp
@@ -165,11 +167,15 @@ test('rejected take-online preserves an armed publish for the old session', asyn
             const layer = {
                 handlers,
                 upserts: [],
+                // The publish funnel reads the session's nodes on every run, so a
+                // rise in nodeReads is the observable signal that a debounced
+                // publish actually fired.
+                nodeReads: 0,
                 on: (event, handler) => handlers.set(event, handler),
                 getStatus: () => status,
                 getSessionId: () => sessionId,
                 getShareUrl: () => `https://layers.test/?seance=${sessionId || ''}`,
-                getNodes: () => initialNodes,
+                getNodes: () => { layer.nodeReads += 1; return initialNodes },
                 joinSession: async (id) => { sessionId = id; status = 'online' },
                 takeOnline: async () => { throw new Error('take-online rejected') },
                 upsertNode: (id, node) => layer.upserts.push({ id, ...node }),
@@ -188,9 +194,10 @@ test('rejected take-online preserves an armed publish for the old session', asyn
             importSdk: async () => ({ createOnlineDslLayer: createLayer }),
         })
         await adapter.joinSession('original', { skipConfirm: true })
-        adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 180))
         const original = connections[0]
+        const baselineReads = original.nodeReads
+        adapter.schedulePublish()
+        await until(() => original.nodeReads > baselineReads, 'the baseline publish flushed')
         original.upserts = []
 
         app._layers[0].name = 'Local edit waiting to publish'
@@ -201,7 +208,9 @@ test('rejected take-online preserves an armed publish for the old session', asyn
         } catch (err) {
             error = err.message
         }
-        await new Promise(resolve => setTimeout(resolve, 180))
+        await until(
+            () => original.upserts.length > 0 || connections[1].upserts.length > 0,
+            'the armed publish reached a session')
 
         return {
             error,
@@ -210,7 +219,7 @@ test('rejected take-online preserves an armed publish for the old session', asyn
             oldUpsertIds: original.upserts.map(node => node.id),
             candidateUpsertCount: connections[1].upserts.length,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.error).toBe('take-online rejected')
     expect(result.activeSession).toBe('original')
@@ -221,7 +230,8 @@ test('rejected take-online preserves an armed publish for the old session', asyn
 test('successful join discards an armed old-session publish instead of retargeting it', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -243,13 +253,23 @@ test('successful join discards an armed old-session publish instead of retargeti
             const layer = {
                 handlers,
                 upserts: [],
+                // A rise in nodeReads means the publish funnel ran: it reads the
+                // session's nodes on every publish.
+                nodeReads: 0,
                 on: (event, handler) => handlers.set(event, handler),
                 getStatus: () => status,
                 getSessionId: () => sessionId,
                 getShareUrl: () => `https://layers.test/?seance=${sessionId || ''}`,
-                getNodes: () => index === 0 ? initialNodes : remoteNodes,
+                getNodes: () => {
+                    layer.nodeReads += 1
+                    return index === 0 ? initialNodes : remoteNodes
+                },
                 joinSession: async (id) => {
                     if (index === 1) {
+                        // Injected transport delay, part of the fixture: it holds the
+                        // new session's join open past the adapter's 150ms publish
+                        // debounce so the old session's armed publish fires
+                        // mid-transition, which is the race under test.
                         await new Promise(resolve => setTimeout(resolve, 220))
                     }
                     sessionId = id
@@ -270,22 +290,32 @@ test('successful join discards an armed old-session publish instead of retargeti
             importSdk: async () => ({ createOnlineDslLayer: createLayer }),
         })
         await adapter.joinSession('old', { skipConfirm: true })
+        const baselineReads = connections[0].nodeReads
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 180))
+        await until(() => connections[0].nodeReads > baselineReads,
+            'the baseline publish flushed')
         connections[0].upserts = []
 
         app._layers[0].name = 'Old-session pending edit'
         adapter.schedulePublish()
         await adapter.joinSession('new', { skipConfirm: true })
-        await new Promise(resolve => setTimeout(resolve, 450))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        // Barrier, not a sleep. This publish is armed after the transition, so it
+        // is behind anything the old session left armed: once the funnel has read
+        // the new session's nodes, a publish retargeted from the old session would
+        // already have shown up in the upsert lists below. It carries no local
+        // change of its own, so its own diff is empty.
+        const readsAfterJoin = connections[1].nodeReads
+        adapter.schedulePublish()
+        await until(() => connections[1].nodeReads > readsAfterJoin,
+            'a publish ran against the new session')
+        await until(() => !adapter.isApplyingRemote(), 'no remote apply is in flight')
 
         return {
             oldUpsertCount: connections[0].upserts.length,
             newUpsertCount: connections[1].upserts.length,
             finalLayerIds: app._layers.map(layer => layer.id),
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         oldUpsertCount: 0,
@@ -297,7 +327,8 @@ test('successful join discards an armed old-session publish instead of retargeti
 test('successful join clears rejected hashes inherited from the old session', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -319,11 +350,17 @@ test('successful join clears rejected hashes inherited from the old session', as
             const layer = {
                 handlers,
                 upserts: [],
+                // A rise in nodeReads means the publish funnel ran: it reads the
+                // session's nodes on every publish.
+                nodeReads: 0,
                 on: (event, handler) => handlers.set(event, handler),
                 getStatus: () => status,
                 getSessionId: () => sessionId,
                 getShareUrl: () => `https://layers.test/?seance=${sessionId || ''}`,
-                getNodes: () => index === 0 ? initialNodes : remoteNodes,
+                getNodes: () => {
+                    layer.nodeReads += 1
+                    return index === 0 ? initialNodes : remoteNodes
+                },
                 joinSession: async (id) => { sessionId = id; status = 'online' },
                 upsertNode: (id, node) => layer.upserts.push({ id, ...node }),
                 deleteNode() {},
@@ -340,22 +377,28 @@ test('successful join clears rejected hashes inherited from the old session', as
             importSdk: async () => ({ createOnlineDslLayer: createLayer }),
         })
         await adapter.joinSession('old', { skipConfirm: true })
+        const baselineReads = connections[0].nodeReads
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 180))
+        await until(() => connections[0].nodeReads > baselineReads,
+            'the baseline publish flushed')
         connections[0].handlers.get('node-reject')?.({ id: layerNodeId })
 
         await adapter.joinSession('new', { skipConfirm: true })
-        await new Promise(resolve => setTimeout(resolve, 300))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(
+            () => !adapter.isApplyingRemote()
+                && app._layers[0]?.name === 'Different remote name',
+            'the joined session replaced the layer name')
+        const readsBeforeRepublish = connections[1].nodeReads
         app._layers[0].name = originalName
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 180))
+        await until(() => connections[1].nodeReads > readsBeforeRepublish,
+            'the republish funnel ran against the new session')
 
         return {
             layerNodeId,
             upsertIds: connections[1].upserts.map(node => node.id),
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.upsertIds).toContain(result.layerNodeId)
 })
@@ -363,7 +406,8 @@ test('successful join clears rejected hashes inherited from the old session', as
 test('successful take-online cancels old publish work and rebases rejection state', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -386,11 +430,17 @@ test('successful take-online cancels old publish work and rebases rejection stat
                 handlers,
                 upserts: [],
                 seed: null,
+                // A rise in nodeReads means the publish funnel ran: it reads the
+                // session's nodes on every publish.
+                nodeReads: 0,
                 on: (event, handler) => handlers.set(event, handler),
                 getStatus: () => status,
                 getSessionId: () => sessionId,
                 getShareUrl: () => `https://layers.test/?seance=${sessionId || ''}`,
-                getNodes: () => index === 0 ? initialNodes : remoteNodes,
+                getNodes: () => {
+                    layer.nodeReads += 1
+                    return index === 0 ? initialNodes : remoteNodes
+                },
                 joinSession: async (id) => { sessionId = id; status = 'online' },
                 takeOnline: async ({ poly }) => {
                     layer.seed = poly.nodes
@@ -411,23 +461,36 @@ test('successful take-online cancels old publish work and rebases rejection stat
             importSdk: async () => ({ createOnlineDslLayer: createLayer }),
         })
         await adapter.joinSession('old', { skipConfirm: true })
+        const baselineReads = connections[0].nodeReads
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 180))
+        await until(() => connections[0].nodeReads > baselineReads,
+            'the baseline publish flushed')
         connections[0].handlers.get('node-reject')?.({ id: layerNodeId })
         connections[0].upserts = []
 
         app._layers[0].name = 'Pending old-session edit'
         adapter.schedulePublish()
         await adapter.takeOnline()
-        await new Promise(resolve => setTimeout(resolve, 180))
+        // Barrier, not a sleep. This publish is armed after the transition, so it
+        // is behind anything the old session left armed: once the funnel has read
+        // the taken session's nodes, a retargeted old publish would already have
+        // shown up in its upserts. It carries no local change, so its diff is empty.
+        const readsAfterTake = connections[1].nodeReads
+        adapter.schedulePublish()
+        await until(() => connections[1].nodeReads > readsAfterTake,
+            'a publish ran against the taken session')
         const upsertsAfterTransition = connections[1].upserts.length
 
         connections[1].handlers.get('remote-node')?.({})
-        await new Promise(resolve => setTimeout(resolve, 300))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(
+            () => !adapter.isApplyingRemote()
+                && app._layers[0]?.name === 'New session remote edit',
+            'the remote apply landed on the taken session')
+        const readsBeforeRepublish = connections[1].nodeReads
         app._layers[0].name = originalName
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 180))
+        await until(() => connections[1].nodeReads > readsBeforeRepublish,
+            'the republish funnel ran against the taken session')
 
         const seededLayer = connections[1].seed.find(node => node.id === layerNodeId)
         return {
@@ -437,7 +500,7 @@ test('successful take-online cancels old publish work and rebases rejection stat
             newUpsertIds: connections[1].upserts.map(node => node.id),
             layerNodeId,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.oldUpsertCount).toBe(0)
     expect(result.upsertsAfterTransition).toBe(0)
@@ -448,7 +511,8 @@ test('successful take-online cancels old publish work and rebases rejection stat
 test('queued apply from an old session is not retargeted after take-online succeeds', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -497,15 +561,20 @@ test('queued apply from an old session is not retargeted after take-online succe
         const originalLayerIds = app._layers.map(layer => layer.id)
         connections[0].handlers.get('remote-node')?.({})
         await adapter.takeOnline()
+        // Observation window, not a readiness guess: the assertion is that the
+        // apply queued against the old session never lands, and the adapter
+        // coalesces remote-node events for 120ms before it would run one. There is
+        // nothing to wait for here, only a stretch of time in which nothing may
+        // happen.
         await new Promise(resolve => setTimeout(resolve, 350))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => !adapter.isApplyingRemote(), 'no remote apply is in flight')
 
         return {
             originalLayerIds,
             finalLayerIds: app._layers.map(layer => layer.id),
             activeSession: adapter.online.getSessionId(),
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.finalLayerIds).toEqual(result.originalLayerIds)
     expect(result.activeSession).toBe('taken')
@@ -514,7 +583,8 @@ test('queued apply from an old session is not retargeted after take-online succe
 test('in-flight apply from an old session cannot commit after joining a new session', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -556,6 +626,10 @@ test('in-flight apply from an old session cannot commit after joining a new sess
         let releaseOldStage
         let oldStageStarted = false
         const committedLayerIds = []
+        // Every staged candidate ends in exactly one of commit or rollback, so
+        // recording both gives the wait below an exact signal for "that apply has
+        // decided" instead of a guessed duration.
+        const rolledBackLayerIds = []
         app._renderer.stageLayerSet = async (candidate) => {
             const ids = candidate.layers.map(layer => layer.id)
             if (ids.includes('layer-old-remote')) {
@@ -568,24 +642,36 @@ test('in-flight apply from an old session cannot commit after joining a new sess
                 committedLayerIds.push(ids)
                 return commit()
             }
+            const rollback = stage.rollback.bind(stage)
+            stage.rollback = () => {
+                rolledBackLayerIds.push(ids)
+                return rollback()
+            }
             return stage
         }
 
         connections[0].handlers.get('remote-node')?.({})
-        while (!oldStageStarted) await new Promise(resolve => setTimeout(resolve, 10))
+        await until(() => oldStageStarted, 'the old-session apply reached the renderer stage')
         adapter.goOffline()
         const joinPromise = adapter.joinSession('new', { skipConfirm: true })
         releaseOldStage()
         await joinPromise
-        await new Promise(resolve => setTimeout(resolve, 450))
-        while (adapter.isApplyingRemote()) await new Promise(resolve => setTimeout(resolve, 10))
+        // The released old-session apply must resolve one way or the other: roll
+        // its staged candidate back (the behaviour under test) or commit it (the
+        // regression). Either outcome ends the wait, so the assertion below reads
+        // a settled result rather than whatever had happened by a fixed deadline.
+        await until(
+            () => rolledBackLayerIds.some(ids => ids.includes('layer-old-remote'))
+                || committedLayerIds.some(ids => ids.includes('layer-old-remote')),
+            'the old-session apply resolved')
+        await until(() => !adapter.isApplyingRemote(), 'no remote apply is in flight')
         app._renderer.stageLayerSet = stageLayerSet
 
         return {
             committedLayerIds,
             finalLayerIds: app._layers.map(layer => layer.id),
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.committedLayerIds).not.toContainEqual(['layer-old-remote'])
     expect(result.finalLayerIds).toEqual(['layer-new-remote'])
@@ -675,7 +761,8 @@ for (const operation of ['take-online', 'join']) {
 test('an accepted deletion expires from the rejection retry window', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -692,7 +779,11 @@ test('an accepted deletion expires from the rejection retry window', async ({ pa
             on: (event, handler) => handlers.set(event, handler),
             getStatus: () => status,
             getSessionId: () => 'delete-expiry',
-            getShareUrl: () => '', getNodes: () => nodes,
+            getShareUrl: () => '',
+            // A rise in nodeReads means the publish funnel ran: it reads the
+            // session's nodes on every publish.
+            nodeReads: 0,
+            getNodes: () => { online.nodeReads += 1; return nodes },
             joinSession: async () => { status = 'online' },
             upsertNode() {},
             deleteNode: id => {
@@ -711,12 +802,17 @@ test('an accepted deletion expires from the rejection retry window', async ({ pa
         app._layers.splice(0, 1)
         adapter.schedulePublish()
         await firstDelete
+        // Not a readiness guess: the adapter keeps a deleted node's rejection
+        // window open for 2s, and the behaviour under test is what happens once
+        // that window has genuinely elapsed. The duration is the measurement.
         await new Promise(resolve => setTimeout(resolve, 2200))
         handlers.get('node-reject')?.({ id: deletedId })
+        const readsBeforeRetry = online.nodeReads
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 200))
+        await until(() => online.nodeReads > readsBeforeRetry,
+            'the publish funnel ran after the expired rejection')
         return deletes
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toHaveLength(1)
 })
@@ -724,7 +820,8 @@ test('an accepted deletion expires from the rejection retry window', async ({ pa
 test('pending deletion retries are globally capped', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -747,7 +844,11 @@ test('pending deletion retries are globally capped', async ({ page }) => {
             on: (event, handler) => handlers.set(event, handler),
             getStatus: () => status,
             getSessionId: () => 'delete-cap',
-            getShareUrl: () => '', getNodes: () => nodes,
+            getShareUrl: () => '',
+            // A rise in nodeReads means the publish funnel ran: it reads the
+            // session's nodes on every publish.
+            nodeReads: 0,
+            getNodes: () => { online.nodeReads += 1; return nodes },
             joinSession: async () => { status = 'online' },
             upsertNode() {}, deleteNode: id => deletes.push(id),
             goOffline: () => { status = 'offline' },
@@ -761,16 +862,18 @@ test('pending deletion retries are globally capped', async ({ page }) => {
         await adapter.joinSession('delete-cap', { skipConfirm: true })
         app._layers = []
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 200))
+        await until(() => deletes.length > 0, 'the first publish issued its deletes')
         handlers.get('node-reject')?.({ id: layerNodeIds[0] })
         handlers.get('node-reject')?.({ id: layerNodeIds.at(-1) })
+        const readsBeforeRetry = online.nodeReads
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 200))
+        await until(() => online.nodeReads > readsBeforeRetry,
+            'the retry publish funnel ran')
         return {
             first: deletes.filter(id => id === layerNodeIds[0]).length,
             last: deletes.filter(id => id === layerNodeIds.at(-1)).length,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({ first: 1, last: 2 })
 })
@@ -778,7 +881,8 @@ test('pending deletion retries are globally capped', async ({ page }) => {
 test('go-offline cancels take-online while the SDK layer is still importing', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         let importStarted = false
@@ -803,7 +907,7 @@ test('go-offline cancels take-online while the SDK layer is still importing', as
             },
         })
         const transition = adapter.takeOnline()
-        while (!importStarted) await new Promise(resolve => setTimeout(resolve, 0))
+        await until(() => importStarted, 'take-online started the SDK import')
         adapter.goOffline()
         const lifecycleToken = app._tryAcquireProjectLifecycle()
         const lifecycleAvailable = Boolean(lifecycleToken)
@@ -820,7 +924,7 @@ test('go-offline cancels take-online while the SDK layer is still importing', as
             stayedUninitializedWhileHeld,
             stayedUninitializedAfterCompletion: adapter.online === null,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         sessionId: null,
@@ -837,7 +941,8 @@ for (const activeSession of [false, true]) {
     test(`go-offline cancels a held case-probe join with${activeSession ? '' : 'out'} an active session`, async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async (activeSession) => {
+        const result = await page.evaluate(async ({ activeSession, untilSrc }) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
             const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -889,7 +994,7 @@ for (const activeSession of [false, true]) {
                 return { ok: true }
             }
             const transition = adapter.joinSession('ABCDEF', { skipConfirm: true })
-            while (!probeStarted) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => probeStarted, 'the uppercase case probe started')
             adapter.goOffline()
             const lifecycleToken = app._tryAcquireProjectLifecycle()
             const lifecycleAvailable = Boolean(lifecycleToken)
@@ -905,7 +1010,7 @@ for (const activeSession of [false, true]) {
                 joinCalls: connections.reduce((sum, layer) => sum + layer.joinCalls, 0),
                 disconnects: connections.reduce((sum, layer) => sum + layer.disconnects, 0),
             }
-        }, activeSession)
+        }, { activeSession, untilSrc: IN_PAGE_UNTIL })
 
         expect(result.joined).toBeNull()
         expect(result.lifecycleAvailable).toBe(true)
@@ -919,7 +1024,8 @@ for (const activeSession of [false, true]) {
 test('go-offline cancels join while the SDK layer is still importing without holding lifecycle', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         let importStarted = false
@@ -945,7 +1051,7 @@ test('go-offline cancels join while the SDK layer is still importing without hol
             },
         })
         const transition = adapter.joinSession('late-join', { skipConfirm: true })
-        while (!importStarted) await new Promise(resolve => setTimeout(resolve, 0))
+        await until(() => importStarted, 'the join started the SDK import')
         adapter.goOffline()
         const lifecycleToken = app._tryAcquireProjectLifecycle()
         const lifecycleAvailable = Boolean(lifecycleToken)
@@ -960,7 +1066,7 @@ test('go-offline cancels join while the SDK layer is still importing without hol
             status: adapter.getStatus(),
             stayedUninitializedAfterCompletion: adapter.online === null,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
         joined: null,
@@ -1050,7 +1156,8 @@ for (const activeSession of [false, true]) {
         test(`take-online consumes its ${seedTiming} seed snapshot with${activeSession ? '' : 'out'} an active session`, async ({ page }) => {
             await bootSolid(page)
 
-            const result = await page.evaluate(async ({ activeSession, seedTiming }) => {
+            const result = await page.evaluate(async ({ activeSession, seedTiming, untilSrc }) => {
+                const until = eval(untilSrc)
                 const app = window.layersApp
                 const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
                 const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1104,27 +1211,29 @@ for (const activeSession of [false, true]) {
                 }
                 const generationBefore = app._replacementGeneration
                 const transition = adapter.takeOnline()
-                while (!takeStarted) await new Promise(resolve => setTimeout(resolve, 0))
+                await until(() => takeStarted, 'take-online reached the SDK layer')
                 releaseTake()
                 await transition
                 const taken = adapter.online
                 if (seedTiming === 'after-resolution') {
                     taken.handlers.get('node-snapshot')?.({})
+                    // Observation window, not a readiness guess: the assertion is
+                    // that the seed echo is consumed and applies nothing. A missed
+                    // seed would schedule an apply, which the adapter coalesces for
+                    // 120ms before running, so this window is the measurement.
                     await new Promise(resolve => setTimeout(resolve, 350))
                 }
                 const generationAfterSeed = app._replacementGeneration
                 taken.setNodes(remoteNodes)
                 taken.handlers.get('node-snapshot')?.({})
-                const deadline = Date.now() + 3000
-                while (app._layers[0]?.id !== remote.id && Date.now() < deadline) {
-                    await new Promise(resolve => setTimeout(resolve, 10))
-                }
+                await until(() => app._layers[0]?.id === remote.id,
+                    'the first real snapshot replaced the composition', 3000)
                 return {
                     generationBefore,
                     generationAfterSeed,
                     layerIds: app._layers.map(layer => layer.id),
                 }
-            }, { activeSession, seedTiming })
+            }, { activeSession, seedTiming, untilSrc: IN_PAGE_UNTIL })
 
             expect(result.generationAfterSeed).toBe(result.generationBefore)
             expect(result.layerIds).toEqual(['first-real-snapshot'])
@@ -1135,7 +1244,8 @@ for (const activeSession of [false, true]) {
 test('initial join-from-URL applies remote state before a queued local mutation runs', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1173,18 +1283,23 @@ test('initial join-from-URL applies remote state before a queued local mutation 
         })
         app._onlineAdapter = adapter
         const joinPromise = adapter.joinFromUrl()
-        while (!joinStarted) await new Promise(resolve => setTimeout(resolve, 0))
+        await until(() => joinStarted, 'the URL join reached the SDK layer')
 
         let mutationSettled = false
         const mutationPromise = window.LayersAgent.addLayer({
             kind: 'effect', effectId: 'filter/blur', name: 'Queued local edit',
         }).then(value => { mutationSettled = true; return value })
-        await new Promise(resolve => setTimeout(resolve, 50))
+        // A barrier rather than a window: the mutation queues behind the join's
+        // lifecycle lease, so being counted as a lifecycle waiter proves it reached
+        // the queue and parked there. Settling ends the wait too, so a mutation that
+        // wrongly ran early is still reported by the assertion instead of hanging.
+        await until(() => mutationSettled || app._projectLifecycleWaiters > 0,
+            'the local mutation reached the lifecycle queue')
         const mutationSettledBeforeRelease = mutationSettled
         releaseJoin()
         const joined = await joinPromise
         const mutation = await mutationPromise
-        await new Promise(resolve => setTimeout(resolve, 200))
+        await until(() => upserts.length > 0, 'the queued mutation published')
 
         return {
             joined,
@@ -1194,7 +1309,7 @@ test('initial join-from-URL applies remote state before a queued local mutation 
             upsertIds: upserts.map(node => node.id),
             mutationLayerId: mutation.result?.layerId,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.joined).toBe(true)
     expect(result.mutationOk).toBe(true)
@@ -1206,7 +1321,8 @@ test('initial join-from-URL applies remote state before a queued local mutation 
 test('take-online holds the lifecycle so a concurrent local mutation publishes afterward', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         let status = 'offline'
@@ -1238,19 +1354,24 @@ test('take-online holds the lifecycle so a concurrent local mutation publishes a
         })
         app._onlineAdapter = adapter
         const takePromise = adapter.takeOnline()
-        while (!takeStarted) await new Promise(resolve => setTimeout(resolve, 0))
+        await until(() => takeStarted, 'take-online reached the SDK layer')
         const transitionHeldLifecycle = app._projectLifecycleActive
 
         let mutationSettled = false
         const mutationPromise = window.LayersAgent.addLayer({
             kind: 'effect', effectId: 'filter/blur', name: 'Mutation after seed',
         }).then(value => { mutationSettled = true; return value })
-        await new Promise(resolve => setTimeout(resolve, 50))
+        // A barrier rather than a window: the mutation queues behind the lifecycle
+        // lease the transition holds, so being counted as a lifecycle waiter proves
+        // it reached the queue and parked. Settling ends the wait too, so a mutation
+        // that wrongly ran early is reported by the assertion instead of hanging.
+        await until(() => mutationSettled || app._projectLifecycleWaiters > 0,
+            'the local mutation reached the lifecycle queue')
         const mutationSettledBeforeRelease = mutationSettled
         releaseTake()
         const sessionId = await takePromise
         const mutation = await mutationPromise
-        await new Promise(resolve => setTimeout(resolve, 200))
+        await until(() => upserts.length > 0, 'the mutation published after the transition')
 
         return {
             sessionId,
@@ -1261,7 +1382,7 @@ test('take-online holds the lifecycle so a concurrent local mutation publishes a
             upsertIds: upserts.map(node => node.id),
             mutationLayerId: mutation.result?.layerId,
         }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.sessionId).toBe('taken1')
     expect(result.mutationOk).toBe(true)
@@ -1577,7 +1698,8 @@ test('take-online rechecks the media gate after acquiring the lifecycle lease', 
 test('a rejected node deletion is retried on the next publish', async ({ page }) => {
     await bootSolid(page)
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1607,12 +1729,12 @@ test('a rejected node deletion is retried on the next publish', async ({ page })
         await adapter.joinSession('delete-retry', { skipConfirm: true })
         app._layers.splice(0, 1)
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 200))
+        await until(() => deletes.length > 0, 'the deletion published')
         handlers.get('node-reject')?.({ id: deletedId })
         adapter.schedulePublish()
-        await new Promise(resolve => setTimeout(resolve, 200))
+        await until(() => deletes.length > 1, 'the rejected deletion was retried')
         return { deletedId, deletes }
-    })
+    }, IN_PAGE_UNTIL)
 
     expect(result.deletes).toEqual([result.deletedId, result.deletedId])
 })
@@ -1621,7 +1743,8 @@ for (const operation of ['take-online', 'join']) {
     test(`go-offline invalidates a late ${operation} completion`, async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async ({ operation }) => {
+        const result = await page.evaluate(async ({ operation, untilSrc }) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
             const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -1662,7 +1785,7 @@ for (const operation of ['take-online', 'join']) {
             const transition = operation === 'take-online'
                 ? adapter.takeOnline()
                 : adapter.joinSession('late-session', { skipConfirm: true })
-            while (!started) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => started, `${operation} reached the SDK layer`)
             adapter.goOffline()
             release()
             const sessionId = await transition
@@ -1673,7 +1796,7 @@ for (const operation of ['take-online', 'join']) {
                 disconnects,
                 layerIds: app._layers.map(layer => layer.id),
             }
-        }, { operation })
+        }, { operation, untilSrc: IN_PAGE_UNTIL })
 
         expect(result.sessionId).toBeNull()
         expect(result.status).toBe('offline')

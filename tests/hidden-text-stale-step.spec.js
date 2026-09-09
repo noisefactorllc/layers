@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { IN_PAGE_UNTIL } from './waits.js'
 
 // Regression tests for updateTextParams on hidden text layers.
 //
@@ -84,8 +85,13 @@ test.describe('updateTextParams on hidden text layers', () => {
             // model first, then updateTextParams.
             layer.effectParams = { ...layer.effectParams, posX: 0.25, posY: 0.25 }
             app._renderer.updateTextParams(t1Id, layer.effectParams)
-            // Let the async fontaine re-render path settle too.
-            await new Promise(r => setTimeout(r, 150))
+            // updateTextParams renders and uploads synchronously, so the only
+            // way an upload could still be in flight is the fontaine re-render
+            // path, and that path begins by importing the loader module.
+            // Awaiting the same import puts this read behind anything it
+            // queued: a barrier, rather than a guess at how long to watch for
+            // nothing.
+            await import('/js/layers/fontaine-loader.js')
             window.__restoreTextSpy()
             return window.__textTexUploads
         }, { t1Id: t1 })
@@ -101,16 +107,21 @@ test.describe('updateTextParams on hidden text layers', () => {
         const t2 = await addTextLayer(page, 'SECOND')
 
         await spyTextUploads(page)
-        const out = await page.evaluate(async ({ t2Id }) => {
+        const out = await page.evaluate(async ({ t2Id, untilSrc }) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const layer = app._layers.find(l => l.id === t2Id)
             const stepIndex = app._renderer._textCanvases.get(t2Id)?.stepIndex
             layer.effectParams = { ...layer.effectParams, posX: 0.75 }
             app._renderer.updateTextParams(t2Id, layer.effectParams)
-            await new Promise(r => setTimeout(r, 150))
+            // The upload is recorded as the update renders, so wait for it
+            // rather than for a duration: an update that never uploads fails
+            // here with a label instead of reading an empty array later.
+            await until(() => window.__textTexUploads.length > 0,
+                'the visible text layer uploaded its texture')
             window.__restoreTextSpy()
             return { stepIndex, uploads: window.__textTexUploads }
-        }, { t2Id: t2 })
+        }, { t2Id: t2, untilSrc: IN_PAGE_UNTIL })
 
         expect(out.uploads.length).toBeGreaterThan(0)
         for (const id of out.uploads) {

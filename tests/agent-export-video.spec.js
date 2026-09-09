@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js'
-import { quietWindow } from './waits.js'
+import { IN_PAGE_UNTIL, quietWindow } from './waits.js'
 
 test.describe('agent: exportVideo', () => {
     test.beforeEach(async ({ page }) => {
@@ -87,7 +87,8 @@ test.describe('agent: exportVideo', () => {
     })
 
     test('replacement waits for export cancellation and commits at its own resolution', async ({ page }) => {
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const started = await window.LayersAgent.exportVideo({
                 width: 64,
@@ -98,9 +99,8 @@ test.describe('agent: exportVideo', () => {
                 format: 'zip',
                 quality: 'low',
             })
-            while (!app._projectLifecycleActive) {
-                await new Promise(resolve => setTimeout(resolve, 0))
-            }
+            await until(() => app._projectLifecycleActive,
+                'the export job took the project lifecycle lease')
             let stageReached = false
             const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
             app._renderer.stageLayerSet = async (candidate) => {
@@ -108,7 +108,14 @@ test.describe('agent: exportVideo', () => {
                 return stageLayerSet(candidate)
             }
             const replacementPromise = app._handleCreateGradientBase(333, 222)
-            await new Promise(resolve => setTimeout(resolve, 50))
+            // The barrier the old fixed sleep was guessing at: the replacement
+            // parks in the lifecycle queue behind the export, and
+            // _projectLifecycleWaiters counts it for exactly as long as it is
+            // parked. While that count is up the replacement provably has not
+            // taken the lease, and stageLayerSet runs only after the lease is
+            // taken, so stageReached must still be false.
+            await until(() => app._projectLifecycleWaiters > 0,
+                'the replacement queued behind the running export')
             const replacementWaitedForExport = !stageReached
             await window.LayersAgent.cancelJob({ jobId: started.result.jobId })
             const settled = await window.LayersAgent.waitForJob({
@@ -124,7 +131,7 @@ test.describe('agent: exportVideo', () => {
                 height: app._canvas.height,
                 rendererRunning: app._renderer.isRunning,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             replacementWaitedForExport: true,
@@ -137,7 +144,8 @@ test.describe('agent: exportVideo', () => {
     })
 
     test('play button cannot restart the renderer during an agent export', async ({ page }) => {
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const started = await window.LayersAgent.exportVideo({
                 width: 64,
@@ -148,11 +156,21 @@ test.describe('agent: exportVideo', () => {
                 format: 'zip',
                 quality: 'low',
             })
-            while (!app._projectLifecycleActive || app._renderer.isRunning) {
-                await new Promise(resolve => setTimeout(resolve, 0))
-            }
+            await until(() => app._projectLifecycleActive && !app._renderer.isRunning,
+                'the export job took the lease and paused the renderer')
             document.getElementById('playPauseBtn').click()
-            await new Promise(resolve => setTimeout(resolve, 20))
+            // A negative measurement: the assertion is that nothing restarted.
+            // The button's handler refuses the click while the lifecycle lease
+            // is held, and a restart would show up in the very next frame of
+            // the render loop, so bound the observation by two animation
+            // frames rather than by a clock guess.
+            let frames = 0
+            const countFrame = () => {
+                frames += 1
+                if (frames < 2) requestAnimationFrame(countFrame)
+            }
+            requestAnimationFrame(countFrame)
+            await until(() => frames >= 2, 'two animation frames after the play click')
             const rendererStayedPaused = !app._renderer.isRunning
             await window.LayersAgent.cancelJob({ jobId: started.result.jobId })
             const settled = await window.LayersAgent.waitForJob({
@@ -160,13 +178,14 @@ test.describe('agent: exportVideo', () => {
                 timeoutMs: 5000,
             })
             return { rendererStayedPaused, jobStatus: settled.result.status }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({ rendererStayedPaused: true, jobStatus: 'cancelled' })
     })
 
     test('job polling snapshots retain document dimensions and playback state during detached export', async ({ page }) => {
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const original = {
                 canvas: { width: app._canvas.width, height: app._canvas.height },
@@ -181,10 +200,8 @@ test.describe('agent: exportVideo', () => {
                 format: 'zip',
                 quality: 'low',
             })
-            while (!app._projectLifecycleActive
-                || app._renderer.isRunning) {
-                await new Promise(resolve => setTimeout(resolve, 0))
-            }
+            await until(() => app._projectLifecycleActive && !app._renderer.isRunning,
+                'the export job took the lease and paused the renderer')
             const polled = await window.LayersAgent.getJob({
                 jobId: started.result.jobId,
             })
@@ -201,7 +218,7 @@ test.describe('agent: exportVideo', () => {
                 cancelled: { canvas: cancelled.state.canvas, view: cancelled.state.view },
                 settled: { canvas: settled.state.canvas, view: settled.state.view },
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         for (const envelope of [result.polled, result.cancelled, result.settled]) {
             expect(envelope.canvas).toEqual(result.original.canvas)
@@ -261,7 +278,8 @@ test.describe('agent: exportVideo', () => {
     }
 
     test('default export dimensions are resolved after a failed replacement rolls back', async ({ page }) => {
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const original = { width: app._canvas.width, height: app._canvas.height }
             let stageLive = false
@@ -277,7 +295,10 @@ test.describe('agent: exportVideo', () => {
                 }
             }
             const replacementPromise = app._handleCreateGradientBase(333, 222)
-            while (!stageLive) await new Promise(resolve => setTimeout(resolve, 0))
+            // Bounded: the replacement has to reach the staging stub before the
+            // canvas carries its size. An unbounded poll on a flag that never
+            // flips hangs the run instead of failing it.
+            await until(() => stageLive, 'the replacement reached stageLayerSet')
             const canvasDuringStage = { width: app._canvas.width, height: app._canvas.height }
             const started = await window.LayersAgent.exportVideo({
                 framerate: 30,
@@ -306,7 +327,7 @@ test.describe('agent: exportVideo', () => {
                 exportWidth: settled.result.result?.width,
                 exportHeight: settled.result.result?.height,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result.canvasDuringStage).toEqual({ width: 333, height: 222 })
         expect(result.replacementStatus).toBe('failed')
@@ -363,7 +384,12 @@ test.describe('agent: exportVideo', () => {
         // captureOnly populated a blob URL the agent can fetch().
         expect(typeof final.result.result.blobUrl).toBe('string')
         expect(final.result.result.blobUrl.startsWith('blob:')).toBe(true)
-        // Give a stray download event time to surface before asserting.
+        // A negative assertion, so the window IS the measurement, not a
+        // readiness guess: captureOnly must fire no download at all, and
+        // "no download" has no arrival to wait on. The job has already
+        // reported succeeded above, so anything the export was going to
+        // trigger has been triggered; this window only gives the event time
+        // to cross from the browser to the test.
         await quietWindow(page, 500)
         expect(downloadFired).toBe(false)
     })

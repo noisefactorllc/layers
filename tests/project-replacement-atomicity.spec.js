@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import path from 'node:path'
+import { IN_PAGE_UNTIL } from './waits.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -168,6 +169,8 @@ test.describe('Atomic project replacement', () => {
                 invalidResolved = true
                 return envelope
             })
+            // One macrotask turn, and the turn is the measurement: the assertion is
+            // that the invalid command did NOT resolve while the stage was held.
             await new Promise(resolve => setTimeout(resolve, 0))
             const resolvedBeforeRelease = invalidResolved
             releaseStage()
@@ -284,6 +287,8 @@ test.describe('Atomic project replacement', () => {
             }
             const barrierReleased = await Promise.race([
                 app._renderer.setLayers(app._layers, { force: true }).then(() => true),
+                // The timer is this race's failure bound, not a wait: it wins only if
+                // the barrier never releases.
                 new Promise(resolve => setTimeout(() => resolve(false), 500)),
             ])
             return { status, error, barrierReleased }
@@ -328,6 +333,8 @@ test.describe('Atomic project replacement', () => {
             const stageGateResult = await Promise.race([
                 app._renderer.setLayers(app._layers, { force: true })
                     .then(() => 'released'),
+                // The timer is this race's failure bound, not a wait: it wins only if
+                // the barrier never releases.
                 new Promise(resolve => setTimeout(() => resolve('blocked'), 100)),
             ])
             return { status, message, stageGateResult }
@@ -925,7 +932,8 @@ test.describe('Atomic project replacement', () => {
     test('agent mutations wait for a live human replacement stage to settle', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
             let heldFirstStage = false
@@ -939,13 +947,13 @@ test.describe('Atomic project replacement', () => {
             }
 
             const installPromise = app._handleCreateGradientBase(333, 222)
-            while (!window.__agentWaitStageReached) {
-                await new Promise(resolve => setTimeout(resolve, 0))
-            }
+            await until(() => window.__agentWaitStageReached, 'human replacement stage live')
             let agentSettled = false
             const agentPromise = window.LayersAgent
                 .newProject({ width: 210, height: 120, name: 'After replacement' })
                 .then(result => { agentSettled = true; return result })
+            // Observation window, not a readiness guess: the assertion is that the
+            // agent mutation did NOT settle while the stage was held.
             await new Promise(resolve => setTimeout(resolve, 50))
             const deferredDuringStage = !agentSettled
             window.__releaseAgentWaitStage()
@@ -959,7 +967,7 @@ test.describe('Atomic project replacement', () => {
                 rendererLayerCount: app._renderer._layers.length,
                 sameArray: app._layers === app._renderer._layers,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             deferredDuringStage: true,
@@ -974,7 +982,8 @@ test.describe('Atomic project replacement', () => {
     test('a replacement waits for an agent media mutation that is still fetching', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const originalFetch = window.fetch.bind(window)
             const order = []
@@ -1006,9 +1015,11 @@ test.describe('Atomic project replacement', () => {
                 order.push('agent-settled')
                 return envelope
             })
-            while (!fetchStarted) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => fetchStarted, 'agent media fetch started')
 
             const replacementPromise = app._handleCreateGradientBase(333, 222)
+            // Observation window, not a readiness guess: the assertion is that the
+            // replacement did NOT reach staging while the agent fetch was in flight.
             await new Promise(resolve => setTimeout(resolve, 50))
             const replacementDeferredDuringFetch = !order.includes('replacement-stage')
             releaseFetch()
@@ -1024,7 +1035,7 @@ test.describe('Atomic project replacement', () => {
                 finalLayerCount: app._layers.length,
                 sameArray: app._layers === app._renderer._layers,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             replacementDeferredDuringFetch: true,
@@ -1039,7 +1050,8 @@ test.describe('Atomic project replacement', () => {
     test('confirmed replacement cancels when an earlier mutation lands before commit', async ({ page }) => {
         await bootSolid(page)
 
-        await page.evaluate(() => {
+        await page.evaluate((untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const originalFetch = window.fetch.bind(window)
             window.__consentRace = {}
@@ -1060,9 +1072,7 @@ test.describe('Atomic project replacement', () => {
                     mediaType: 'image',
                     name: 'Mutation confirmed before completion',
                 })
-                while (!window.__consentRace.fetchStarted) {
-                    await new Promise(resolve => setTimeout(resolve, 0))
-                }
+                await until(() => window.__consentRace.fetchStarted, 'agent media fetch started')
                 window.__consentRace.replacementStarted = true
                 let replacementStatus = null
                 const accepted = await app._startProjectReplacement(({
@@ -1081,7 +1091,7 @@ test.describe('Atomic project replacement', () => {
                     lifecycleActive: app._projectLifecycleActive,
                 }
             })()
-        })
+        }, IN_PAGE_UNTIL)
 
         await expect.poll(() => page.evaluate(
             () => Boolean(window.__consentRace?.replacementStarted))).toBe(true)
@@ -1233,7 +1243,8 @@ test.describe('Atomic project replacement', () => {
     test('a replacement waits for a human media mutation that is still decoding', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const blob = await (await fetch('/img/og-image.png')).blob()
             const file = new File([blob], 'delayed-human.png', { type: 'image/png' })
@@ -1259,8 +1270,10 @@ test.describe('Atomic project replacement', () => {
             const addPromise = app._handleAddMediaLayer(file, 'image').then(() => {
                 order.push('human-media-settled')
             })
-            while (!decoding) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => decoding, 'human media decode started')
             const replacementPromise = app._handleCreateGradientBase(333, 222)
+            // Observation window, not a readiness guess: the assertion is that the
+            // replacement did NOT reach staging while the media was still decoding.
             await new Promise(resolve => setTimeout(resolve, 50))
             const replacementDeferredDuringDecode = !order.includes('replacement-stage')
             releaseDecode()
@@ -1273,7 +1286,7 @@ test.describe('Atomic project replacement', () => {
                 finalLayerCount: app._layers.length,
                 sameArray: app._layers === app._renderer._layers,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             replacementDeferredDuringDecode: true,
@@ -1287,7 +1300,8 @@ test.describe('Atomic project replacement', () => {
     test('pointer layer additions are ignored while a replacement stage is live', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
             let stageReached = false
@@ -1300,8 +1314,10 @@ test.describe('Atomic project replacement', () => {
             }
 
             const replacementPromise = app._handleCreateGradientBase(333, 222)
-            while (!stageReached) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => stageReached, 'replacement stage live')
             document.getElementById('textToolBtn').click()
+            // Observation window, not a readiness guess: the assertion is that the
+            // pointer add did NOT reach the model while the stage was held.
             await new Promise(resolve => setTimeout(resolve, 50))
             const unchangedDuringStage = app._layers.length === 1
             releaseStage()
@@ -1314,7 +1330,7 @@ test.describe('Atomic project replacement', () => {
                 effectIds: app._layers.map(layer => layer.effectId),
                 sameArray: app._layers === app._renderer._layers,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             unchangedDuringStage: true,
@@ -1328,7 +1344,8 @@ test.describe('Atomic project replacement', () => {
     test('Select All cannot capture candidate dimensions during a failed stage', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             app._selectionManager.setSelection({
                 type: 'rect', x: 4, y: 5, width: 20, height: 30,
@@ -1342,9 +1359,7 @@ test.describe('Atomic project replacement', () => {
             }
 
             const replacementPromise = app._handleCreateGradientBase(333, 222)
-            while (!window.__selectStageReached) {
-                await new Promise(resolve => setTimeout(resolve, 0))
-            }
+            await until(() => window.__selectStageReached, 'replacement stage live')
             document.getElementById('selectAllMenuItem').click()
             window.__releaseSelectStage()
             const status = await replacementPromise
@@ -1360,7 +1375,7 @@ test.describe('Atomic project replacement', () => {
                     height: selection.height,
                 },
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             status: 'failed',
@@ -1501,7 +1516,8 @@ test.describe('Atomic project replacement', () => {
     test('a pointer effect queued behind agent newProject is rejected', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const rebuild = app._rebuild.bind(app)
             const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
@@ -1526,10 +1542,12 @@ test.describe('Atomic project replacement', () => {
                 height: 120,
                 name: 'Replacement',
             })
-            while (!blocked) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => blocked, 'agent newProject held at its first rebuild or stage')
             document.getElementById('textToolBtn').click()
             release()
             const envelope = await agentPromise
+            // Observation window, not a readiness guess: the assertion is that the
+            // pointer effect queued behind the agent did NOT land a layer.
             await new Promise(resolve => setTimeout(resolve, 50))
             return {
                 agentOk: envelope.ok,
@@ -1537,7 +1555,7 @@ test.describe('Atomic project replacement', () => {
                 height: app._canvas.height,
                 layers: app._layers.map(layer => layer.effectId),
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             agentOk: true,
@@ -1550,7 +1568,8 @@ test.describe('Atomic project replacement', () => {
     test('mask-edit exit cannot upload an old mask into a live replacement stage', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const oldLayer = app._layers[0]
             await app._addLayerMask(oldLayer.id)
@@ -1573,14 +1592,16 @@ test.describe('Atomic project replacement', () => {
             }
 
             const replacementPromise = app._handleCreateGradientBase(333, 222)
-            while (!stageLive) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => stageLive, 'replacement stage live')
             app._layerStack.selectedLayerId = null
             app._layerStack.dispatchEvent(new CustomEvent('selection-change'))
+            // Observation window, not a readiness guess: the assertion is that no
+            // mask upload arrived while the stage was live.
             await new Promise(resolve => setTimeout(resolve, 20))
             releaseStage()
             const status = await replacementPromise
             return { uploadsDuringStage, status, maskEditMode: app._maskEditMode }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             uploadsDuringStage: 0,
@@ -1601,6 +1622,8 @@ test.describe('Atomic project replacement', () => {
             app._startDrag(sourceId)
             const dragOwnedLifecycle = app._projectLifecycleActive
             const replacementPromise = app._handleCreateGradientBase(333, 222)
+            // Observation window, not a readiness guess: the assertion is that the
+            // replacement did NOT commit while the drag held the lifecycle lease.
             await new Promise(resolve => setTimeout(resolve, 30))
             const replacementWaitedForDrag = app._projectReplacementActive
                 && app._layers.length === 3
@@ -1629,7 +1652,8 @@ test.describe('Atomic project replacement', () => {
     test('copy completion cannot restore old-project origin after replacement', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             app._selectionManager.setSelection({
                 type: 'rect', x: 5, y: 7, width: 20, height: 20,
@@ -1645,8 +1669,10 @@ test.describe('Atomic project replacement', () => {
             document.dispatchEvent(new KeyboardEvent('keydown', {
                 key: 'c', ctrlKey: true, bubbles: true,
             }))
-            while (!clipboardStarted) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => clipboardStarted, 'clipboard write started')
             const replacementPromise = app._handleCreateGradientBase(333, 222)
+            // Observation window, not a readiness guess: the assertion is that the
+            // replacement did NOT commit while the copy was in flight.
             await new Promise(resolve => setTimeout(resolve, 30))
             const replacementWaitedForCopy = app._layers[0].effectId === 'synth/solid'
             releaseClipboard()
@@ -1658,7 +1684,7 @@ test.describe('Atomic project replacement', () => {
                 copyOrigin: app._copyOrigin,
                 finalEffects: app._layers.map(layer => layer.effectId),
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             replacementWaitedForCopy: true,
@@ -1686,6 +1712,8 @@ test.describe('Atomic project replacement', () => {
                 name: 'Replacement',
             })
             dialog.querySelector('#image-size-ok').click()
+            // Observation window, not a readiness guess: the assertion is that the
+            // stale dialog's resize did NOT reach the replacement.
             await new Promise(resolve => setTimeout(resolve, 100))
             return {
                 agentOk: envelope.ok,
@@ -1701,7 +1729,8 @@ test.describe('Atomic project replacement', () => {
     test('image-size dialog cannot open against old state during a live replacement', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const stageLayerSet = app._renderer.stageLayerSet.bind(app._renderer)
             let stageLive = false
@@ -1713,7 +1742,7 @@ test.describe('Atomic project replacement', () => {
                 return stage
             }
             const replacementPromise = app._handleCreateGradientBase(333, 222)
-            while (!stageLive) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => stageLive, 'replacement stage live')
             app._showImageSizeDialog()
             const dialog = document.querySelector('.image-size-dialog')
             const openedDuringStage = Boolean(dialog?.open)
@@ -1725,7 +1754,7 @@ test.describe('Atomic project replacement', () => {
                 width: app._canvas.width,
                 height: app._canvas.height,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             openedDuringStage: false,
@@ -1738,7 +1767,8 @@ test.describe('Atomic project replacement', () => {
     test('image-size dialog cannot open during an agent media resample', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const blob = await (await fetch('/img/og-image.png')).blob()
             const file = new File([blob], 'resample-source.png', { type: 'image/png' })
@@ -1752,7 +1782,7 @@ test.describe('Atomic project replacement', () => {
                 return prepareMediaResource(...args)
             }
             const resizePromise = window.LayersAgent.resizeImage({ width: 320, height: 180 })
-            while (!resampleStarted) await new Promise(resolve => setTimeout(resolve, 0))
+            await until(() => resampleStarted, 'agent media resample started')
             document.getElementById('imageSizeMenuItem').click()
             const dialogOpened = Boolean(document.querySelector('.image-size-dialog')?.open)
             releaseResample()
@@ -1763,7 +1793,7 @@ test.describe('Atomic project replacement', () => {
                 width: app._canvas.width,
                 height: app._canvas.height,
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             dialogOpened: false,
@@ -1810,7 +1840,8 @@ test.describe('Atomic project replacement', () => {
     test('image export holds the lifecycle lease through native capture and save', async ({ page }) => {
         await bootSolid(page)
 
-        const result = await page.evaluate(async () => {
+        const result = await page.evaluate(async (untilSrc) => {
+            const until = eval(untilSrc)
             const app = window.layersApp
             const dialog = app._exportImageDialog
             const original = [app._canvas.width, app._canvas.height]
@@ -1862,11 +1893,10 @@ test.describe('Atomic project replacement', () => {
                     exportPromise.then(() => { throw new Error('Export finished before native capture was held') }),
                 ])
                 replacementPromise = app._handleCreateGradientBase(333, 222)
-                const deadline = performance.now() + 5000
-                while (!app._projectLifecycleWaiters && !replacementStageReached && !dimensionsAtReplacement) {
-                    if (performance.now() > deadline) throw new Error('Replacement neither queued nor started')
-                    await new Promise(resolve => setTimeout(resolve, 0))
-                }
+                await until(
+                    () => app._projectLifecycleWaiters || replacementStageReached
+                        || dimensionsAtReplacement,
+                    'replacement queued behind the export lease, or started', 5000)
                 const replacementWaited = !replacementStageReached && !dimensionsAtReplacement
                     && app._projectLifecycleWaiters > 0
                 releaseCapture()
@@ -1891,7 +1921,7 @@ test.describe('Atomic project replacement', () => {
                 app._renderer.stageLayerSet = stageLayerSet
                 app._resizeCanvas = resizeCanvas
             }
-        })
+        }, IN_PAGE_UNTIL)
 
         expect(result).toEqual({
             replacementWaited: true,

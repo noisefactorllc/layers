@@ -69,10 +69,11 @@ test.describe('Project save/load round-trip', () => {
         await reloadAndOpen(page, projectId)
 
         // Strokes must survive the round-trip and re-render from strokes on load.
-        const result = await page.evaluate(async () => {
+        await page.evaluate(() => { window.layersApp._renderer.render(0) })
+        // Reading pixels needs a painted frame, not a guessed delay.
+        await framePainted(page)
+        const result = await page.evaluate(() => {
             const app = window.layersApp
-            app._renderer.render(0)
-            await new Promise(r => setTimeout(r, 200))
             const canvas = document.getElementById('canvas')
             const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
             const pixels = new Uint8Array(4)

@@ -556,8 +556,13 @@ test('flatten gate: flattening while online shows a toast and leaves both pages 
     expect(stateA.length).toBe(countBefore)
     expect(stateA.some(l => l.sourceType === 'media')).toBe(false)
 
-    // Nothing was published to corrupt page B either.
-    await quietWindow(pageA, 500)
+    // Nothing was published to corrupt page B either. Rather than watch an
+    // empty window, send a change that MUST propagate and wait for it to land
+    // on B: once it has, the channel has run, so anything the blocked flatten
+    // might have published would already be here too.
+    const baseId = (await layersState(pageA))[0].id
+    await setOpacity(pageA, baseId, 42)
+    await expect.poll(() => opacityOf(pageB, baseId), { timeout: 60000 }).toBe(42)
     const stateB = await layersState(pageB)
     expect(stateB.length).toBe(countBefore)
     expect(stateB.some(l => l.sourceType === 'media')).toBe(false)
@@ -590,6 +595,8 @@ test('agent newProject while online takes the session offline first, without wip
 
     // Page B's composition must survive untouched — A's local reset must
     // never have been published as a wiping remote apply.
+    // The window stays: A is offline by the line above, so it has no change
+    // left that could propagate as a barrier, and B is the only other peer.
     await quietWindow(pageA, 500)
     expect((await layersState(pageB)).length).toBe(1)
     expect(await pageB.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('online')
@@ -771,12 +778,21 @@ test('read-only edits are held and published when write access returns', async (
         await window.layersApp._handleLayerChange({ layerId: id, property: 'opacity', value: 42 })
     }, blurId)
     await expect(pageB.locator('.toast-warning')).toBeVisible({ timeout: 30000 })
-    await quietWindow(pageB, 1000)
+    // A barrier rather than a blind window: a change from A that reaches B's
+    // node store proves the session round-tripped after B's refused edit, so a
+    // read-only write that had escaped would have reached A by then too.
+    const baseId = (await layersState(pageA))[0].id
+    await pageA.evaluate(async (id) => {
+        await window.layersApp._handleLayerChange({ layerId: id, property: 'opacity', value: 90 })
+    }, baseId)
+    await expect.poll(() => pageB.evaluate(id => {
+        const node = window.layersApp._onlineAdapter.online.getNodes().find(node => node.id === `L${id}`)
+        return node && JSON.parse(node.text).opacity
+    }, baseId), { timeout: 60000 }).toBe(90)
     expect((await layersState(pageA)).find(l => l.id === blurId)?.opacity).toBe(100)
 
     // A peer keeps working while this guest has an unsent preview. The
     // guest must retain that draft, then catch up unrelated nodes afterward.
-    const baseId = (await layersState(pageA))[0].id
     await pageA.evaluate(async ({ blurId, baseId }) => {
         await window.layersApp._handleLayerChange({ layerId: blurId, property: 'opacity', value: 75 })
         await window.layersApp._handleLayerChange({ layerId: baseId, property: 'opacity', value: 80 })
@@ -785,6 +801,9 @@ test('read-only edits are held and published when write access returns', async (
         const node = window.layersApp._onlineAdapter.online.getNodes().find(node => node.id === `L${id}`)
         return node && JSON.parse(node.text).opacity
     }, baseId), { timeout: 60000 }).toBe(80)
+    // The window stays: while a read-only draft is held the adapter defers
+    // remote applies outright, so this apply has nothing it SHOULD change
+    // locally to wait on. The window is the measurement, that it did not land.
     await quietWindow(pageB, 300)
     expect((await layersState(pageB)).find(layer => layer.id === blurId)?.opacity).toBe(42)
 

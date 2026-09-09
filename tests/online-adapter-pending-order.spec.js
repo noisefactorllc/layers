@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { IN_PAGE_UNTIL } from './waits.js'
 
 test('an SDK-pending parent delete and recreate does not resurrect its old child', async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })
@@ -9,7 +10,8 @@ test('an SDK-pending parent delete and recreate does not resurrect its old child
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -43,15 +45,12 @@ test('an SDK-pending parent delete and recreate does not resurrect its old child
         pending = [{ id, op: 'delete' }, { ...recreated, op: 'upsert' }]
         const before = reads
         handlers.get('remote-node')?.({})
-        const deadline = performance.now() + 10000
-        while (reads <= before || adapter.isApplyingRemote()) {
-            if (performance.now() > deadline) throw new Error('pending replay did not settle')
-            await new Promise(resolve => setTimeout(resolve, 10))
-        }
+        await until(() => reads > before && !adapter.isApplyingRemote(),
+            'the pending replay was read and settled')
         const childCount = app._layers[0].children.length
         adapter.goOffline()
         return { childCount }
-    })
+    }, IN_PAGE_UNTIL)
     expect(result.childCount).toBe(0)
 })
 
@@ -65,7 +64,8 @@ test(`a ${change} during semantic loading never restores the pre-edit model or h
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
 
-    const result = await page.evaluate(async change => {
+    const result = await page.evaluate(async ([change, untilSrc]) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -112,16 +112,9 @@ test(`a ${change} during semantic loading never restores the pre-edit model or h
             committed.push(app._layers[0].opacity)
             return pushUndo(...args)
         }
-        const wait = async predicate => {
-            const deadline = performance.now() + 10000
-            while (!predicate()) {
-                if (performance.now() > deadline) throw new Error('acknowledgement race did not settle')
-                await new Promise(resolve => setTimeout(resolve, 10))
-            }
-        }
         const before = reads
         handlers.get('remote-node')?.({})
-        await wait(() => Boolean(release))
+        await until(() => Boolean(release), 'the semantic loader parked the apply')
         if (change === 'acknowledgement') {
             nodes = nodes.map(node => node.id === id ? { ...desired, version: 2 } : node)
             revision = 2
@@ -140,11 +133,12 @@ test(`a ${change} during semantic loading never restores the pre-edit model or h
             pending = [{ ...latest, op: 'upsert' }]
         }
         release()
-        await wait(() => reads >= before + 2 && !adapter.isApplyingRemote())
+        await until(() => reads >= before + 2 && !adapter.isApplyingRemote(),
+            'the acknowledgement race settled')
         const opacity = app._layers[0].opacity
         adapter.goOffline()
         return { opacity, committed }
-    }, change)
+    }, [change, IN_PAGE_UNTIL])
     expect(result).toEqual({ opacity: change === 'local edit' ? 67 : 42, committed: [] })
 })
 }
@@ -158,7 +152,8 @@ test('joining a room that changes during initial apply catches up without reject
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
 
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
         const { buildNodeModel } = await import('/js/collab/docModel.js')
@@ -172,10 +167,14 @@ test('joining a room that changes during initial apply catches up without reject
         changeOpacity(60)
         let revision = 1
         let status = 'offline'
+        // The adapter reads the session status every time its apply pipeline
+        // wakes up, so counting reads is how this test watches that pipeline
+        // run without asking the clock.
+        let statusReads = 0
         const handlers = new Map()
         const layer = {
             on: (event, handler) => handlers.set(event, handler),
-            getStatus: () => status, getSessionId: () => 'busy12',
+            getStatus: () => { statusReads++; return status }, getSessionId: () => 'busy12',
             getShareUrl: () => 'https://layers.test/?seance=busy12',
             getNodes: () => nodes, getNodeRev: () => revision, getPendingNodeWrites: () => [],
             joinSession: async () => { status = 'online' },
@@ -196,25 +195,22 @@ test('joining a room that changes during initial apply catches up without reject
             return getDefinition(...args)
         }
         const joining = adapter.joinSession('busy12', { skipConfirm: true })
-        const wait = async predicate => {
-            const deadline = performance.now() + 10000
-            while (!predicate()) {
-                if (performance.now() > deadline) throw new Error('busy room join did not settle')
-                await new Promise(resolve => setTimeout(resolve, 10))
-            }
-        }
-        await wait(() => Boolean(release))
+        await until(() => Boolean(release), 'the join parked at its second validation')
         changeOpacity(75)
         revision++
         handlers.get('remote-node')?.({ id, op: 'upsert' })
         // Let the event's apply timer observe the still-held initial apply.
-        await new Promise(resolve => setTimeout(resolve, 180))
+        // The adapter reads the status when that timer fires, so one read
+        // after the event is the timer having run.
+        const coalesceFrom = statusReads
+        await until(() => statusReads > coalesceFrom, 'the coalesced apply timer fired')
         release()
         const sessionId = await joining
-        await wait(() => app._layers[0].opacity === 75 && !adapter.isApplyingRemote())
+        await until(() => app._layers[0].opacity === 75 && !adapter.isApplyingRemote(),
+            'the join caught up to the newer revision')
         const result = { sessionId, status: adapter.getStatus(), opacity: app._layers[0].opacity }
         adapter.goOffline()
         return result
-    })
+    }, IN_PAGE_UNTIL)
     expect(result).toEqual({ sessionId: 'busy12', status: 'online', opacity: 75 })
 })

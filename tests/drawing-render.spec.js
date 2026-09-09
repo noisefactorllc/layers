@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js'
-import { appReady } from './waits.js'
+import { appReady, framePainted } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -16,7 +16,7 @@ test.describe('Drawing layer rendering', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
 
-        const hasColor = await page.evaluate(async () => {
+        await page.evaluate(async () => {
             const app = window.layersApp
             const { createDrawingLayer } = await import('/js/layers/layer-model.js')
             const { createPathStroke } = await import('/js/drawing/stroke-model.js')
@@ -37,10 +37,15 @@ test.describe('Drawing layer rendering', () => {
             await app._rebuild({ force: true })
             app._updateLayerStack()
 
-            // Allow render frame to complete
             app._renderer.render(0)
-            await new Promise(r => setTimeout(r, 200))
+        })
 
+        // The next step reads pixels, so wait on real frames rather than on a
+        // guessed duration: it costs nothing on a fast machine, still waits on
+        // a slow one, and says so if frames stop coming.
+        await framePainted(page)
+
+        const hasColor = await page.evaluate(() => {
             // Read pixels from the WebGL canvas
             const canvas = document.getElementById('canvas')
             const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')

@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js'
-import { appReady } from './waits.js'
+import { appReady, IN_PAGE_UNTIL } from './waits.js'
 
 // The eraser's class doc promises: "Drag across multiple strokes to delete
 // them all in one undo step." But _tryDelete pushed an undo snapshot per
@@ -41,7 +41,8 @@ test('erasing multiple strokes in one drag is a single undo step', async ({ page
     await page.click('#eraserToolBtn')
 
     // Drag across both strokes: down on stroke A, move onto stroke B, release.
-    const afterErase = await page.evaluate(async () => {
+    const afterErase = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         const overlay = document.getElementById('selectionOverlay')
         const rect = overlay.getBoundingClientRect()
@@ -53,19 +54,32 @@ test('erasing multiple strokes in one drag is a single undo step', async ({ page
         fire('mousedown', 125, 125) // hits stroke A
         fire('mousemove', 325, 325) // hits stroke B
         fire('mouseup', 325, 325)
-        await new Promise(r => setTimeout(r, 300))
+        // The deletes run on the tool's async tail, and the gesture holds the
+        // project lifecycle until they and the single undo push are done, so
+        // its release is the gesture finishing. The count is then read, not
+        // guessed at.
+        await until(() => !app._projectLifecycleActive,
+            'the erase gesture released the project lifecycle')
         const layer = app._layers.find(l => l.sourceType === 'drawing')
         return layer ? layer.strokes.length : -1
-    })
+    }, IN_PAGE_UNTIL)
     expect(afterErase).toBe(0)
 
     // A single undo should bring back BOTH strokes (one coalesced step).
-    const afterUndo = await page.evaluate(async () => {
+    const afterUndo = await page.evaluate(async (untilSrc) => {
+        const until = eval(untilSrc)
         const app = window.layersApp
         await app._undo()
-        await new Promise(r => setTimeout(r, 300))
+        // Wait for the restore to put strokes back rather than for a duration.
+        // Deliberately "any", not "both": the coalescing bug this test hunts
+        // restores one, and the assertion below has to see that number to
+        // report it.
+        await until(() => {
+            const restored = app._layers.find(l => l.sourceType === 'drawing')
+            return (restored?.strokes?.length ?? 0) > 0
+        }, 'undo restored the erased strokes')
         const layer = app._layers.find(l => l.sourceType === 'drawing')
         return layer ? layer.strokes.length : -1
-    })
+    }, IN_PAGE_UNTIL)
     expect(afterUndo).toBe(2)
 })
