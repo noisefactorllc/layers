@@ -24,6 +24,7 @@ import {
     assertRemoteNodeSemantics,
     isLayersSession,
     overlayPendingWrites,
+    rememberMaskWire,
     fnv1a
 } from './docModel.js'
 
@@ -571,7 +572,15 @@ export function createLayersOnlineAdapter(app, deps = {}) {
 
         const { layers, canvas, mediaPlaceholderLayerIds } =
             applyNodesToComposition(effectiveNodes, app._layers)
+        // decodeMasks() replaces each base64 PNG with an ImageData; pair the
+        // two first so republishing a mask reuses the bytes it arrived as
+        // instead of this browser's own encoding of the same pixels.
+        const adoptedMaskWire = layers.map(layer =>
+            typeof layer.mask === 'string' ? layer.mask : null)
         await decodeMasks(layers)
+        layers.forEach((layer, index) => {
+            if (adoptedMaskWire[index]) rememberMaskWire(layer.mask, adoptedMaskWire[index])
+        })
         if (!isCurrentSession(request)) return false
 
         // A gesture may have started, or a local edit may have armed a

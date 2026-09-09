@@ -268,6 +268,43 @@ function encodeMaskToBase64(mask) {
     return canvas.toDataURL('image/png')
 }
 
+// PNG bytes are encoder-specific: the same pixels serialize differently in
+// Chromium, Firefox and WebKit. Re-encoding a mask that arrived from a peer
+// would therefore re-stamp maskMeta.hash with bytes this browser never sent,
+// leaving the hash describing something other than the chunk nodes the server
+// actually holds, so every later joiner reassembles the chunks, fails the hash
+// check and drops the mask. Remembering the wire form a mask arrived as keeps
+// the hash and the chunks describing each other.
+//
+// Keyed by ImageData identity, which is a sound change signal: every mask
+// write path replaces the object rather than mutating it in place (a mask
+// stroke assigns ctx.getImageData(...), adding a mask constructs a new
+// ImageData). A repainted mask is therefore a cache miss and is re-encoded.
+// The cache doubles as the encode memo for the publish funnel, which rebuilds
+// the model several times per apply and once per 150ms publish tick.
+const maskWireCache = new WeakMap()
+
+/**
+ * Record the exact wire bytes a mask arrived as, so republishing it does not
+ * re-encode it. Call with the decoded ImageData and the base64 PNG data URL it
+ * was decoded from.
+ * @param {ImageData} mask
+ * @param {string} data
+ */
+export function rememberMaskWire(mask, data) {
+    if (!mask || typeof data !== 'string' || !data) return
+    maskWireCache.set(mask, { data, hash: fnv1a(data) })
+}
+
+/** Wire form (base64 + hash) for a mask, encoding and memoizing on a miss. */
+function maskWireFor(mask) {
+    const cached = maskWireCache.get(mask)
+    if (cached) return cached
+    const data = encodeMaskToBase64(mask)
+    const entry = { data, hash: fnv1a(data) }
+    maskWireCache.set(mask, entry)
+    return entry
+}
 
 // ---------------------------------------------------------------------
 // buildNodeModel
@@ -319,8 +356,7 @@ export function buildNodeModel(layers, canvas) {
         let maskMeta = null
         let maskNodes = []
         if (layer.mask) {
-            const base64 = encodeMaskToBase64(layer.mask)
-            const hash = fnv1a(base64)
+            const { data: base64, hash } = maskWireFor(layer.mask)
             const chunks = chunkBase64(base64)
             maskNodes = chunks.map((slice, i) => ({
                 id: maskNodeId(layer.id, i),
