@@ -696,3 +696,47 @@ test('a peer edit does not throw the local user out of mask editing', async ({ p
     expect(await pageA.evaluate(() => window.layersApp._maskEditMode)).toBe(true)
     expect(await pageA.evaluate(() => window.layersApp._maskEditLayerId)).toBe(baseId)
 })
+
+test('read-only edits are held and published when write access returns', async ({ page, context }) => {
+    const pageA = page
+    const pageB = await context.newPage()
+    await preparePage(pageA)
+    await preparePage(pageB)
+
+    await gotoApp(pageA)
+    await createProject(pageA, 'solid', 128)
+    await pageA.evaluate(async () => { await window.layersApp._handleAddEffectLayer('filter/blur') })
+    const sessionId = await takeOnline(pageA)
+
+    await gotoApp(pageB)
+    await createProject(pageB, 'solid', 128)
+    await joinById(pageB, sessionId)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(2)
+    const blurId = (await layersState(pageB))[1].id
+
+    // The dialog has no moderation UI, so drive the owner verb over the wire.
+    const targetUser = await pageB.evaluate(
+        () => window.layersApp._onlineAdapter.online.user.user_id)
+    const setReadonly = (readonly) => pageA.evaluate(({ target, ro }) => {
+        window.layersApp._onlineAdapter.online._send(
+            { type: 'mod-readonly', target_user: target, readonly: ro })
+    }, { target: targetUser, ro: readonly })
+
+    await setReadonly(true)
+    await expect.poll(() => pageB.evaluate(
+        () => window.layersApp._onlineAdapter?.getStatus()), { timeout: 30000 }).toBe('readonly')
+
+    await pageB.evaluate(async (id) => {
+        await window.layersApp._handleLayerChange({ layerId: id, property: 'opacity', value: 42 })
+    }, blurId)
+    await expect(pageB.locator('.toast-warning')).toBeVisible({ timeout: 30000 })
+    await pageB.waitForTimeout(1000)
+    expect((await layersState(pageA)).find(l => l.id === blurId)?.opacity).toBe(100)
+
+    // Lifting read-only must replay the held work rather than strand it.
+    await setReadonly(false)
+    await expect.poll(() => pageB.evaluate(
+        () => window.layersApp._onlineAdapter?.getStatus()), { timeout: 30000 }).toBe('online')
+    await expect.poll(async () => (await layersState(pageA)).find(l => l.id === blurId)?.opacity,
+        { timeout: 60000 }).toBe(42)
+})

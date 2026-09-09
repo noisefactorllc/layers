@@ -41,6 +41,7 @@ const DEFERRED_APPLY_POLL_MS = 120
 const APPLY_COALESCE_MS = 120
 // Coalesces a burst of node-reject events into a single toast.
 const REJECT_TOAST_COOLDOWN_MS = 2000
+const READ_ONLY_TOAST_COOLDOWN_MS = 10000
 const DELETE_REJECTION_WINDOW_MS = 2000
 const MAX_PENDING_DELETE_REJECTIONS = 256
 // Bounds the in-flight write map. A composition big enough to exceed this is
@@ -114,6 +115,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     let pendingDeleteRejections = new Map() // deleted node id -> rejection deadline
     let pendingDeleteExpiryTimer = null
     let rejectToastCooldown = false    // coalesces a burst of node-reject events into one toast
+    let readOnlyToastCooldown = false  // one notice per spell of read-only editing
     let remoteLifecycleToken = null
     let sessionEpoch = 0
     let transitionIntentGeneration = 0
@@ -207,6 +209,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         })
         layer.on('remote-node', () => {
             if (layer === online) scheduleApply(currentSessionRequest(layer))
+        })
+        // Emitted for a write the SDK refuses to queue at all. No adapter has
+        // ever listened, so these vanished silently (findings sdk.md SDK-17).
+        layer.on('readonly-write', () => {
+            if (layer === online) notifyReadOnly()
         })
         layer.on('node-reject', (info) => {
             if (layer !== online) return
@@ -916,6 +923,16 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         }
     }
 
+    // A read-only connection drops every write. Say so, rather than letting the
+    // user keep editing into a session that is not receiving any of it.
+    function notifyReadOnly() {
+        if (readOnlyToastCooldown) return
+        readOnlyToastCooldown = true
+        bestEffortSessionEffect('Failed to show read-only notice',
+            () => toast.warning('You have view only access in this session, so your changes stay on this device'))
+        setTimeout(() => { readOnlyToastCooldown = false }, READ_ONLY_TOAST_COOLDOWN_MS)
+    }
+
     function nextLayerCounterPast(layers) {
         let max = -1
         const scan = (id) => {
@@ -1016,6 +1033,15 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         if (!isCurrentSession(request) || !isOnline()) return
         if (applyingRemote) {
             schedulePublish()
+            return
+        }
+        if (getStatus() === 'readonly') {
+            // The SDK drops writes from a read-only connection. Returning
+            // before lastPublished advances keeps the diff describing this
+            // work, so it publishes if write access comes back (the status
+            // handler re-arms then); advancing it would strand the edits and
+            // let the next remote apply erase them with no trace.
+            notifyReadOnly()
             return
         }
         const nextModel = buildNodeModel(app._layers, canvasDims())
