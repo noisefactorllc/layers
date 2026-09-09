@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, layerCount } from './waits.js'
 
 async function createTransparentProject(page, size = 1024) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -8,10 +9,11 @@ async function createTransparentProject(page, size = 1024) {
     await page.fill('#canvas-height', String(size))
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 async function addColorLayer(page, color, size = 100) {
+    const before = await page.evaluate(() => window.layersApp._layers.length)
     await page.evaluate(async ({ color, size }) => {
         const canvas = document.createElement('canvas')
         canvas.width = size
@@ -23,7 +25,7 @@ async function addColorLayer(page, color, size = 100) {
         const file = new File([blob], 'test.png', { type: 'image/png' })
         await window.layersApp._handleAddMediaLayer(file, 'image')
     }, { color, size })
-    await page.waitForTimeout(500)
+    await layerCount(page, before + 1)
 }
 
 test.describe('Move tool', () => {
@@ -71,7 +73,9 @@ test.describe('Move tool', () => {
 
         await page.mouse.move(box.x + 200, box.y + 200)
         await page.mouse.down()
-        await page.mouse.move(box.x + 250, box.y + 280)
+        // One move to the destination can deliver a single pointermove, and a
+        // drag sized from movement deltas then commits no displacement.
+        await page.mouse.move(box.x + 250, box.y + 280, { steps: 12 })
         await page.mouse.up()
 
         // Check position changed
@@ -106,7 +110,7 @@ test.describe('Move tool', () => {
             sm._selectionPath = { type: 'rect', x: 50, y: 50, width: 100, height: 100 }
             sm._startAnimation()
         })
-        await page.waitForTimeout(200)
+        await appState(page, () => window.layersApp._selectionManager.hasSelection())
 
         // Activate move tool
         await page.click('#moveToolBtn')
@@ -117,7 +121,7 @@ test.describe('Move tool', () => {
 
         await page.mouse.move(box.x + 100, box.y + 100)
         await page.mouse.down()
-        await page.mouse.move(box.x + 150, box.y + 150)
+        await page.mouse.move(box.x + 150, box.y + 150, { steps: 12 })
 
         // Wait for extraction to complete by polling for the new layer
         await page.waitForFunction(
@@ -127,7 +131,8 @@ test.describe('Move tool', () => {
         )
 
         await page.mouse.up()
-        await page.waitForTimeout(200)
+        // The gesture holds the lifecycle lease until the drag has committed.
+        await appState(page, () => !window.layersApp._projectLifecycleOwner)
 
         // Verify new layer was created
         const finalLayerCount = await page.evaluate(() => window.layersApp._layers.length)

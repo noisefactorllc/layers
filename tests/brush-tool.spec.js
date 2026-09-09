@@ -1,5 +1,6 @@
 // tests/brush-tool.spec.js
 import { test, expect } from './fixtures.js'
+import { appReady, appState, strokeCount } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -7,7 +8,7 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 test.describe('Brush tool', () => {
@@ -35,7 +36,7 @@ test.describe('Brush tool', () => {
             )
         }
         await page.mouse.up()
-        await page.waitForTimeout(300)
+        await strokeCount(page, 1)
 
         const result = await page.evaluate(() => {
             const app = window.layersApp
@@ -68,16 +69,18 @@ test.describe('Brush tool', () => {
         // First stroke
         await page.mouse.move(box.x + 100, box.y + 100)
         await page.mouse.down()
-        await page.mouse.move(box.x + 200, box.y + 200)
+        // One move to the destination can deliver a single pointermove, and a
+        // stroke sized from movement deltas then commits with no size.
+        await page.mouse.move(box.x + 200, box.y + 200, { steps: 12 })
         await page.mouse.up()
-        await page.waitForTimeout(300)
+        await strokeCount(page, 1)
 
         // Second stroke
         await page.mouse.move(box.x + 300, box.y + 100)
         await page.mouse.down()
-        await page.mouse.move(box.x + 400, box.y + 200)
+        await page.mouse.move(box.x + 400, box.y + 200, { steps: 12 })
         await page.mouse.up()
-        await page.waitForTimeout(300)
+        await strokeCount(page, 2)
 
         const result = await page.evaluate(() => {
             const app = window.layersApp
@@ -115,9 +118,9 @@ test.describe('Brush tool', () => {
         const box = await overlay.boundingBox()
         await page.mouse.move(box.x + 100, box.y + 100)
         await page.mouse.down()
-        await page.mouse.move(box.x + 180, box.y + 180)
+        await page.mouse.move(box.x + 180, box.y + 180, { steps: 12 })
         await page.mouse.up()
-        await page.waitForTimeout(100)
+        await appState(page, () => window.__brushCommitErrors.length > 0)
 
         const errors = await page.evaluate(() => {
             console.error = window.__brushOriginalConsoleError

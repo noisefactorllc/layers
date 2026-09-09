@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState } from './waits.js'
 
 test.describe('Eyedropper tool', () => {
     test('eyedropper button exists', async ({ page }) => {
@@ -9,7 +10,7 @@ test.describe('Eyedropper tool', () => {
         await page.click('.media-option[data-type="solid"]')
         await page.click('.action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         const btn = await page.$('#eyedropperToolBtn')
         expect(btn).not.toBeNull()
@@ -23,7 +24,7 @@ test.describe('Eyedropper tool', () => {
         await page.click('.media-option[data-type="solid"]')
         await page.click('.action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         await page.keyboard.press('i')
         const tool = await page.evaluate(() => window.layersApp._currentTool)
@@ -38,7 +39,7 @@ test.describe('Eyedropper tool', () => {
         await page.click('.media-option[data-type="solid"]')
         await page.click('.action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         // Start with brush tool
         await page.click('#brushToolBtn')
@@ -50,7 +51,9 @@ test.describe('Eyedropper tool', () => {
         const overlay = await page.$('#selectionOverlay')
         const box = await overlay.boundingBox()
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-        await page.waitForTimeout(300)
+        // The sampler sets the foreground colour and only then restores the
+        // previous tool, so the tool flipping back is the whole click landing.
+        await appState(page, () => window.layersApp._currentTool === 'brush')
 
         // Should have returned to brush and sampled a non-black color
         const result = await page.evaluate(() => ({
@@ -69,7 +72,7 @@ test.describe('Eyedropper tool', () => {
         await page.click('.media-option[data-type="solid"]')
         await page.click('.action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         await page.click('#eyedropperToolBtn')
 

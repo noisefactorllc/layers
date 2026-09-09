@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState } from './waits.js'
 import { seedClipboardRead } from './helpers/clipboard.js'
 
 async function createTransparentProject(page) {
@@ -7,7 +8,7 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 async function copyColorSquareToClipboard(page, color) {
@@ -19,7 +20,7 @@ async function drawMouseSelection(page, overlayBox, startOffset, endOffset) {
     await page.mouse.down()
     await page.mouse.move(overlayBox.x + endOffset.x, overlayBox.y + endOffset.y, { steps: 10 })
     await page.mouse.up()
-    await page.waitForTimeout(500)
+    await appState(page, () => window.layersApp._selectionManager.hasSelection())
 }
 
 function getSelectionInfo() {
@@ -58,7 +59,11 @@ test.describe('Paste with real mouse-drawn selection', () => {
         expect(selectionInfo.aspectRatio).toBeLessThan(1.1)
 
         await page.evaluate(async () => { await window.layersApp._handlePaste() })
-        await page.waitForTimeout(1000)
+        // The next read pulls bytes off the pasted layer's media file.
+        await appState(page, () => {
+            const layers = window.layersApp._layers
+            return layers[layers.length - 1]?.mediaFile instanceof Blob
+        })
 
         // Verify pasted layer is selection-sized with offset
         const pastedInfo = await page.evaluate(() => {
@@ -118,7 +123,11 @@ test.describe('Paste with real mouse-drawn selection', () => {
         expect(selectionInfo.aspectRatio).toBeLessThan(2.5)
 
         await page.evaluate(async () => { await window.layersApp._handlePaste() })
-        await page.waitForTimeout(1000)
+        // The next read pulls bytes off the pasted layer's media file.
+        await appState(page, () => {
+            const layers = window.layersApp._layers
+            return layers[layers.length - 1]?.mediaFile instanceof Blob
+        })
 
         const pastedInfo = await page.evaluate(() => {
             const layers = window.layersApp._layers

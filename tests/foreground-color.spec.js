@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, strokeCount } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -6,7 +7,7 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 test.describe('Foreground color', () => {
@@ -55,9 +56,11 @@ test.describe('Foreground color', () => {
         const box = await overlay.boundingBox()
         await page.mouse.move(box.x + 100, box.y + 100)
         await page.mouse.down()
-        await page.mouse.move(box.x + 200, box.y + 200)
+        // One move to the destination can deliver a single pointermove, and a
+        // stroke sized from movement deltas then commits with no size.
+        await page.mouse.move(box.x + 200, box.y + 200, { steps: 12 })
         await page.mouse.up()
-        await page.waitForTimeout(300)
+        await strokeCount(page, 1)
 
         const strokeColor = await page.evaluate(() => {
             const layer = window.layersApp._layers.find(l => l.sourceType === 'drawing')

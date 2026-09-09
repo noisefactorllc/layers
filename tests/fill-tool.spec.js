@@ -1,5 +1,6 @@
 // tests/fill-tool.spec.js
 import { test, expect } from './fixtures.js'
+import { appReady, appState } from './waits.js'
 
 test.describe('Fill tool', () => {
     test('clicking on canvas creates a filled raster layer', async ({ page }) => {
@@ -11,7 +12,7 @@ test.describe('Fill tool', () => {
         await page.click('.media-option[data-type="solid"]')
         await page.click('.action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         const initialLayerCount = await page.evaluate(() =>
             window.layersApp._layers.length
@@ -24,7 +25,8 @@ test.describe('Fill tool', () => {
         const overlay = await page.$('#selectionOverlay')
         const box = await overlay.boundingBox()
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-        await page.waitForTimeout(500)
+        await appState(page, (initial) => window.layersApp._layers.length > initial,
+            initialLayerCount)
 
         const result = await page.evaluate((initial) => {
             const app = window.layersApp
@@ -70,7 +72,11 @@ test.describe('Fill tool', () => {
         const overlay = await page.$('#selectionOverlay')
         const box = await overlay.boundingBox()
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-        await page.waitForTimeout(500)
+        // The blocked path ends in a warning toast and releases the gesture's
+        // lifecycle lease just behind it. Nothing else is observable, because
+        // the whole point of the test is that nothing else changed.
+        await page.locator('.toast.toast-warning').waitFor({ state: 'visible' })
+        await appState(page, () => !window.layersApp._projectLifecycleOwner)
 
         const after = await page.evaluate(() => {
             const app = window.layersApp
@@ -114,7 +120,7 @@ test.describe('Fill tool', () => {
         const overlay = await page.$('#selectionOverlay')
         const box = await overlay.boundingBox()
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-        await page.waitForTimeout(100)
+        await appState(page, () => window.__fillCommitErrors.length > 0)
 
         const errors = await page.evaluate(() => {
             console.error = window.__fillOriginalConsoleError

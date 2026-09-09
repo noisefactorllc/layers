@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, layerCount } from './waits.js'
 
 function readCenterAlpha(canvasEl) {
     const ctx = canvasEl.getContext('webgl2') || canvasEl.getContext('webgl')
@@ -22,13 +23,13 @@ test('dragging opacity slider on non-base layer changes rendered output', async 
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(2000)
+    await appReady(page)
 
     // Add a second layer so we have a non-base (draggable) layer to test
     await page.evaluate(async () => {
         await window.layersApp._handleAddEffectLayer('synth/solid')
     })
-    await page.waitForTimeout(1000)
+    await layerCount(page, 2)
 
     // Get the non-base layer's opacity slider (first layer-item in DOM = top layer)
     const nonBaseItem = page.locator('layer-item').first()
@@ -46,12 +47,18 @@ test('dragging opacity slider on non-base layer changes rendered output', async 
 
     await page.mouse.move(startX, startY)
     await page.mouse.down()
-    for (let i = 0; i <= 10; i++) {
-        await page.mouse.move(startX + (endX - startX) * (i / 10), startY)
-        await page.waitForTimeout(30)
-    }
+    // Stepping the move is what makes this a drag rather than a jump.
+    await page.mouse.move(endX, startY, { steps: 12 })
     await page.mouse.up()
-    await page.waitForTimeout(1000)
+    // Every move dispatched a layer-change, and each one queued a pointer
+    // mutation before mouse-up returned. The drag has landed when that queue
+    // has drained: nothing holds the lifecycle lease, nothing is waiting for
+    // it, and no publish transaction is open.
+    await appState(page, () => {
+        const app = window.layersApp
+        return !app._projectLifecycleOwner && app._projectLifecycleWaiters === 0
+            && app._publishTransactionDepth === 0
+    })
 
     const state = await page.evaluate(() => {
         const app = window.layersApp
