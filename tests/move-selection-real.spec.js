@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, layerCount } from './waits.js'
 
 test.describe('Move tool - real user flow', () => {
     test('draw selection then drag with move tool extracts to new layer', async ({ page }) => {
@@ -11,7 +12,7 @@ test.describe('Move tool - real user flow', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         // Add image layer (this part uses evaluate, but everything else is real mouse events)
         // Use full canvas size (1024x1024) to ensure selection overlaps with pixels
@@ -26,7 +27,7 @@ test.describe('Move tool - real user flow', () => {
             const file = new File([blob], 'test.png', { type: 'image/png' })
             await window.layersApp._handleAddMediaLayer(file, 'image')
         })
-        await page.waitForTimeout(1000)
+        await layerCount(page, 2)
 
         // Verify layer was added
         const layerCountAfterAdd = await page.evaluate(() => window.layersApp._layers.length)
@@ -34,8 +35,13 @@ test.describe('Move tool - real user flow', () => {
 
         // Click on the media layer in the layer stack to select it
         // Layer stack renders in reverse order: first-child = top layer (media), last-child = base layer
+        const mediaLayerId = await page.evaluate(() => window.layersApp._layers[1].id)
         await page.click('layer-stack .layer-item:first-child')
-        await page.waitForTimeout(200)
+        await appState(
+            page,
+            (id) => !!window.layersApp._layerStack?.selectedLayerIds?.includes(id),
+            mediaLayerId,
+        )
 
         // Verify layer is selected
         const activeLayerName = await page.evaluate(() => window.layersApp._getActiveLayer()?.name)
@@ -46,12 +52,15 @@ test.describe('Move tool - real user flow', () => {
         const box = await overlay.boundingBox()
 
         // Draw a selection rectangle using real mouse events
-        // Selection tool should be active by default
+        // Selection tool should be active by default.
+        // The marquee is sized in the mousemove handler (mousedown clears the
+        // path), so the drag has to be stepped: a single move can deliver one
+        // coalesced pointermove, and a marquee that never moved has no size.
         await page.mouse.move(box.x + 100, box.y + 100)
         await page.mouse.down()
-        await page.mouse.move(box.x + 250, box.y + 250)
+        await page.mouse.move(box.x + 250, box.y + 250, { steps: 12 })
         await page.mouse.up()
-        await page.waitForTimeout(500)
+        await appState(page, () => window.layersApp._selectionManager.hasSelection())
 
         // Verify selection exists
         const hasSelection = await page.evaluate(() => window.layersApp._selectionManager.hasSelection())
@@ -59,7 +68,7 @@ test.describe('Move tool - real user flow', () => {
 
         // Click move tool button
         await page.click('#moveToolBtn')
-        await page.waitForTimeout(200)
+        await appState(page, () => window.layersApp._moveTool?.isActive === true)
 
         // Verify move tool is active
         const moveToolActive = await page.evaluate(() => window.layersApp._moveTool?.isActive)
@@ -83,7 +92,8 @@ test.describe('Move tool - real user flow', () => {
         console.log('Starting drag at', box.x + 175, box.y + 175)
         await page.mouse.move(box.x + 175, box.y + 175)
         await page.mouse.down()
-        await page.waitForTimeout(100)
+        // The gesture was accepted: the tool left IDLE for EXTRACTING.
+        await appState(page, () => window.layersApp._moveTool?.isDragging === true)
 
         // Check state after mousedown
         const stateAfterDown = await page.evaluate(() => ({
@@ -92,8 +102,7 @@ test.describe('Move tool - real user flow', () => {
         }))
         console.log('State after mousedown:', stateAfterDown)
 
-        await page.mouse.move(box.x + 300, box.y + 300)
-        await page.waitForTimeout(500)
+        await page.mouse.move(box.x + 300, box.y + 300, { steps: 12 })
 
         // Check state after mousemove
         const stateAfterMove = await page.evaluate(() => ({
@@ -120,7 +129,9 @@ test.describe('Move tool - real user flow', () => {
         }
 
         await page.mouse.up()
-        await page.waitForTimeout(500)
+        // The gesture is finished only when the tool is back in IDLE: a mouseup
+        // during EXTRACTING is deferred until the async extraction resolves.
+        await appState(page, () => window.layersApp._moveTool?.isDragging === false)
 
         // Verify new layer was created
         const layerCountAfter = await page.evaluate(() => window.layersApp._layers.length)

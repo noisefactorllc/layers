@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, layerCount } from './waits.js'
 
 const FIXTURE_SIZE = 512
 
@@ -10,10 +11,11 @@ async function createTransparentProject(page) {
     await page.fill('#canvas-height', String(FIXTURE_SIZE))
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 async function addColorLayer(page, color, size = FIXTURE_SIZE) {
+    const before = await page.evaluate(() => window.layersApp._layers.length)
     await page.evaluate(async ({ color, size }) => {
         const canvas = document.createElement('canvas')
         canvas.width = size
@@ -25,7 +27,7 @@ async function addColorLayer(page, color, size = FIXTURE_SIZE) {
         const file = new File([blob], 'test.png', { type: 'image/png' })
         await window.layersApp._handleAddMediaLayer(file, 'image')
     }, { color, size })
-    await page.waitForTimeout(500)
+    await layerCount(page, before + 1)
 }
 
 /**
@@ -60,7 +62,7 @@ async function getActiveLayerPixel(page, x, y) {
  */
 async function cloneViaDrag(page, initialLayerCount, dragDistance = 100) {
     await page.click('#cloneToolBtn')
-    await page.waitForTimeout(200)
+    await appState(page, () => window.layersApp._cloneTool?.isActive === true)
 
     const canvas = await page.$('#selectionOverlay')
     const box = await canvas.boundingBox()
@@ -73,13 +75,29 @@ async function cloneViaDrag(page, initialLayerCount, dragDistance = 100) {
         initialLayerCount + 1,
         { timeout: 5000 }
     )
+    // The duplicate lands in the model a beat before the tool leaves EXTRACTING,
+    // and mousemove is dropped in any state but DRAGGING, so wait for the state
+    // itself rather than for the layer that precedes it.
+    await appState(page, () => window.layersApp._cloneTool?._state === 'dragging')
 
-    // Now drag AFTER extraction - this is when the layer actually moves
-    await page.mouse.move(box.x + 200 + dragDistance, box.y + 200 + dragDistance)
-    await page.waitForTimeout(100)
+    const positionBefore = await page.evaluate(() => {
+        const layer = window.layersApp._getActiveLayer()
+        return { x: layer?.offsetX || 0, y: layer?.offsetY || 0 }
+    })
+
+    // Now drag AFTER extraction - this is when the layer actually moves.
+    // Stepped: the tool positions the layer from the pointer delta, and a
+    // single move can arrive as one coalesced pointermove.
+    await page.mouse.move(box.x + 200 + dragDistance, box.y + 200 + dragDistance, { steps: 12 })
+    await appState(page, (start) => {
+        const layer = window.layersApp._getActiveLayer()
+        return (layer?.offsetX || 0) !== start.x || (layer?.offsetY || 0) !== start.y
+    }, positionBefore)
 
     await page.mouse.up()
-    await page.waitForTimeout(300)
+    // Back to IDLE: a mouseup taken during EXTRACTING is deferred until the
+    // async duplication resolves, so the gesture is over only on the state.
+    await appState(page, () => window.layersApp._cloneTool?.isDragging === false)
 }
 
 test.describe('Clone tool', () => {
@@ -130,7 +148,7 @@ test.describe('Clone tool', () => {
             sm._selectionPath = { type: 'rect', x: 100, y: 100, width: 200, height: 200 }
             sm._startAnimation()
         })
-        await page.waitForTimeout(200)
+        await appState(page, () => window.layersApp._selectionManager.hasSelection())
 
         await cloneViaDrag(page, initialCount)
 
@@ -167,7 +185,7 @@ test.describe('Clone tool', () => {
             sm._selectionPath = { type: 'rect', x: 100, y: 100, width: 200, height: 200 }
             sm._startAnimation()
         })
-        await page.waitForTimeout(200)
+        await appState(page, () => window.layersApp._selectionManager.hasSelection())
 
         await cloneViaDrag(page, initialCount)
 
