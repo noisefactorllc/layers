@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, framePainted, layerItem, layerPresent } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -6,11 +7,11 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 async function addColorLayer(page, color, size = 100) {
-    await page.evaluate(async ({ color, size }) => {
+    const layerId = await page.evaluate(async ({ color, size }) => {
         const canvas = document.createElement('canvas')
         canvas.width = size
         canvas.height = size
@@ -19,9 +20,14 @@ async function addColorLayer(page, color, size = 100) {
         ctx.fillRect(0, 0, size, size)
         const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
         const file = new File([blob], 'test.png', { type: 'image/png' })
-        await window.layersApp._handleAddMediaLayer(file, 'image')
+        const outcome = await window.layersApp._handleAddMediaLayer(file, 'image')
+        return outcome.layerId
     }, { color, size })
-    await page.waitForTimeout(500)
+    // The add is awaited above; these are the model entry and the layer row
+    // that one commit produces, and the callers below read one or the other.
+    await layerPresent(page, layerId)
+    await layerItem(page, layerId)
+    return layerId
 }
 
 test.describe('Transform tool', () => {
@@ -64,7 +70,7 @@ test.describe('Transform tool', () => {
 
         // Activate transform tool
         await page.click('#transformToolBtn')
-        await page.waitForTimeout(200)
+        await appState(page, () => window.layersApp._currentTool === 'transform')
 
         // Verify transform tool is active
         const isTransformActive = await page.evaluate(() => {
@@ -74,7 +80,7 @@ test.describe('Transform tool', () => {
 
         // Press Escape — should return to selection tool
         await page.keyboard.press('Escape')
-        await page.waitForTimeout(200)
+        await appState(page, () => window.layersApp._currentTool === 'selection')
 
         const isSelectionActive = await page.evaluate(() => {
             return document.getElementById('selectionToolBtn').classList.contains('active')
@@ -258,12 +264,16 @@ test.describe('Transform tool', () => {
         await addColorLayer(page, 'red', 200)
 
         // Select the media layer
-        await page.evaluate(() => {
+        const selectedId = await page.evaluate(() => {
             const layers = window.layersApp._layers
             const topLayer = layers[layers.length - 1]
             window.layersApp._layerStack.selectedLayerId = topLayer.id
+            return topLayer.id
         })
-        await page.waitForTimeout(200)
+        // Selecting fires selection-change, which is what makes the layer the
+        // one _getActiveLayer() returns to every step below.
+        await appState(
+            page, (id) => window.layersApp._getActiveLayer()?.id === id, selectedId)
 
         // Delete all transform fields to simulate an old project layer
         await page.evaluate(() => {
@@ -323,12 +333,16 @@ test.describe('Transform tool', () => {
         await addColorLayer(page, 'green', 200)
 
         // Select the media layer
-        await page.evaluate(() => {
+        const selectedId = await page.evaluate(() => {
             const layers = window.layersApp._layers
             const topLayer = layers[layers.length - 1]
             window.layersApp._layerStack.selectedLayerId = topLayer.id
+            return topLayer.id
         })
-        await page.waitForTimeout(200)
+        // Selecting fires selection-change, which is what makes the layer the
+        // one _getActiveLayer() returns to every step below.
+        await appState(
+            page, (id) => window.layersApp._getActiveLayer()?.id === id, selectedId)
 
         // Ensure starting state: flipH is false
         await page.evaluate(() => {
@@ -337,8 +351,16 @@ test.describe('Transform tool', () => {
         })
 
         // Flip horizontally via the app method
+        const revisionBeforeFlip = await page.evaluate(
+            () => window.layersApp._projectMutationRevision)
         await page.evaluate(() => window.layersApp._flipActiveLayer('horizontal'))
-        await page.waitForTimeout(200)
+        // The flip commits through _commitModelMutation, whose tail marks the
+        // project dirty and bumps the mutation revision.
+        await appState(
+            page,
+            (before) => window.layersApp._projectMutationRevision > before,
+            revisionBeforeFlip,
+        )
 
         // Verify flipH is now true
         const flipHAfterFlip = await page.evaluate(() => {
@@ -347,8 +369,20 @@ test.describe('Transform tool', () => {
         expect(flipHAfterFlip).toBe(true)
 
         // Undo with Cmd+Z
+        // Nothing here is awaited: the keydown handler queues the undo and
+        // returns. _undo() flushes any pending undo debounce synchronously, so
+        // the only thing left in flight is the restore, which has landed once
+        // the restored layer set is committed and the lifecycle is released.
+        const revisionBeforeUndo = await page.evaluate(
+            () => window.layersApp._projectMutationRevision)
         await page.keyboard.press('Meta+z')
-        await page.waitForTimeout(800) // wait for debounce + restore
+        await appState(
+            page,
+            (before) => window.layersApp._projectMutationRevision > before
+                && !window.layersApp._restoring
+                && !window.layersApp._projectLifecycleActive,
+            revisionBeforeUndo,
+        )
 
         // Verify flipH is back to false
         const flipHAfterUndo = await page.evaluate(() => {
@@ -364,16 +398,28 @@ test.describe('Transform tool', () => {
         await addColorLayer(page, 'blue', 200)
 
         // Select the media layer
-        await page.evaluate(() => {
+        const selectedId = await page.evaluate(() => {
             const layers = window.layersApp._layers
             const topLayer = layers[layers.length - 1]
             window.layersApp._layerStack.selectedLayerId = topLayer.id
+            return topLayer.id
         })
-        await page.waitForTimeout(200)
+        // Selecting fires selection-change, which is what makes the layer the
+        // one _getActiveLayer() returns to every step below.
+        await appState(
+            page, (id) => window.layersApp._getActiveLayer()?.id === id, selectedId)
 
         // Activate transform tool
         await page.click('#transformToolBtn')
-        await page.waitForTimeout(300)
+        // The drags below convert between the overlay's client rect and canvas
+        // pixels, so the tool must be live and the overlay laid out at a real size.
+        await appState(page, () => {
+            const overlay = document.getElementById('selectionOverlay')
+            const rect = overlay?.getBoundingClientRect()
+            return window.layersApp._currentTool === 'transform'
+                && Boolean(rect) && rect.width > 0 && rect.height > 0
+        })
+        await framePainted(page)
 
         // Get initial scale values
         const initialScale = await page.evaluate(() => {
@@ -431,7 +477,9 @@ test.describe('Transform tool', () => {
                 stateAfterDown
             }
         })
-        await page.waitForTimeout(300)
+        // mouseup returns the transform FSM to idle; the scale the assertions
+        // read was applied synchronously by the mousemove inside the dispatch.
+        await appState(page, () => window.layersApp._transformTool._state === 'idle')
 
         // Verify tool was active and found the right edge handle
         expect(dragResult.toolActive).toBe(true)
@@ -479,7 +527,7 @@ test.describe('Transform tool', () => {
 
             return { hitResult, stateAfterDown: tool._state }
         })
-        await page.waitForTimeout(300)
+        await appState(page, () => window.layersApp._transformTool._state === 'idle')
 
         expect(dragResult2.hitResult).toBe('bottom')
 
