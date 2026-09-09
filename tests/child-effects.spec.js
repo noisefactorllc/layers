@@ -1,4 +1,20 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, layerCount } from './waits.js'
+
+/**
+ * The layer stack shows exactly `count` child-effect rows.
+ *
+ * Every child mutation below commits through _commitModelMutation, which
+ * re-renders the stack as part of the same commit, so the rendered rows are
+ * the model change made visible.
+ */
+function childRows(page, count) {
+    return appState(
+        page,
+        (n) => document.querySelectorAll('layer-item.child-layer').length === n,
+        count,
+    )
+}
 
 test.describe('Child effects', () => {
     test.beforeEach(async ({ page }) => {
@@ -11,13 +27,13 @@ test.describe('Child effects', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         // Add an effect layer on top for testing
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('synth/gradient')
         })
-        await page.waitForTimeout(500)
+        await layerCount(page, 2)
     })
 
     test('add child effect to a layer', async ({ page }) => {
@@ -34,7 +50,7 @@ test.describe('Child effects', () => {
         await page.evaluate(async (id) => {
             await window.layersApp._handleAddChildEffect(id, 'filter/blur')
         }, parentId)
-        await page.waitForTimeout(500)
+        await childRows(page, 1)
 
         // Verify child in children array
         const childrenAfter = await page.evaluate(() =>
@@ -65,7 +81,7 @@ test.describe('Child effects', () => {
         await page.evaluate(async (id) => {
             await window.layersApp._handleAddChildEffect(id, 'filter/blur')
         }, parentId)
-        await page.waitForTimeout(500)
+        await childRows(page, 1)
 
         // Capture DSL after adding child
         const dslAfter = await page.evaluate(() =>
@@ -86,7 +102,7 @@ test.describe('Child effects', () => {
         await page.evaluate(async (id) => {
             await window.layersApp._handleAddChildEffect(id, 'filter/blur')
         }, parentId)
-        await page.waitForTimeout(500)
+        await childRows(page, 1)
 
         // Verify DSL contains blur
         const dslWithChild = await page.evaluate(() =>
@@ -110,7 +126,10 @@ test.describe('Child effects', () => {
                 value: false
             })
         }, { childId, parentId })
-        await page.waitForTimeout(500)
+        // The visibility commit re-renders the child's row with its eye off,
+        // and rebuilds the DSL the assertion below reads, in one commit.
+        await page.locator('layer-item.child-layer .layer-visibility:not(.visible)')
+            .waitFor({ state: 'attached' })
 
         // DSL should no longer contain blur
         const dslHidden = await page.evaluate(() =>
@@ -126,7 +145,7 @@ test.describe('Child effects', () => {
         await page.evaluate(async (id) => {
             await window.layersApp._handleAddChildEffect(id, 'filter/blur')
         }, parentId)
-        await page.waitForTimeout(500)
+        await childRows(page, 1)
 
         // Verify child exists
         expect(await page.evaluate(() =>
@@ -141,7 +160,7 @@ test.describe('Child effects', () => {
         await page.evaluate(async ({ childId, parentId }) => {
             await window.layersApp._handleDeleteLayer(childId, parentId)
         }, { childId, parentId })
-        await page.waitForTimeout(500)
+        await childRows(page, 0)
 
         // Verify children array is empty
         const childrenAfter = await page.evaluate(() =>
@@ -161,7 +180,7 @@ test.describe('Child effects', () => {
         await page.evaluate(async (id) => {
             await window.layersApp._handleAddChildEffect(id, 'filter/blur')
         }, parentId)
-        await page.waitForTimeout(500)
+        await childRows(page, 1)
 
         // Verify child exists
         expect(await page.evaluate(() =>
@@ -172,7 +191,7 @@ test.describe('Child effects', () => {
         await page.evaluate(async () => {
             await window.layersApp._undo()
         })
-        await page.waitForTimeout(500)
+        await childRows(page, 0)
 
         expect(await page.evaluate(() =>
             (window.layersApp._layers[1].children || []).length
@@ -183,7 +202,7 @@ test.describe('Child effects', () => {
         await page.evaluate(async () => {
             await window.layersApp._redo()
         })
-        await page.waitForTimeout(500)
+        await childRows(page, 1)
 
         expect(await page.evaluate(() =>
             window.layersApp._layers[1].children.length
@@ -198,12 +217,12 @@ test.describe('Child effects', () => {
         await page.evaluate(async (id) => {
             await window.layersApp._handleAddChildEffect(id, 'filter/blur')
         }, parentId)
-        await page.waitForTimeout(500)
+        await childRows(page, 1)
 
         await page.evaluate(async (id) => {
             await window.layersApp._handleAddChildEffect(id, 'filter/invert')
         }, parentId)
-        await page.waitForTimeout(500)
+        await childRows(page, 2)
 
         // Verify two children
         const childCount = await page.evaluate(() =>
