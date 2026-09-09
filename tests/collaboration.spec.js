@@ -661,3 +661,38 @@ test('undo and redo reach the session instead of sitting local', async ({ page, 
     await expect.poll(async () => (await layersState(pageB))[1]?.effectId, { timeout: 60000 })
         .toBe('filter/blur')
 })
+
+test('a peer edit does not throw the local user out of mask editing', async ({ page, context }) => {
+    const pageA = page
+    const pageB = await context.newPage()
+    await preparePage(pageA)
+    await preparePage(pageB)
+
+    await gotoApp(pageA)
+    await createProject(pageA, 'solid', 128)
+    await pageA.evaluate(async () => { await window.layersApp._handleAddEffectLayer('filter/blur') })
+    const sessionId = await takeOnline(pageA)
+    await closeSeanceDialog(pageA)
+
+    await gotoApp(pageB)
+    await createProject(pageB, 'solid', 128)
+    await joinById(pageB, sessionId)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(2)
+
+    const [baseId, blurId] = (await layersState(pageA)).map(l => l.id)
+    await pageA.evaluate(async (id) => { await window.layersApp._addLayerMask(id) }, baseId)
+    expect(await pageA.evaluate(() => window.layersApp._maskEditMode)).toBe(true)
+    await expect.poll(async () => (await layersState(pageB))[0]?.hasMask, { timeout: 60000 }).toBe(true)
+
+    // An apply swaps the whole layer array, so mask editing is torn down for
+    // it. A peer touching an unrelated layer must not cost this user the mask
+    // they are painting.
+    await pageB.evaluate(async (id) => {
+        await window.layersApp._handleLayerChange({ layerId: id, property: 'opacity', value: 33 })
+    }, blurId)
+    await expect.poll(async () => (await layersState(pageA)).find(l => l.id === blurId)?.opacity,
+        { timeout: 60000 }).toBe(33)
+
+    expect(await pageA.evaluate(() => window.layersApp._maskEditMode)).toBe(true)
+    expect(await pageA.evaluate(() => window.layersApp._maskEditLayerId)).toBe(baseId)
+})

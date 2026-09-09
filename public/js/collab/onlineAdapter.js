@@ -767,6 +767,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             }
 
             previousAppState = app._captureProjectCommitState()
+            // Applying a remote change swaps the whole layer array, so mask
+            // editing has to be torn down first. Remember what was being
+            // painted: the session is shared, and a peer changing an unrelated
+            // layer must not throw this user out of their own mask.
+            const maskEditLayerId = app._maskEditMode ? app._maskEditLayerId : null
             if (app._maskEditMode) {
                 await app._exitMaskEditMode({ updateRenderer: false })
             }
@@ -816,6 +821,16 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             }
             app._replacementGeneration += 1
             if (nextLayerCounter !== null) bumpLayerCounter(nextLayerCounter)
+
+            // Put the user back into the mask they were painting, if the
+            // remote composition still has it. Post-commit and best effort:
+            // the apply itself has succeeded, and failing to restore a tool
+            // mode must not reject it.
+            if (maskEditLayerId !== null
+                && layers.some(layer => layer.id === maskEditLayerId && layer.mask)) {
+                bestEffortSessionEffect('Failed to restore mask editing after remote apply',
+                    () => app._enterMaskEditMode(maskEditLayerId))
+            }
 
             // Build from local layer objects so masks/strokes use this
             // browser's canonical encoding. The lifecycle lease prevents a
