@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady } from './waits.js'
 
 test.describe('Image menu - Canvas Size', () => {
     test('canvas size changes dimensions with anchor offset', async ({ page }) => {
@@ -11,13 +12,12 @@ test.describe('Image menu - Canvas Size', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         // Change canvas size to 2048x2048 with center anchor
         await page.evaluate(async () => {
             await window.layersApp._changeCanvasSize(2048, 2048, 'center')
         })
-        await page.waitForTimeout(500)
 
         // Verify canvas is 2048x2048
         const dims = await page.evaluate(() => ({

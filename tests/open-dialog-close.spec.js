@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady } from './waits.js'
 
 async function openFileMenuItem(page, menuItemId) {
     await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
@@ -12,7 +13,7 @@ async function createSolidProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1000)
+    await appReady(page)
 }
 
 async function dismissConfirmDialog(page) {

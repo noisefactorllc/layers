@@ -1,6 +1,8 @@
 import { test, expect } from './fixtures.js'
+import { appReady, layerCount } from './waits.js'
 
 async function addColorLayer(page, color, size = 100) {
+    const before = await page.evaluate(() => window.layersApp._layers.length)
     await page.evaluate(async ({ color, size }) => {
         const canvas = document.createElement('canvas')
         canvas.width = size
@@ -12,7 +14,7 @@ async function addColorLayer(page, color, size = 100) {
         const file = new File([blob], `${color}.png`, { type: 'image/png' })
         await window.layersApp._handleAddMediaLayer(file, 'image')
     }, { color, size })
-    await page.waitForTimeout(500)
+    await layerCount(page, before + 1)
 }
 
 test.describe('Layer reorder FSM', () => {
@@ -25,7 +27,7 @@ test.describe('Layer reorder FSM', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
     })
 
     test('reordering layers updates render correctly', async ({ page }) => {

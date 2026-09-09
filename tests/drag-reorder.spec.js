@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -9,7 +10,7 @@ async function createTransparentProject(page) {
     await page.fill('#canvas-height', '128')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 async function addEffectLayer(page, searchTerm) {
@@ -18,7 +19,6 @@ async function addEffectLayer(page, searchTerm) {
     await page.click('.media-option[data-mode="effect"]')
     await page.waitForSelector('.effect-search-input')
     await page.fill('.effect-search-input', searchTerm)
-    await page.waitForTimeout(500)
     await page.waitForSelector('.effect-item')
     await page.click('.effect-item')
     await page.waitForSelector('dialog[open]', { state: 'hidden' })
@@ -59,7 +59,10 @@ test.describe('Layer drag reorder', () => {
         })
         console.log('Triggered reorder:', reordered)
 
-        await page.waitForTimeout(500)
+        // _processDrop is awaited inside the evaluate, but the gesture keeps
+        // its lifecycle lease until the FSM has returned to IDLE.
+        await appState(page, () => window.layersApp._reorderState === 'IDLE'
+            && !window.layersApp._projectLifecycleOwner)
 
         const newNames = await layerNames.allTextContents()
         console.log('After reorder event - layers:', newNames)

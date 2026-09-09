@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, layerCount } from './waits.js'
 
 test.describe('Layer menu - Flatten Image', () => {
     test('flatten image combines all visible layers into one', async ({ page }) => {
@@ -11,13 +12,13 @@ test.describe('Layer menu - Flatten Image', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         // Add a second effect layer
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('synth/gradient')
         })
-        await page.waitForTimeout(500)
+        await layerCount(page, 2)
 
         // Verify we have 2 layers
         const layerCountBefore = await page.evaluate(() => window.layersApp._layers.length)
@@ -28,7 +29,6 @@ test.describe('Layer menu - Flatten Image', () => {
             window.layersApp._layerStack.selectedLayerId = null
             window.layersApp._updateLayerMenu()
         })
-        await page.waitForTimeout(100)
 
         // Verify selection was cleared
         const selectedIdsAfterClear = await page.evaluate(() => window.layersApp._layerStack.selectedLayerIds)
@@ -43,7 +43,7 @@ test.describe('Layer menu - Flatten Image', () => {
         await page.evaluate(async () => {
             await window.layersApp._flattenImage()
         })
-        await page.waitForTimeout(500)
+        await layerCount(page, 1)
 
         // Verify we now have exactly 1 layer
         const layerCountAfter = await page.evaluate(() => window.layersApp._layers.length)

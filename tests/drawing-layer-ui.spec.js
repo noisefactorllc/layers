@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -6,7 +7,7 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 test.describe('Drawing layer UI', () => {
@@ -22,7 +23,7 @@ test.describe('Drawing layer UI', () => {
             window.layersApp._layers.push(layer)
             window.layersApp._updateLayerStack()
         })
-        await page.waitForTimeout(300)
+        await expect(page.locator('layer-item')).toHaveCount(2)
 
         // Check for the draw icon in layer-item elements (no shadow DOM — uses innerHTML)
         const hasIcon = await page.evaluate(() => {
@@ -51,7 +52,7 @@ test.describe('Drawing layer UI', () => {
             window.layersApp._layers.push(layer)
             window.layersApp._updateLayerStack()
         })
-        await page.waitForTimeout(300)
+        await expect(page.locator('layer-item')).toHaveCount(2)
 
         // Check for 'Drawing' type label
         const hasLabel = await page.evaluate(() => {

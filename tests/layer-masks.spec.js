@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, layerCount } from './waits.js'
 
 test.describe('Layer masks', () => {
     test.beforeEach(async ({ page }) => {
@@ -11,13 +12,13 @@ test.describe('Layer masks', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        await appReady(page)
 
         // Add a second layer (gradient effect) so we can see masking
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('synth/gradient')
         })
-        await page.waitForTimeout(500)
+        await layerCount(page, 2)
     })
 
     test('add layer mask creates white mask', async ({ page }) => {
@@ -48,7 +49,6 @@ test.describe('Layer masks', () => {
             const topLayer = window.layersApp._layers[1]
             await window.layersApp._addLayerMask(topLayer.id)
         })
-        await page.waitForTimeout(300)
 
         const maskThumb = page.locator('.layer-mask-thumbnail')
         await expect(maskThumb).toBeVisible()
@@ -172,7 +172,6 @@ test.describe('Layer masks', () => {
 
         // Undo should remove the mask
         await page.evaluate(async () => { await window.layersApp._undo() })
-        await page.waitForTimeout(300)
 
         hasMask = await page.evaluate(() => window.layersApp._layers[1].mask !== null)
         expect(hasMask).toBe(false)
