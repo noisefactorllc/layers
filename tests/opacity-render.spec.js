@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady, framePainted, layerCount } from './waits.js'
 
 function readCenterPixel(canvasEl) {
     const ctx = canvasEl.getContext('webgl2') || canvasEl.getContext('webgl')
@@ -22,7 +23,7 @@ test('changing non-base layer opacity changes canvas pixels', async ({ page }) =
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(2000)
+    await appReady(page)
 
     // Change base layer to black
     await page.evaluate(async () => {
@@ -30,7 +31,7 @@ test('changing non-base layer opacity changes canvas pixels', async ({ page }) =
         app._layers[0].effectParams = { color: [0, 0, 0], alpha: 1 }
         await app._rebuild()
     })
-    await page.waitForTimeout(500)
+    await framePainted(page)
 
     // Add a white solid layer on top
     await page.evaluate(async () => {
@@ -39,7 +40,8 @@ test('changing non-base layer opacity changes canvas pixels', async ({ page }) =
         app._layers[1].effectParams = { color: [1, 1, 1], alpha: 1 }
         await app._rebuild()
     })
-    await page.waitForTimeout(1000)
+    await layerCount(page, 2)
+    await framePainted(page)
 
     const canvas = page.locator('#canvas')
 
@@ -58,7 +60,7 @@ test('changing non-base layer opacity changes canvas pixels', async ({ page }) =
             layer
         })
     })
-    await page.waitForTimeout(1000)
+    await framePainted(page)
 
     const reducedPixel = await canvas.evaluate(readCenterPixel)
     console.log('Reduced opacity pixel:', JSON.stringify(reducedPixel))
