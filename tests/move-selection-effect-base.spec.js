@@ -1,4 +1,15 @@
 import { test, expect } from './fixtures.js'
+import { appReady, appState, layerCount } from './waits.js'
+
+// A drag has to arrive as movement, not as a jump: a single mouse.move can
+// deliver one pointermove, so a marquee sized from movement deltas commits
+// with no size. Stepping emits the intermediate events a hand would.
+async function drag(page, fromX, fromY, toX, toY) {
+    await page.mouse.move(fromX, fromY)
+    await page.mouse.down()
+    await page.mouse.move(toX, toY, { steps: 12 })
+    await page.mouse.up()
+}
 
 test.describe('Move tool - effect base layer', () => {
     test('move selection works on transparent base layer (effect type)', async ({ page }) => {
@@ -11,7 +22,10 @@ test.describe('Move tool - effect base layer', () => {
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-        await page.waitForTimeout(500)
+        // The dialog hides the moment it is dismissed; the project it asked for
+        // is still being installed. Wait for the app and its base layer.
+        await appReady(page)
+        await layerCount(page, 1)
 
         // Verify we have exactly 1 layer and it's an effect layer
         const layerInfo = await page.evaluate(() => ({
@@ -28,11 +42,8 @@ test.describe('Move tool - effect base layer', () => {
         const box = await overlay.boundingBox()
 
         // Draw a selection rectangle using real mouse events
-        await page.mouse.move(box.x + 100, box.y + 100)
-        await page.mouse.down()
-        await page.mouse.move(box.x + 250, box.y + 250)
-        await page.mouse.up()
-        await page.waitForTimeout(500)
+        await drag(page, box.x + 100, box.y + 100, box.x + 250, box.y + 250)
+        await appState(page, () => window.layersApp._selectionManager.hasSelection())
 
         // Verify selection exists
         const hasSelection = await page.evaluate(() => window.layersApp._selectionManager.hasSelection())
@@ -40,7 +51,7 @@ test.describe('Move tool - effect base layer', () => {
 
         // Click move tool button
         await page.click('#moveToolBtn')
-        await page.waitForTimeout(200)
+        await appState(page, () => window.layersApp._moveTool?.isActive === true)
 
         // Verify move tool is active
         const moveToolActive = await page.evaluate(() => window.layersApp._moveTool?.isActive)
@@ -58,8 +69,10 @@ test.describe('Move tool - effect base layer', () => {
         // Drag inside the selection area to trigger extraction
         await page.mouse.move(box.x + 175, box.y + 175)
         await page.mouse.down()
-        await page.waitForTimeout(100)
-        await page.mouse.move(box.x + 300, box.y + 300)
+        // The press is accepted asynchronously: the tool leaves IDLE only once
+        // it has taken the mutation token and begun extracting.
+        await appState(page, () => window.layersApp._moveTool?.isDragging === true)
+        await page.mouse.move(box.x + 300, box.y + 300, { steps: 12 })
 
         // Wait for extraction to complete (new layer should be created)
         try {
@@ -79,7 +92,8 @@ test.describe('Move tool - effect base layer', () => {
         }
 
         await page.mouse.up()
-        await page.waitForTimeout(500)
+        // The release ends the gesture; the tool returns to IDLE when it has.
+        await appState(page, () => window.layersApp._moveTool?.isDragging === false)
 
         // Verify new layer was created
         const layerCountAfter = await page.evaluate(() => window.layersApp._layers.length)
