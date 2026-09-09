@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { appReady } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -6,7 +7,7 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    await appReady(page)
 }
 
 async function addEffectLayer(page, searchTerm) {
@@ -15,7 +16,9 @@ async function addEffectLayer(page, searchTerm) {
     await page.click('.media-option[data-mode="effect"]')
     await page.waitForSelector('.effect-search-input')
     await page.fill('.effect-search-input', searchTerm)
-    await page.waitForTimeout(500)
+    // The picker filters and re-renders on the input event itself, and the
+    // unfiltered view renders no .effect-item at all, so the first one to
+    // appear belongs to this search. The selector wait below is the condition.
     await page.waitForSelector('.effect-item')
     await page.click('.effect-item')
     await page.waitForSelector('dialog[open]', { state: 'hidden' })
@@ -68,7 +71,11 @@ test.describe('Layer params expando', () => {
         await expect(layerItem).toHaveClass(/params-expanded/)
 
         const effectParams = layerItem.locator('effect-params')
-        await page.waitForTimeout(500)
+        // setEffect() fetches the effect definition asynchronously and paints a
+        // "Loading parameters..." placeholder first. That placeholder carries no
+        // `empty` class either, so the class assertion below would read the
+        // loading state as a finished render. Wait for the controls themselves.
+        await effectParams.locator('.effect-params-controls').waitFor({ state: 'attached' })
 
         await expect(effectParams).toBeVisible()
         await expect(effectParams).not.toHaveClass(/empty/)
