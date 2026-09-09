@@ -1,5 +1,6 @@
 // tests/eraser-tool.spec.js
 import { test, expect } from './fixtures.js'
+import { appReady, appState, framePainted, layerCount } from './waits.js'
 
 async function createTransparentProject(page) {
     await page.waitForSelector('.open-dialog-backdrop.visible')
@@ -7,7 +8,10 @@ async function createTransparentProject(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(500)
+    // The dialog hides the moment it is dismissed; the project it asked for is
+    // still being installed. Wait for the app and its base layer.
+    await appReady(page)
+    await layerCount(page, 1)
 }
 
 test.describe('Eraser tool', () => {
@@ -36,7 +40,9 @@ test.describe('Eraser tool', () => {
                 app._layerStack.selectedLayerId = layer.id
             }
         })
-        await page.waitForTimeout(300)
+        // The evaluate already awaited the rasterize and the rebuild. What is
+        // left is a frame, and the next lines measure the overlay's box.
+        await framePainted(page)
 
         // Switch to eraser tool
         await page.click('#eraserToolBtn')
@@ -47,7 +53,15 @@ test.describe('Eraser tool', () => {
         const scaleX = box.width / 1024
         const scaleY = box.height / 1024
         await page.mouse.click(box.x + 250 * scaleX, box.y + 250 * scaleY)
-        await page.waitForTimeout(300)
+        // The deletion drops the stroke from the model first and unloads the
+        // layer's media resource at the end of the same commit. Wait for the
+        // stroke to go, then drain the mutation queue that carries it, so both
+        // reads below see one settled state instead of a half-applied one.
+        await appState(page, () => {
+            const layer = window.layersApp._layers.find(l => l.sourceType === 'drawing')
+            return layer?.strokes?.length === 0
+        })
+        await page.evaluate(() => window.layersApp._drawingMutationTail)
 
         const state = await page.evaluate(() => {
             const app = window.layersApp
