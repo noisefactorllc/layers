@@ -35,6 +35,11 @@ test.describe('Image menu - Resize preserves animation', () => {
             await window.layersApp._resizeImage(720, 720)
         })
 
+        // The known-phase helper below must not hide a video paused by resize.
+        const pausedAfter = await page.evaluate(() =>
+            [...window.layersApp._renderer.getVideoMediaIterator()][0]?.videoElement?.paused)
+        expect(pausedAfter, 'Resize must preserve native video playback before the test restarts the clip').toBe(false)
+
         // Verify canvas dimensions
         const dims = await page.evaluate(() => ({
             w: window.layersApp._canvas.width,
