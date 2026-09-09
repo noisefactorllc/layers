@@ -16,13 +16,17 @@ async function bootWithNoise(page) {
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    await page.waitForTimeout(1500)
+    // Wait for the app to report itself ready rather than sleeping a guess.
+    // A fixed sleep is a constant standing in for work whose duration varies
+    // with the machine, so under a loaded CI runner it expires early and the
+    // next interaction absorbs the remainder against the test timeout.
+    await page.waitForFunction(() => !!window.LayersAgent && !!window.layersApp)
     await page.evaluate(async () => {
         const app = window.layersApp
         await app._handleAddEffectLayer('synth/noise')
         await app._rebuild({ force: true })
     })
-    await page.waitForTimeout(500)
+    // No sleep here: the evaluate above already awaits the add and the rebuild.
 }
 
 const captureFrozen = (page) => page.evaluate(() => {
@@ -53,10 +57,12 @@ test('lighting lightDirection renders a vector3d-picker that drives the render',
         const res = await app._handleAddEffectLayer('filter/lighting')
         return res.value ?? app._layers[app._layers.length - 1].id
     })
-    await page.waitForTimeout(800)
+    // Wait for the row this test drives, rather than guessing how long the
+    // list takes to re-render after the layer commits.
+    const layerItem = page.locator(`layer-item[data-layer-id="${layerId}"]`)
+    await layerItem.waitFor({ state: 'visible' })
 
     // Expand the lighting layer's params
-    const layerItem = page.locator(`layer-item[data-layer-id="${layerId}"]`)
     const toggleBtn = layerItem.locator('.layer-params-toggle').first()
     await toggleBtn.click()
     await expect(layerItem).toHaveClass(/params-expanded/)
@@ -81,7 +87,12 @@ test('lighting lightDirection renders a vector3d-picker that drives the render',
         el.value = { x: -0.9, y: -0.35, z: 0.2 }
         el.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    await page.waitForTimeout(600)
+    // The input handler applies the value asynchronously; wait for it to land
+    // in the layer rather than sleeping long enough that it usually has.
+    await page.waitForFunction((id) => {
+        const layer = window.layersApp._layers.find(l => l.id === id)
+        return Array.isArray(layer?.effectParams?.lightDirection)
+    }, layerId)
 
     const params = await page.evaluate((id) => {
         const app = window.layersApp
@@ -104,9 +115,10 @@ test('grade vec3 params (declared control:"slider") get pickers, not sliders', a
         const res = await app._handleAddEffectLayer('filter/grade')
         return res.value ?? app._layers[app._layers.length - 1].id
     })
-    await page.waitForTimeout(800)
-
+    // The list re-renders asynchronously after the layer commits; wait for the
+    // row this test drives instead of guessing how long that takes.
     const layerItem = page.locator(`layer-item[data-layer-id="${layerId}"]`)
+    await layerItem.waitFor({ state: 'visible' })
     await layerItem.locator('.layer-params-toggle').first().click()
     await expect(layerItem).toHaveClass(/params-expanded/)
 

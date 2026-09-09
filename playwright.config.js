@@ -6,7 +6,12 @@ export default defineConfig({
     // startup; individual assertions retain their shorter failure deadlines.
     timeout: 60000,
     forbidOnly: !!process.env.CI,
-    retries: 0,
+    // The full suite is about an hour across three browsers, so one timeout
+    // under runner load must not throw that away. A retry that passes is still
+    // reported as flaky by name (scripts/quality-reporter.mjs) so it gets fixed
+    // rather than absorbed. Locally, no retries: a flake should be visible
+    // while you are the one who caused it.
+    retries: process.env.CI ? 2 : 0,
     workers: process.env.CI ? 2 : undefined,
     reporter: process.env.CI
         ? [['line'], ['html', { open: 'never' }], ['./scripts/quality-reporter.mjs']]
