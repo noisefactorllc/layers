@@ -214,6 +214,13 @@ async function bootBlank(page) {
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await appReady(page)
+    // The confirm click leaves the pointer where the Filter panel's lower rows
+    // open on small viewports. WebKit reports a panel appearing under a still
+    // pointer as a hover, which opens that row's submenu mid keyboard walk.
+    // Menus drop from the top and submenus stop at the toolbar inset, so the
+    // bottom-left corner stays clear of both.
+    const { height } = page.viewportSize()
+    await page.mouse.move(2, height - 2)
 }
 
 test.describe('Filter menu', () => {
