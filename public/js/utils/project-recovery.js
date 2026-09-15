@@ -177,6 +177,20 @@ export class ProjectRecovery {
         return this._tail
     }
 
+    /** Delete a checkpoint this tab owns or can claim; a live owner keeps its copy. */
+    async discard(id) {
+        const current = await this._claim
+        if (id === current.id) return this.clear()
+        const source = await requestClaim(id)
+        if (!source) {
+            const error = new Error('This recovery copy is open in another tab.')
+            error.code = 'RECOVERY_IN_USE'
+            throw error
+        }
+        try { await removeRecovery(id) }
+        finally { await source.release() }
+    }
+
     // The caller holds the app lifecycle lease through load and adoption, so
     // an explicit Save cannot clear the previous slot between these steps.
     async restore(id, load) {

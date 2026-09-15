@@ -93,6 +93,66 @@ test('Keep for later retains the old checkpoint after creating and saving anothe
     expect(ids).toContain(original)
 })
 
+test('discarding at boot deletes accumulated copies and falls through to the open dialog', async ({ page }) => {
+    const listIds = () => page.evaluate(async () => (await (await import('/js/utils/project-recovery.js')).listRecoveries()).map(row => row.id))
+    await boot(page)
+    await waitForCheckpoint(page)
+    page.on('dialog', dialog => dialog.accept())
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.getByRole('button', { name: 'Keep for later', exact: true }).click()
+    await page.click('.media-option[data-type="solid"]')
+    await page.click('.canvas-size-dialog .action-btn.primary')
+    await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden' })
+    await waitForCheckpoint(page)
+    await expect.poll(async () => (await listIds()).length).toBe(2)
+    await page.reload({ waitUntil: 'networkidle' })
+    await expect(page.locator('.recovery-dialog').getByRole('button', { name: 'Restore', exact: true })).toHaveCount(2)
+
+    await page.locator('.recovery-dialog').getByRole('button', { name: 'Discard', exact: true }).first().click()
+    await page.locator('.confirm-dialog-backdrop.visible #confirm-cancel').click()
+    await expect(page.locator('.recovery-dialog').getByRole('button', { name: 'Restore', exact: true })).toHaveCount(2)
+    expect(await listIds()).toHaveLength(2)
+
+    await page.locator('.recovery-dialog').getByRole('button', { name: 'Discard', exact: true }).first().click()
+    await page.locator('.confirm-dialog-backdrop.visible #confirm-ok').click()
+    await expect(page.locator('.recovery-dialog').getByRole('button', { name: 'Restore', exact: true })).toHaveCount(1)
+    expect(await listIds()).toHaveLength(1)
+
+    await page.getByRole('button', { name: 'Discard all', exact: true }).click()
+    await page.locator('.confirm-dialog-backdrop.visible #confirm-ok').click()
+    await expect(page.locator('.recovery-dialog')).toHaveCount(0)
+    await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
+    expect(await listIds()).toEqual([])
+})
+
+test('discard refuses a copy that another live tab owns', async ({ page, context }) => {
+    await recoveryHarness(page)
+    const sourceId = await page.evaluate(async () => {
+        const { ProjectRecovery } = await import('/js/utils/project-recovery.js')
+        const journal = new ProjectRecovery({ capture: async () => ({ name: 'owned', layers: [] }), isDirty: () => true, onError: error => { throw error } })
+        await journal.flush()
+        return journal._id
+    })
+    const other = await context.newPage()
+    await recoveryHarness(other)
+    const result = await other.evaluate(async id => {
+        const { ProjectRecovery, listRecoveries } = await import('/js/utils/project-recovery.js')
+        const journal = new ProjectRecovery({ capture: async () => null, isDirty: () => false, onError: error => { throw error } })
+        let code
+        try { await journal.discard(id) } catch (error) { code = error.code }
+        const request = indexedDB.open('layers-recovery')
+        const db = await new Promise(resolve => { request.onsuccess = () => resolve(request.result) })
+        const row = await new Promise(resolve => {
+            const get = db.transaction('documents').objectStore('documents').get(id)
+            get.onsuccess = () => resolve(get.result)
+        })
+        db.close()
+        return { code, stored: !!row, listed: (await listRecoveries()).some(item => item.id === id) }
+    }, sourceId)
+    expect(result).toEqual({ code: 'RECOVERY_IN_USE', stored: true, listed: false })
+    await other.close()
+})
+
 test('a second live tab ignores the first tab checkpoint, then discovers it after its owner closes', async ({ page, context }) => {
     await boot(page)
     const original = await page.evaluate(async () => {

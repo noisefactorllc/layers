@@ -6493,6 +6493,28 @@ class LayersApp {
                     return false
                 }
             },
+            discard: async targets => {
+                const confirmed = await confirmDialog.show({
+                    message: targets.length === 1
+                        ? `Discard the unsaved copy of "${targets[0].name || 'Untitled'}"? This cannot be undone.`
+                        : `Discard all ${targets.length} unsaved copies? This cannot be undone.`,
+                    confirmText: 'Discard',
+                    cancelText: 'Cancel',
+                    danger: true,
+                })
+                if (!confirmed) return []
+                const discarded = []
+                for (const record of targets) {
+                    try {
+                        await this._recovery.discard(record.id)
+                        discarded.push(record)
+                    } catch (error) {
+                        console.error('[Layers] Recovery discard failed:', error)
+                        toast.error(error.message || 'Could not discard this recovery copy')
+                    }
+                }
+                return discarded
+            },
             onClose: () => {
                 this._recovery.retain()
                 if (atBoot && this._layers.length === 0) this._showOpenDialog()

@@ -21,7 +21,7 @@ Layers is a browser-based media editor with non-destructive layer compositing, p
 
 ## Saving, recovery, and export
 
-Save projects explicitly to keep them in this browser's IndexedDB storage. Layers also writes local recovery checkpoints while you edit. If unsaved work is available, use **File → recover unsaved work...** to restore it. **Keep for later** preserves a recovery copy for a later session. Checkpoints are asynchronous and can lag recent edits; they do not replace saving your project.
+Save projects explicitly to keep them in this browser's IndexedDB storage. Layers also writes local recovery checkpoints while you edit. If unsaved work is available, use **File → recover unsaved work...** to restore it. **Keep for later** preserves a recovery copy for a later session; **Discard** or **Discard all** deletes copies you no longer need. Checkpoints are asynchronous and can lag recent edits; they do not replace saving your project.
 
 Undo history retains up to 50 states, including the current state, within an estimated 128 MiB budget. Older states are removed first. A large document can exceed that budget on its own, leaving the current state with no undo step. This budget covers retained history data, not the editor's total memory use.
 
