@@ -120,7 +120,7 @@ Replace lines 137-151 (the `<div class="menu-items hide">` block inside `#imageM
                         <hr class="menu-seperator">
                         <div class="has-submenu">tone
                             <div class="submenu">
-                                <div data-effect="filter/bc">brightness/contrast</div>
+                                <div data-effect="filter/adjust">brightness/contrast</div>
                                 <div data-effect="filter/smoothstep">levels</div>
                                 <div data-effect="filter/posterize">posterize</div>
                                 <div data-effect="filter/thresh">threshold</div>
@@ -128,7 +128,7 @@ Replace lines 137-151 (the `<div class="menu-items hide">` block inside `#imageM
                         </div>
                         <div class="has-submenu">color
                             <div class="submenu">
-                                <div data-effect="filter/hs">hue/saturation</div>
+                                <div data-effect="filter/adjust">hue/saturation</div>
                                 <div data-effect="filter/grade">color grading</div>
                                 <div data-effect="filter/tint">tint</div>
                                 <div data-effect="filter/inv">invert</div>
@@ -197,11 +197,11 @@ Find and remove these individual handler blocks (lines 1492-1516):
         })
         document.getElementById('brightnessContrastMenuItem')?.addEventListener('click', () => {
             if (this._layers.length === 0) return
-            this._handleAddEffectLayer('filter/bc')
+            this._handleAddEffectLayer('filter/adjust')
         })
         document.getElementById('hueSaturationMenuItem')?.addEventListener('click', () => {
             if (this._layers.length === 0) return
-            this._handleAddEffectLayer('filter/hs')
+            this._handleAddEffectLayer('filter/adjust')
         })
         document.getElementById('blurMenuItem')?.addEventListener('click', () => {
             if (this._layers.length === 0) return
@@ -389,7 +389,7 @@ export function autoLevels(canvas) {
     const contrast = 1 / range
 
     return {
-        effectId: 'filter/bc',
+        effectId: 'filter/adjust',
         effectParams: {
             brightness: Math.max(-1, Math.min(1, brightness)),
             contrast: Math.max(0.1, Math.min(5, contrast))
@@ -418,7 +418,7 @@ export function autoContrast(canvas) {
     const contrast = 1 / range
 
     return {
-        effectId: 'filter/bc',
+        effectId: 'filter/adjust',
         effectParams: {
             brightness: Math.max(-1, Math.min(1, brightness)),
             contrast: Math.max(0.1, Math.min(5, contrast))
@@ -472,11 +472,11 @@ export function autoWhiteBalance(canvas) {
     }
 
     return {
-        effectId: 'filter/hs',
+        effectId: 'filter/adjust',
         effectParams: {
-            hue: Math.max(-1, Math.min(1, hue)),
-            saturation: Math.max(0, Math.min(4, saturation)),
-            lightness: 0
+            rotation: Math.max(-180, Math.min(180, hue * 360)),
+            hueRange: 100,
+            saturation: Math.max(0, Math.min(4, saturation))
         },
         name: 'Auto White Balance'
     }
@@ -609,7 +609,7 @@ test.describe('Image menu adjustments', () => {
         await expect(submenu).toBeVisible()
 
         // Should contain brightness/contrast
-        await expect(submenu.locator('[data-effect="filter/bc"]')).toBeVisible()
+        await expect(submenu.locator('[data-effect="filter/adjust"]')).toBeVisible()
     })
 
     test('add effect from submenu', async ({ page }) => {
@@ -621,7 +621,7 @@ test.describe('Image menu adjustments', () => {
         await page.click('#imageMenu .menu-title')
         const toneItem = page.locator('#imageMenu .has-submenu', { hasText: 'tone' })
         await toneItem.hover()
-        await page.click('[data-effect="filter/bc"]')
+        await page.click('[data-effect="filter/adjust"]')
         await page.waitForTimeout(500)
 
         // Should now have 2 layers
@@ -630,7 +630,7 @@ test.describe('Image menu adjustments', () => {
 
         // New layer should be a brightness/contrast effect
         const effectId = await page.evaluate(() => window.layersApp._layers[1].effectId)
-        expect(effectId).toBe('filter/bc')
+        expect(effectId).toBe('filter/adjust')
     })
 
     test('add effect from stylize submenu', async ({ page }) => {
@@ -757,7 +757,7 @@ Search the test files for references to old menu item IDs that were removed:
 
 If any tests reference these IDs, update them to use the new `data-effect` selectors instead:
 - `invertMenuItem` → `[data-effect="filter/inv"]`
-- `brightnessContrastMenuItem` → `[data-effect="filter/bc"]`
+- `brightnessContrastMenuItem` → `[data-effect="filter/adjust"]`
 - etc.
 
 **Step 2: Run full test suite**

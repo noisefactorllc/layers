@@ -24,7 +24,7 @@ New CSS/HTML submenu mechanism for the menu bar:
 <div class="menu-item has-submenu">
   Tone
   <div class="menu-items submenu">
-    <div id="brightnessContrastMenuItem" data-effect="filter/bc">Brightness/Contrast</div>
+    <div id="brightnessContrastMenuItem" data-effect="filter/adjust">Brightness/Contrast</div>
     <div id="posterizeMenuItem" data-effect="filter/posterize">Posterize</div>
   </div>
 </div>
@@ -39,12 +39,12 @@ Image >
   Auto White Balance           (top-level, one-click)
   ─────────────
   Tone >
-    Brightness/Contrast        → filter/bc
+    Brightness/Contrast        → filter/adjust
     Levels                     → filter/smoothstep
     Posterize                  → filter/posterize
     Threshold                  → filter/thresh
   Color >
-    Hue/Saturation             → filter/hs
+    Hue/Saturation             → filter/adjust
     Color Grading              → filter/grade
     Tint                       → filter/tint
     Invert                     → filter/inv
@@ -89,15 +89,15 @@ Reads canvas pixels via `gl.readPixels()`. Returns:
 
 ### Auto Levels
 
-Computes per-channel min/max from histogram (1st-99th percentile). Creates `filter/bc` effect layer with brightness/contrast values that stretch histogram to full range.
+Computes per-channel min/max from histogram (1st-99th percentile). Creates `filter/adjust` effect layer with brightness/contrast values that stretch histogram to full range.
 
 ### Auto Contrast
 
-Computes luminance histogram. Creates `filter/bc` effect layer with contrast value mapping 1st-99th percentile luminance range to full range.
+Computes luminance histogram. Creates `filter/adjust` effect layer with contrast value mapping 1st-99th percentile luminance range to full range.
 
 ### Auto White Balance
 
-Computes average R, G, B values. Creates `filter/hs` effect layer with hue shift and saturation adjustments to neutralize color cast. Approximate — uses existing hue/saturation shader.
+Computes average R, G, B values. Creates `filter/adjust` effect layer with hue shift and saturation adjustments to neutralize color cast. Approximate — uses existing hue/saturation shader.
 
 ### Behavior
 
