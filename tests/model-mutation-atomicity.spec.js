@@ -274,7 +274,7 @@ for (const entry of [
     })
 }
 
-test('keyboard V restores visibility and lifecycle state when rebuild fails', async ({ page }) => {
+test('keyboard visibility toggle restores visibility and lifecycle state when rebuild fails', async ({ page }) => {
     await bootSolid(page)
 
     const before = await page.evaluate(() => {
@@ -302,7 +302,7 @@ test('keyboard V restores visibility and lifecycle state when rebuild fails', as
         }
     })
 
-    await page.keyboard.press('v')
+    await page.keyboard.press('Shift+V')
     await page.waitForFunction(() => !window.layersApp._projectLifecycleActive)
 
     const after = await page.evaluate(() => {

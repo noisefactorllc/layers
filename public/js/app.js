@@ -4016,10 +4016,11 @@ class LayersApp {
                 this._runPointerMutation(() => this._modifySelection(options, maskFn))
             },
         })
-        const zoomRadio = (id, label, mode) => ({
+        const zoomRadio = (id, label, mode, shortcut) => ({
             type: 'radio',
             id,
             label,
+            ...(shortcut ? { shortcut } : {}),
             checked: () => this._zoomMode === mode,
             onSelect: () => { this._setZoom(mode) },
         })
@@ -4326,13 +4327,13 @@ class LayersApp {
                         type: 'menu',
                         trigger: { label: 'view' },
                         items: [
-                            { id: 'zoomInMenuItem', label: 'zoom in', onSelect: () => { this._zoomIn() } },
-                            { id: 'zoomOutMenuItem', label: 'zoom out', onSelect: () => { this._zoomOut() } },
+                            { id: 'zoomInMenuItem', label: 'zoom in', shortcut: '⌘+', onSelect: () => { this._zoomIn() } },
+                            { id: 'zoomOutMenuItem', label: 'zoom out', shortcut: '⌘-', onSelect: () => { this._zoomOut() } },
                             { type: 'separator' },
-                            zoomRadio('fitInWindowMenuItem', 'fit in window', 'fit'),
+                            zoomRadio('fitInWindowMenuItem', 'fit in window', 'fit', '⌘0'),
                             { type: 'separator' },
                             zoomRadio('zoom50MenuItem', '50%', '50'),
-                            zoomRadio('zoom100MenuItem', '100% (actual size)', '100'),
+                            zoomRadio('zoom100MenuItem', '100% (actual size)', '100', '⌘1'),
                             zoomRadio('zoom200MenuItem', '200%', '200'),
                         ],
                     },
@@ -4925,16 +4926,6 @@ class LayersApp {
                 return
             }
 
-            // Cmd/Ctrl+A - select all
-            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'a' || e.key === 'A')) {
-                e.preventDefault()
-                const { width, height } = this._canvas
-                this._selectionManager.setSelection({
-                    type: 'rect', x: 0, y: 0, width, height
-                })
-                return
-            }
-
             // Cmd/Ctrl+Z - undo
             if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') {
                 e.preventDefault()
@@ -4958,8 +4949,46 @@ class LayersApp {
                 return
             }
 
+            // Cmd/Ctrl+= / + - zoom in
+            if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+' || e.code === 'Equal')) {
+                e.preventDefault()
+                this._zoomIn()
+                return
+            }
+
+            // Cmd/Ctrl+- - zoom out
+            if ((e.ctrlKey || e.metaKey) && (e.key === '-' || e.key === '_' || e.code === 'Minus')) {
+                e.preventDefault()
+                this._zoomOut()
+                return
+            }
+
+            // Cmd/Ctrl+0 - fit in window
+            if ((e.ctrlKey || e.metaKey) && (e.key === '0' || e.code === 'Digit0')) {
+                e.preventDefault()
+                this._setZoom('fit')
+                return
+            }
+
+            // Cmd/Ctrl+1 - 100% actual size
+            if ((e.ctrlKey || e.metaKey) && (e.key === '1' || e.code === 'Digit1')) {
+                e.preventDefault()
+                this._setZoom('100')
+                return
+            }
+
             // Don't handle other shortcuts if in input
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.contentEditable === 'true') {
+                return
+            }
+
+            // Cmd/Ctrl+A - select all (canvas selection when not focused in input)
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+                e.preventDefault()
+                const { width, height } = this._canvas
+                this._selectionManager.setSelection({
+                    type: 'rect', x: 0, y: 0, width, height
+                })
                 return
             }
 
@@ -4976,50 +5005,11 @@ class LayersApp {
             if (e.key === ' ') {
                 e.preventDefault()
                 this._togglePlayPause()
+                return
             }
 
-            // T - transform tool
-            if (e.key === 't' || e.key === 'T') {
-                this._setToolMode('transform')
-            }
-
-            // Drawing tool shortcuts
-            if (e.key === 'b' || e.key === 'B') {
-                this._setToolMode('brush')
-            }
-            if (e.key === 'e' || e.key === 'E') {
-                this._setToolMode('eraser')
-            }
-            if (e.key === 'u' || e.key === 'U') {
-                this._setToolMode('shape')
-            }
-            if (e.key === 'g' || e.key === 'G') {
-                this._setToolMode('fill')
-            }
-            if (e.key === 'i' || e.key === 'I') {
-                this._setToolMode('eyedropper')
-            }
-
-            // Brush size shortcuts
-            if (e.key === '[') {
-                if (this._brushTool) {
-                    this._brushTool.size -= 5
-                    const input = document.getElementById('drawingSizeInput')
-                    if (input) input.value = this._brushTool.size
-                }
-                if (this._shapeTool) this._shapeTool.size -= 5
-            }
-            if (e.key === ']') {
-                if (this._brushTool) {
-                    this._brushTool.size += 5
-                    const input = document.getElementById('drawingSizeInput')
-                    if (input) input.value = this._brushTool.size
-                }
-                if (this._shapeTool) this._shapeTool.size += 5
-            }
-
-            // V - toggle visibility of selected layer
-            if (e.key === 'v' || e.key === 'V') {
+            // Shift+V - toggle visibility of selected layer
+            if (!e.ctrlKey && !e.metaKey && e.shiftKey && (e.key === 'v' || e.key === 'V')) {
                 const selected = this._layerStack?.getSelectedLayer()
                 if (selected) {
                     this._runPointerMutation(() => this._handleLayerChange({
@@ -5029,6 +5019,110 @@ class LayersApp {
                         updateLayerStack: true,
                     }))
                 }
+                return
+            }
+
+            // V - move tool
+            if (!e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === 'v' || e.key === 'V')) {
+                this._setToolMode('move')
+                return
+            }
+
+            // M - marquee selection (rectangle / oval)
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'm' || e.key === 'M')) {
+                const current = this._selectionManager?.currentTool
+                if (e.shiftKey) {
+                    this._setSelectionTool(current === 'oval' ? 'rectangle' : 'oval')
+                } else {
+                    const shape = (current === 'oval') ? 'oval' : 'rectangle'
+                    this._setSelectionTool(shape)
+                }
+                this._setToolMode('selection')
+                return
+            }
+
+            // L - lasso selection (lasso / polygon)
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'l' || e.key === 'L')) {
+                const current = this._selectionManager?.currentTool
+                if (e.shiftKey) {
+                    this._setSelectionTool(current === 'polygon' ? 'lasso' : 'polygon')
+                } else {
+                    const shape = (current === 'polygon') ? 'polygon' : 'lasso'
+                    this._setSelectionTool(shape)
+                }
+                this._setToolMode('selection')
+                return
+            }
+
+            // W - magic wand selection
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'w' || e.key === 'W')) {
+                this._setSelectionTool('wand')
+                this._setToolMode('selection')
+                return
+            }
+
+            // S - clone tool
+            if (!e.ctrlKey && !e.metaKey && (e.key === 's' || e.key === 'S')) {
+                this._setToolMode('clone')
+                return
+            }
+
+            // Z - zoom in (Shift+Z or Alt/Option+Z to zoom out)
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'z' || e.key === 'Z' || e.code === 'KeyZ')) {
+                if (e.shiftKey || e.altKey) {
+                    this._zoomOut()
+                } else {
+                    this._zoomIn()
+                }
+                return
+            }
+
+            // T - transform tool
+            if (!e.ctrlKey && !e.metaKey && (e.key === 't' || e.key === 'T')) {
+                this._setToolMode('transform')
+                return
+            }
+
+            // Drawing tool shortcuts
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'b' || e.key === 'B')) {
+                this._setToolMode('brush')
+                return
+            }
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'e' || e.key === 'E')) {
+                this._setToolMode('eraser')
+                return
+            }
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'u' || e.key === 'U')) {
+                this._setToolMode('shape')
+                return
+            }
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'g' || e.key === 'G')) {
+                this._setToolMode('fill')
+                return
+            }
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'i' || e.key === 'I')) {
+                this._setToolMode('eyedropper')
+                return
+            }
+
+            // Brush size shortcuts
+            if (!e.ctrlKey && !e.metaKey && e.key === '[') {
+                if (this._brushTool) {
+                    this._brushTool.size -= 5
+                    const input = document.getElementById('drawingSizeInput')
+                    if (input) input.value = this._brushTool.size
+                }
+                if (this._shapeTool) this._shapeTool.size -= 5
+                return
+            }
+            if (!e.ctrlKey && !e.metaKey && e.key === ']') {
+                if (this._brushTool) {
+                    this._brushTool.size += 5
+                    const input = document.getElementById('drawingSizeInput')
+                    if (input) input.value = this._brushTool.size
+                }
+                if (this._shapeTool) this._shapeTool.size += 5
+                return
             }
 
             // Escape - clear selection
@@ -5132,6 +5226,22 @@ class LayersApp {
             }
             const newIcon = icons[tool] || icons.rectangle
             iconContainer.outerHTML = newIcon.replace(/^<(svg|span) /, `<$1 id="selectionToolIcon" `)
+        }
+
+        // Update toolbar button title with shortcut
+        const selectionBtn = document.getElementById('selectionToolBtn')
+        if (selectionBtn) {
+            const titles = {
+                rectangle: 'Rectangular Marquee Tool (M)',
+                oval: 'Elliptical Marquee Tool (M)',
+                lasso: 'Lasso Tool (L)',
+                polygon: 'Polygonal Lasso Tool (L)',
+                wand: 'Magic Wand Tool (W)',
+            }
+            if (titles[tool]) {
+                selectionBtn.title = titles[tool]
+                selectionBtn.setAttribute('aria-label', titles[tool])
+            }
         }
 
         // Show/hide tolerance slider

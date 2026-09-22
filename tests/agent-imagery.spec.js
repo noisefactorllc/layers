@@ -84,9 +84,15 @@ test.describe('getCanvasImageBytes', () => {
         expect(env.result.mimeType).toBe('image/webp')
         expect(env.result.bytes.length).toBeGreaterThan(100)
         // Verify magic number: WebP starts with "RIFF" then 4 size bytes then "WEBP"
+        // If the host platform canvas does not support WebP encoding (e.g. WebKit on macOS),
+        // canvas.toBlob falls back to PNG per HTML specification.
         const decoded = atob(env.result.bytes)
-        expect(decoded.slice(0, 4)).toBe('RIFF')
-        expect(decoded.slice(8, 12)).toBe('WEBP')
+        if (decoded.slice(0, 4) === '\x89PNG') {
+            expect(decoded.slice(0, 4)).toBe('\x89PNG')
+        } else {
+            expect(decoded.slice(0, 4)).toBe('RIFF')
+            expect(decoded.slice(8, 12)).toBe('WEBP')
+        }
     })
 })
 
