@@ -32,7 +32,7 @@
 .layer-item.dragging {
     opacity: 0.5;
     border-style: dashed;
-    z-index: 9999 !important;
+    z-index: var(--hf-z-modal);
 }
 
 .layer-item.drag-over {
@@ -220,12 +220,12 @@
 }
 
 .layer-mask-thumbnail.mask-visible {
-    border-color: #e74c3c;
-    box-shadow: 0 0 0 1px #e74c3c;
+    border-color: var(--hf-red);
+    box-shadow: 0 0 0 1px var(--hf-red);
 }
 
 .layer-mask-thumbnail.mask-visible::after {
-    color: #e74c3c;
+    color: var(--hf-red);
 }
 
 .layer-mask-thumbnail.mask-disabled {
@@ -266,7 +266,7 @@
 }
 
 .layer-name.editing {
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--hf-bg-elevated);
     border-color: var(--hf-accent-3);
     outline: none;
 }
@@ -277,7 +277,7 @@
 }
 
 .layer-type.media {
-    color: var(--hf-accent-1);
+    color: var(--hf-accent-3);
 }
 
 .layer-type.effect {
@@ -338,7 +338,7 @@
     gap: 8px;
     padding: 6px 10px 10px;
     border-top: 1px solid var(--hf-color-2);
-    background: rgba(0, 0, 0, 0.15);
+    background: color-mix(in srgb, var(--hf-color-1) 50%, transparent);
 }
 
 /* Params Expando Toggle */
@@ -450,7 +450,7 @@ effect-params {
     display: none;
     padding: 10px 12px;
     border-top: 1px solid var(--hf-color-2);
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--hf-bg-elevated);
 }
 
 .layer-item.params-expanded effect-params {
@@ -535,7 +535,7 @@ effect-params {
     padding: 4px 12px;
     font-size: 10px;
     font-family: var(--font-body);
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--hf-bg-elevated);
     border: 1px solid var(--hf-color-2);
     border-radius: var(--hf-radius-sm);
     color: var(--hf-color-6);
@@ -558,7 +558,7 @@ effect-params {
     padding: 6px 8px;
     font-family: var(--font-body);
     font-size: 11px;
-    background: rgba(0, 0, 0, 0.4);
+    background: var(--hf-bg-elevated);
     border: 1px solid var(--hf-color-2);
     border-radius: var(--hf-radius-sm);
     color: var(--hf-color-7);

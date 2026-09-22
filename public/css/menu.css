@@ -283,7 +283,7 @@
 
 .menu-items div:hover,
 #logoMenu > .menu-items > button:hover {
-    background-color: rgba(255, 255, 255, 0.08);
+    background-color: var(--hf-bg-muted);
     color: var(--hf-accent-4);
 }
 
@@ -332,8 +332,10 @@
     margin: 0.25em 0;
 }
 
+:not(#_):not(#__):is(.hide),
+:not(#_):is(.hide),
 .hide {
-    display: none !important;
+    display: none;
 }
 
 #logo {
@@ -374,7 +376,7 @@
 
 .menu-icon-btn.active {
     color: var(--hf-color-7);
-    background: rgba(128, 128, 128, 0.3);
+    background: var(--hf-bg-muted);
 }
 
 /* Responsive: full-width menu when layers panel moves below */
@@ -420,13 +422,17 @@
     display: block;
 }
 
-#selectionMenu .menu-items div {
+#selectionMenu .menu-items .tool-menu-item {
     display: flex;
     align-items: center;
     gap: 0.5em;
 }
 
-#selectionMenu .menu-items div .icon-material {
+#selectionMenu .menu-items div.hide {
+    display: none;
+}
+
+#selectionMenu .menu-items .tool-menu-item .icon-material {
     font-size: 1.25em;
 }
 
@@ -511,7 +517,7 @@
 }
 
 .submenu div:hover {
-    background-color: rgba(255, 255, 255, 0.08);
+    background-color: var(--hf-bg-muted);
     color: var(--hf-accent-4);
 }
 
@@ -553,7 +559,7 @@
 
 #filterMenu .menu-items button:hover,
 #filterMenu .submenu button:hover {
-    background-color: rgba(255, 255, 255, 0.08);
+    background-color: var(--hf-bg-muted);
     color: var(--hf-accent-4);
 }
 
@@ -595,18 +601,19 @@
 }
 
 .context-menu div:hover {
-    background-color: rgba(255, 255, 255, 0.08);
+    background-color: var(--hf-bg-muted);
     color: var(--hf-accent-4);
 }
 
 /* Section labels in menu */
+.menu-items div.menu-section-label,
 .menu-section-label {
-    padding: 6px 16px 2px !important;
-    font-size: 0.7rem !important;
+    padding: 6px 16px 2px;
+    font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: var(--hf-color-5) !important;
-    cursor: default !important;
+    color: var(--hf-color-5);
+    cursor: default;
     pointer-events: none;
 }
 
@@ -791,7 +798,7 @@
 }
 
 #menu button.hf-menu-item:hover {
-    background-color: rgba(255, 255, 255, 0.08);
+    background-color: var(--hf-bg-muted);
     color: var(--hf-accent-4);
 }
 

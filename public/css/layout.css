@@ -268,9 +268,12 @@ html, body {
     font-size: 14px;
 }
 
-/* Hidden utility */
-.hidden {
-    display: none !important;
+/* Hidden utility — high-specificity selector ensures display:none wins unconditionally without !important */
+:not(#_):not(#__):is(.hidden, [hidden]),
+:not(#_):is(.hidden, [hidden]),
+.hidden,
+[hidden] {
+    display: none;
 }
 
 /* Responsive adjustments */
@@ -298,8 +301,8 @@ html, body {
     position: relative;
     width: 24px;
     height: 24px;
-    border: 2px solid var(--border-color, #555);
-    border-radius: 4px;
+    border: 2px solid var(--hf-border-subtle, var(--hf-color-4));
+    border-radius: var(--hf-radius-sm);
     cursor: pointer;
     overflow: hidden;
     flex-shrink: 0;
@@ -328,7 +331,7 @@ html, body {
     right: -6px;
     font-size: 1rem;
     cursor: pointer;
-    color: var(--text-secondary, #aaa);
+    color: var(--hf-text-dim, var(--hf-color-5));
     user-select: none;
     line-height: 1;
     transition: color 0.15s ease;
@@ -336,21 +339,26 @@ html, body {
 }
 
 .tool-caret:hover {
-    color: var(--text-primary, #eee);
+    color: var(--hf-text-bright, var(--hf-color-7));
 }
 
 .tool-split-btn .menu-items {
     left: 0;
 }
 
+.menu-items .tool-menu-item,
 .tool-menu-item {
-    display: flex !important;
+    display: flex;
     align-items: center;
     gap: 0.75em;
 }
 
-.tool-menu-item::before {
-    display: none !important;
+.menu-items div.tool-menu-item::before,
+.menu-items div.tool-menu-item.checked::before,
+.tool-menu-item::before,
+.tool-menu-item.checked::before {
+    display: none;
+    content: none;
 }
 
 .tool-menu-item > span:first-child {
