@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // vec3 effect params render a working handfish <vector3d-picker> (mirroring
 // noisedeck's controlGroupBuilder) instead of being silently hidden by the
@@ -11,7 +12,7 @@ import { test, expect } from './fixtures.js'
 async function bootWithNoise(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')

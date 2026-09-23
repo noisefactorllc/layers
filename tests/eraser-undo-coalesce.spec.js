@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, IN_PAGE_UNTIL } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // The eraser's class doc promises: "Drag across multiple strokes to delete
 // them all in one undo step." But _tryDelete pushed an undo snapshot per
@@ -9,7 +10,7 @@ import { appReady, IN_PAGE_UNTIL } from './waits.js'
 async function bootTransparent(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')

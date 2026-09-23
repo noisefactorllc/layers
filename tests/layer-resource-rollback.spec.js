@@ -1,13 +1,14 @@
 import { test, expect } from './fixtures.js'
 import { readFileSync } from 'node:fs'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 const videoBase64 = readFileSync(new URL('./fixtures/native-video-detail.webm', import.meta.url)).toString('base64')
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+    await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })

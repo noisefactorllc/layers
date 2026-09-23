@@ -1,10 +1,11 @@
 import { test, expect } from './fixtures.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+    await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })

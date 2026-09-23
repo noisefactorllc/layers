@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // A drag has to arrive as movement, not as a jump: a single mouse.move can
 // deliver one pointermove, so a marquee sized from movement deltas commits
@@ -17,7 +18,7 @@ test.describe('Move tool - effect base layer', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a SOLID project (so we have visible pixels to extract)
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')

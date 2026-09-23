@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // Every auto-correction path ends in exactly one toast: "Applied: <name>" when
 // it added a correction layer, "No correction needed" when the image already
@@ -18,7 +19,7 @@ test.describe('Image menu adjustments', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a solid color project
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')

@@ -1,6 +1,7 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState, framePainted, quietWindow } from './waits.js'
 import { SEANCE_SDK_URL, hasLocalSeanceHarness, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 let seance
 
@@ -66,7 +67,7 @@ async function gotoApp(page, params = {}) {
 }
 
 async function createProject(page, type = 'transparent', size) {
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click(`.media-option[data-type="${type}"]`)
     await page.waitForSelector('.canvas-size-dialog', { timeout: 15000 })
     if (size) {
@@ -494,7 +495,7 @@ test('dialect refusal: joining a non-Layers session shows a friendly dialog and 
     await expect(page.locator('.info-dialog .info-message')).toContainText("isn't a Layers composition")
     await page.click('.info-dialog #info-ok')
 
-    await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
+    // A refused join falls back to the default canvas; createProject reopens the chooser.
     await createProject(page)
     expect((await layersState(page)).length).toBe(1)
     expect(await page.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('offline')

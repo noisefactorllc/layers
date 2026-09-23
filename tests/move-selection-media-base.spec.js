@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // A drag has to arrive as movement, not as a jump: a single mouse.move can
 // deliver one pointermove, so a marquee sized from movement deltas commits
@@ -17,7 +18,7 @@ test.describe('Move tool - media base layer', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Wait for open dialog
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
 
         // Create a test image and open it directly (simulating user opening an image)
         await page.evaluate(async () => {

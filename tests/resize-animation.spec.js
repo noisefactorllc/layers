@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { fileURLToPath } from 'node:url'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.describe('Image menu - Resize preserves animation', () => {
     test('resizing animated video keeps canvas animated', async ({ page }) => {
@@ -8,7 +9,7 @@ test.describe('Image menu - Resize preserves animation', () => {
 
         // Use the same 30fps color-cycle fixture in every browser without
         // depending on browser-specific recording APIs.
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
 
         // Load the video through the app's open-media file input, same as a
         // user opening a video file.

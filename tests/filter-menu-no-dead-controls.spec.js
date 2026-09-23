@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, framePainted, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // No dead controls: every entry in the Filter menu must add a layer that
 // VISIBLY changes the rendered canvas. A menu item that compiles but renders
@@ -33,7 +34,7 @@ test('every filter menu entry visibly changes the render', async ({ page }) => {
 
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     // A small image still exercises every real filter and feedback frame,

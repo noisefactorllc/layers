@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.describe('Font Select', () => {
     test.beforeEach(async ({ page }) => {
@@ -7,7 +8,7 @@ test.describe('Font Select', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a solid color project
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')

@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { IN_PAGE_UNTIL } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // Regression tests for updateTextParams on hidden text layers.
 //
@@ -16,13 +17,11 @@ async function bootApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
-    const visible = await page.evaluate(() => !!document.querySelector('.open-dialog-backdrop.visible'))
-    if (visible) {
-        await page.click('.media-option[data-type="solid"]')
-        await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
-        await page.click('.canvas-size-dialog .action-btn.primary')
-        await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
-    }
+    await reopenNewProjectDialog(page)
+    await page.click('.media-option[data-type="solid"]')
+    await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    await page.click('.canvas-size-dialog .action-btn.primary')
+    await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
 }
 
 async function addTextLayer(page, text) {

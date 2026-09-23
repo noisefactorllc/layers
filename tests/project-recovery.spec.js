@@ -1,14 +1,31 @@
 import { test, expect } from './fixtures.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
+import { defaultProjectReady } from './waits.js'
 
 async function boot(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForFunction(() => !!window.LayersAgent, null, { timeout: 15000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.locator('#canvas-width').fill('128')
     await page.locator('#canvas-height').fill('128')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden' })
+}
+
+// Recovery copies are reached through File > recover unsaved work...
+async function reopenRecoveryDialog(page) {
+    await defaultProjectReady(page)
+    await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
+    await page.locator('#menu #recoverProjectMenuItem').waitFor({ state: 'visible' })
+    await page.locator('#menu #recoverProjectMenuItem').click()
+}
+
+// Boot's default canvas is dirty, so restoring meets the unsaved-changes guard.
+async function acceptUnsavedGuard(page) {
+    const confirm = page.locator('.confirm-dialog-backdrop.visible')
+    await confirm.locator('#confirm-ok').click()
 }
 
 async function waitForCheckpoint(page, layerCount = 1) {
@@ -28,6 +45,44 @@ async function waitForCheckpoint(page, layerCount = 1) {
         })
     }, layerCount), { timeout: 10000 }).toBeGreaterThan(0)
 }
+
+async function startupState(page) {
+    return page.evaluate(() => {
+        const app = window.layersApp
+        return {
+            width: app._canvas.width,
+            height: app._canvas.height,
+            layers: app._layers.map(layer => layer.effectId),
+            openDialog: !!document.querySelector('.open-dialog-backdrop.visible'),
+            welcome: !!document.querySelector('.welcome-dialog[open]'),
+            recovery: !!document.querySelector('.recovery-dialog'),
+            toasts: [...document.querySelectorAll('.toast-message')].map(el => el.textContent),
+        }
+    })
+}
+
+test('a clean boot lands on a 1080p solid canvas with no startup dialogs or toasts', async ({ page }) => {
+    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.waitForFunction(() => window.layersApp?._initialized === true, null, { timeout: 15000 })
+    expect(await startupState(page)).toEqual({
+        width: 1920, height: 1080, layers: ['synth/solid'],
+        openDialog: false, welcome: false, recovery: false, toasts: [],
+    })
+})
+
+test('a boot with unsaved work keeps the default canvas and announces the work with a toast', async ({ page }) => {
+    await boot(page)
+    await waitForCheckpoint(page)
+    page.on('dialog', dialog => dialog.accept())
+    await page.reload({ waitUntil: 'commit' })
+    await expect(page.locator('.toast-message', { hasText: 'Previous unsaved work is available' }))
+        .toBeVisible({ timeout: 30000 })
+    await page.waitForFunction(() => window.layersApp?._initialized === true, null, { timeout: 15000 })
+    expect(await startupState(page)).toMatchObject({
+        width: 1920, height: 1080, layers: ['synth/solid'],
+        openDialog: false, welcome: false, recovery: false,
+    })
+})
 
 test('dirty navigation is protected and a cancelled reload retains the document', async ({ page }) => {
     await boot(page)
@@ -54,7 +109,9 @@ test('reload recovers the exact unsaved document pixels, media, and masks', asyn
     await waitForCheckpoint(page, before.layerCount)
     page.on('dialog', dialog => dialog.accept())
     await page.reload({ waitUntil: 'networkidle' })
+    await reopenRecoveryDialog(page)
     await page.getByRole('button', { name: 'Restore', exact: true }).first().click()
+    await acceptUnsavedGuard(page)
     await expect.poll(() => page.evaluate(() => window.layersApp._layers.length), { timeout: 15000 }).toBe(before.layerCount)
     const after = await page.evaluate(async () => {
         const exported = await window.LayersAgent.exportImage({ format: 'png', captureOnly: true })
@@ -76,7 +133,8 @@ test('a committed save clears recovery and does not warn on reload', async ({ pa
     await page.waitForFunction(() => !!window.LayersAgent, null, { timeout: 15000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
     expect(dialogs).toBe(0)
-    await expect(page.locator('.recovery-dialog')).not.toBeVisible()
+    expect(await page.evaluate(async () =>
+        (await (await import('/js/utils/project-recovery.js')).listRecoveries()).length)).toBe(0)
 })
 
 test('Keep for later retains the old checkpoint after creating and saving another document', async ({ page }) => {
@@ -85,7 +143,9 @@ test('Keep for later retains the old checkpoint after creating and saving anothe
     const original = await page.evaluate(async () => (await (await import('/js/utils/project-recovery.js')).listRecoveries())[0].id)
     page.on('dialog', dialog => dialog.accept())
     await page.reload({ waitUntil: 'networkidle' })
+    await reopenRecoveryDialog(page)
     await page.getByRole('button', { name: 'Keep for later', exact: true }).click()
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.evaluate(() => window.LayersAgent.saveProjectAs({ name: 'another document' }))
@@ -93,19 +153,22 @@ test('Keep for later retains the old checkpoint after creating and saving anothe
     expect(ids).toContain(original)
 })
 
-test('discarding at boot deletes accumulated copies and falls through to the open dialog', async ({ page }) => {
+test('discarding accumulated copies removes them and closes back to the active canvas', async ({ page }) => {
     const listIds = () => page.evaluate(async () => (await (await import('/js/utils/project-recovery.js')).listRecoveries()).map(row => row.id))
     await boot(page)
     await waitForCheckpoint(page)
     page.on('dialog', dialog => dialog.accept())
     await page.reload({ waitUntil: 'networkidle' })
+    await reopenRecoveryDialog(page)
     await page.getByRole('button', { name: 'Keep for later', exact: true }).click()
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden' })
     await waitForCheckpoint(page)
     await expect.poll(async () => (await listIds()).length).toBe(2)
     await page.reload({ waitUntil: 'networkidle' })
+    await reopenRecoveryDialog(page)
     await expect(page.locator('.recovery-dialog').getByRole('button', { name: 'Restore', exact: true })).toHaveCount(2)
 
     await page.locator('.recovery-dialog').getByRole('button', { name: 'Discard', exact: true }).first().click()
@@ -121,7 +184,6 @@ test('discarding at boot deletes accumulated copies and falls through to the ope
     await page.getByRole('button', { name: 'Discard all', exact: true }).click()
     await page.locator('.confirm-dialog-backdrop.visible #confirm-ok').click()
     await expect(page.locator('.recovery-dialog')).toHaveCount(0)
-    await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
     expect(await listIds()).toEqual([])
 })
 
@@ -164,7 +226,7 @@ test('a second live tab ignores the first tab checkpoint, then discovers it afte
     await other.waitForFunction(() => !!window.LayersAgent, null, { timeout: 15000 })
     await other.evaluate(() => window.LayersAgent.ready)
     await expect(other.locator('.recovery-dialog')).not.toBeVisible()
-    await expect(other.locator('.open-dialog-backdrop.visible')).toBeVisible()
+    await defaultProjectReady(other)
     expect(await other.evaluate(async () => (await (await import('/js/utils/project-recovery.js')).listRecoveries()).map(row => row.id))).not.toContain(original)
     await page.close()
     await expect.poll(() => other.evaluate(async () => (await (await import('/js/utils/project-recovery.js')).listRecoveries()).map(row => row.id))).toContain(original)
@@ -210,9 +272,11 @@ test('restoring a deferred copy adopts its slot, preserves it on failed save, an
     const original = await page.evaluate(async () => { await window.layersApp._recovery.flush(); return window.layersApp._recovery._id })
     page.on('dialog', dialog => dialog.accept())
     await page.reload({ waitUntil: 'networkidle' })
+    await reopenRecoveryDialog(page)
     await page.getByRole('button', { name: 'Keep for later', exact: true }).click()
     await page.evaluate(() => window.layersApp._showRecoveryDialog())
     await page.getByRole('button', { name: 'Restore', exact: true }).click()
+    await acceptUnsavedGuard(page)
     await expect.poll(() => page.evaluate(() => window.layersApp._layers.length)).toBe(1)
     expect(await page.evaluate(() => window.layersApp._recovery._id)).toBe(original)
     const failed = await page.evaluate(async () => {

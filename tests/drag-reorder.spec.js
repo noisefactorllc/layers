@@ -1,8 +1,9 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function createTransparentProject(page) {
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     // Reorder geometry is independent of the rendered image size.

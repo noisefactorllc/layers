@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function addColorLayer(page, color, size = 100) {
     const before = await page.evaluate(() => window.layersApp._layers.length)
@@ -22,7 +23,7 @@ test.describe('Layer reorder FSM', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')

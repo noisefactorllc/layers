@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.setTimeout(60000)
 
@@ -8,7 +9,7 @@ test.setTimeout(60000)
 async function loadApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
 }
 
 async function createSolidProject(page) {

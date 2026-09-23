@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, framePainted } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // Round-trip regression tests for save -> reload page -> load.
 // Reloading the page is the realistic round-trip: it gives a fresh renderer
@@ -19,7 +20,7 @@ async function waitReady(page) {
 async function bootFromOpenDialog(page, type) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await waitReady(page)
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click(`.media-option[data-type="${type}"]`)
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')

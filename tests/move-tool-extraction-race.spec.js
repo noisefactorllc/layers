@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // Regression test: if the user releases the mouse while an async selection
 // extraction (or non-destructive duplicate) is still in flight, the move tool
@@ -62,6 +63,7 @@ test('mouseup during extraction does not leave the layer following the cursor', 
 test('pointer cancellation during extraction leaves the project unchanged', async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
@@ -119,6 +121,7 @@ test('pointer cancellation during extraction leaves the project unchanged', asyn
 test('pointer cancellation during an in-flight whole-layer clone leaves the project unchanged', async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')

@@ -1,9 +1,10 @@
 // tests/brush-tool.spec.js
 import { test, expect } from './fixtures.js'
 import { appReady, appState, strokeCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function createTransparentProject(page) {
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')

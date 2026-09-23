@@ -272,7 +272,7 @@ test.describe('agent: exportVideo', () => {
                 jobStatus: 'failed',
                 lifecycleActive: false,
                 rendererRunning: true,
-                canvas: { width: 1024, height: 1024 },
+                canvas: { width: 1920, height: 1080 },
             })
         })
     }

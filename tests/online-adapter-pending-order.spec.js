@@ -1,11 +1,12 @@
 import { test, expect } from './fixtures.js'
 import { IN_PAGE_UNTIL } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test('an SDK-pending parent delete and recreate does not resurrect its old child', async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+    await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
@@ -58,8 +59,8 @@ for (const change of ['acknowledgement', 'local edit', 'read-only moderation']) 
 test(`a ${change} during semantic loading never restores the pre-edit model or history`, async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+    await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
@@ -146,8 +147,8 @@ test(`a ${change} during semantic loading never restores the pre-edit model or h
 test('joining a room that changes during initial apply catches up without rejecting the join', async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+    await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })

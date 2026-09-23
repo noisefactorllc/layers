@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 // Regression: brush/shape _onMouseUp cleared instance gesture state
 // (_currentPoints / _startPt / _currentPt) AFTER awaiting the rasterize +
@@ -159,7 +160,7 @@ for (const toolName of ['brush', 'shape']) {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         const backdrop = page.locator('.open-dialog-backdrop.visible')
-        await backdrop.waitFor()
+        await reopenNewProjectDialog(page)
         await page.locator('.media-option[data-type="solid"]').click()
         await page.locator('.canvas-size-dialog .action-btn.primary').click()
         await backdrop.waitFor({ state: 'hidden' })

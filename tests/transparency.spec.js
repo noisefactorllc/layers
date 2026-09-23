@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState, framePainted } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 function readCenterAlpha(canvasEl) {
     const ctx = canvasEl.getContext('webgl2') || canvasEl.getContext('webgl')
@@ -24,7 +25,7 @@ test.describe('Base layer transparency', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a solid base layer
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
@@ -82,7 +83,7 @@ test.describe('Base layer transparency', () => {
     test('one keyboard opacity input emits once and rolls back model and control on rebuild failure', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')

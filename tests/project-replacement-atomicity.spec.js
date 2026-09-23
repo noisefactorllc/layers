@@ -1,12 +1,13 @@
 import { test, expect } from './fixtures.js'
 import path from 'node:path'
-import { IN_PAGE_UNTIL } from './waits.js'
+import { IN_PAGE_UNTIL, defaultProjectReady } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+    await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
@@ -919,8 +920,13 @@ test.describe('Atomic project replacement', () => {
     test('direct Welcome media completion does not require an Open dialog backdrop', async ({ page }) => {
         const pageErrors = []
         page.on('pageerror', error => pageErrors.push(error.message))
-        await page.goto('/?welcome=1', { waitUntil: 'networkidle' })
+        await page.goto('/', { waitUntil: 'networkidle' })
         await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+        await defaultProjectReady(page)
+        await page.evaluate(() => window.layersApp._markClean())
+        await page.getByRole('menuitem', { name: 'Layers menu', exact: true }).click()
+        await page.getByRole('menuitem', { name: 'welcome to Layers...', exact: true }).click()
+        await page.locator('.welcome-dialog[open]').waitFor()
         const chooserPromise = page.waitForEvent('filechooser')
         await page.locator('.welcome-tile[data-action="open"]').click()
         await (await chooserPromise).setFiles(path.resolve('public/img/og-image.png'))

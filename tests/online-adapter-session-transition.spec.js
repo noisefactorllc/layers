@@ -1,11 +1,12 @@
 import { test, expect } from './fixtures.js'
 import { IN_PAGE_UNTIL } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+    await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
@@ -1802,6 +1803,6 @@ for (const operation of ['take-online', 'join']) {
         expect(result.status).toBe('offline')
         expect(result.isOnline).toBe(false)
         expect(result.disconnects).toBe(2)
-        expect(result.layerIds).toEqual([expect.stringMatching(/^layer-0-[a-f0-9]{32}$/)])
+        expect(result.layerIds).toEqual([expect.stringMatching(/^layer-1-[a-f0-9]{32}$/)])
     })
 }

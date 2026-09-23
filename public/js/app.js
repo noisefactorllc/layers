@@ -22,7 +22,7 @@ import { openDialog } from './ui/open-dialog.js'
 import { addLayerDialog } from './ui/add-layer-dialog.js'
 import { aboutDialog } from './ui/about-dialog.js'
 import { settingsDialog } from './ui/settings-dialog.js'
-import { welcomeDialog, isWelcomeDismissed } from './ui/welcome-dialog.js'
+import { welcomeDialog } from './ui/welcome-dialog.js'
 import { saveProjectDialog } from './ui/save-project-dialog.js'
 import { projectManagerDialog } from './ui/project-manager-dialog.js'
 import { confirmDialog } from './ui/confirm-dialog.js'
@@ -1356,11 +1356,10 @@ class LayersApp {
         // Seance online collaboration — wire the adapter + "go online..."
         // menu item (cheap, no network). A `?seance=` boot join (if present)
         // applies directly with no confirm, while the loading screen stays
-        // up for it exactly as it would for any other boot path; on
-        // success it replaces the initial open dialog, and any join failure
+        // up for it exactly as it would for any other boot path; on success
+        // it replaces the default canvas below, and any join failure
         // (dialect mismatch, network error, unknown session) falls back to
-        // the normal open dialog exactly as if `?seance=` had never been
-        // there.
+        // the default canvas exactly as if `?seance=` had never been there.
         this._initOnlineCollaboration()
         const joinedFromUrl = this._onlineAdapter
             ? await this._onlineAdapter.joinFromUrl().catch((err) => {
@@ -1369,12 +1368,9 @@ class LayersApp {
             })
             : false
         this._hideLoadingScreen()
-        if (!joinedFromUrl && !(await this._showRecoveryDialog({ atBoot: true }))) {
-            if (this._shouldAutoShowWelcome()) {
-                welcomeDialog.show({ fallThrough: true, entry: 'boot' })
-            } else {
-                this._showOpenDialog()
-            }
+        if (!joinedFromUrl) {
+            await toast.suppress(() => this._handleCreateSolidBase(1920, 1080))
+            await this._notifyRecoverableWork()
         }
 
         // Expose drawing module for tests
@@ -1561,20 +1557,6 @@ class LayersApp {
             leaveOnline: replacementConsent.leaveOnline,
             replacementConsent,
         })
-        return true
-    }
-
-    /**
-     * First-run welcome splash gate. Suppressed under automation
-     * (navigator.webdriver) so it never interferes with the test harness;
-     * `?welcome=1` opts back in for the welcome spec.
-     * @returns {boolean}
-     * @private
-     */
-    _shouldAutoShowWelcome() {
-        if (isWelcomeDismissed()) return false
-        const forced = new URLSearchParams(window.location.search).has('welcome')
-        if (window.navigator.webdriver && !forced) return false
         return true
     }
 
@@ -4470,9 +4452,8 @@ class LayersApp {
             closeDropdowns()
         })
 
-        // Welcome dialog — re-openable from the logo menu. Tiles route into the
-        // existing new-canvas / open-media flows; closing without a choice falls
-        // through to the open dialog so the user is never stranded.
+        // Welcome dialog — opened from the logo menu. Tiles route into the
+        // existing new-canvas / open-media flows.
         welcomeDialog.init({
             onNewCanvas: ({ entry }) => this._startProjectReplacement(({
                 leaveOnline, replacementConsent,
@@ -4488,7 +4469,6 @@ class LayersApp {
                 leaveOnline,
                 replacementConsent,
             })),
-            onDismiss: () => this._showOpenDialog(),
         })
         // Text tool button (toolbar)
         document.getElementById('textToolBtn')?.addEventListener('click', () => {
@@ -6639,13 +6619,13 @@ class LayersApp {
         }
     }
 
-    async _showRecoveryDialog({ atBoot = false } = {}) {
+    async _showRecoveryDialog() {
         const records = await this._recovery.list().catch(error => {
             console.error('[Layers] Could not read recovery copies:', error)
             return []
         })
         if (!records.length) {
-            if (!atBoot) toast.info('No recovery copies are available')
+            toast.info('No recovery copies are available')
             return false
         }
         showRecoveryDialog(records, {
@@ -6693,10 +6673,23 @@ class LayersApp {
             },
             onClose: () => {
                 this._recovery.retain()
-                if (atBoot && this._layers.length === 0) this._showOpenDialog()
             },
         })
         return true
+    }
+
+    /**
+     * After boot's default canvas is up, let the user know an earlier
+     * unsaved document can still be restored, without blocking on a modal.
+     * Manual restore stays available via File > recover unsaved work...
+     * @private
+     */
+    async _notifyRecoverableWork() {
+        const records = await this._recovery.list().catch(error => {
+            console.error('[Layers] Could not read recovery copies:', error)
+            return []
+        })
+        if (records.length) toast.info('Previous unsaved work is available')
     }
 
     async _saveProject(projectId, projectName, { mutationToken = null } = {}) {

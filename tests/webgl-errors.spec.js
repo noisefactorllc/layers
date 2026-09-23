@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, framePainted } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 function collectWebGLErrors(page) {
     const webglErrors = []
@@ -13,7 +14,7 @@ function collectWebGLErrors(page) {
 }
 
 async function createProject(page, type) {
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click(`.media-option[data-type="${type}"]`)
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')

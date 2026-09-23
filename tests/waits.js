@@ -24,6 +24,15 @@ export function appReady(page, options = {}) {
     )
 }
 
+/** Boot's default 1080p solid canvas has landed and is the dirty project. */
+export function defaultProjectReady(page, options = {}) {
+    return page.waitForFunction(
+        () => window.layersApp?._layers?.length === 1 && window.layersApp?._isDirty === true,
+        null,
+        { timeout: 15000, ...options },
+    )
+}
+
 /** The project has exactly `count` layers. */
 export function layerCount(page, count, options = {}) {
     return page.waitForFunction(

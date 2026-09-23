@@ -1,6 +1,7 @@
 import { test, expect } from './fixtures.js'
 import { installNoisemakerSource } from './noisemaker-source.js'
 import { appReady, appState, framePainted, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.beforeEach(async ({ page }) => {
     await installNoisemakerSource(page, ['mixer/alphaMask'])
@@ -38,7 +39,7 @@ async function waitForPixelChange(page, x, yTop, before, timeout = 20000) {
 async function bootSolidProject(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
@@ -109,7 +110,7 @@ async function setLeftHalfMask(page, layerId) {
 async function bootSolidProjectSized(page, width, height) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.fill('#canvas-width', String(width))

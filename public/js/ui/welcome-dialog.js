@@ -1,10 +1,8 @@
 /**
  * Welcome Dialog
  *
- * A warm, restrained first-run splash + quick start, shown in place of the
- * open dialog on first launch. Two tiles route into the app's existing
- * new-canvas / open-media flows; closing without a choice falls through to the
- * open dialog so the user is never stranded. Re-openable from the logo menu.
+ * A warm, restrained quick-start splash, opened from the logo menu. Two
+ * tiles route into the app's existing new-canvas / open-media flows.
  *
  * @module ui/welcome-dialog
  */
@@ -27,20 +25,18 @@ export function isWelcomeDismissed() {
 }
 
 /**
- * WelcomeDialog — first-run splash singleton.
+ * WelcomeDialog — quick-start splash singleton.
  */
 class WelcomeDialog {
     constructor() {
         this._dialog = null
         this._deps = {}
-        this._chose = false
-        this._fallThrough = false
         this._entry = 'menu'
     }
 
     /**
-     * Inject the flows the tiles / dismiss route into.
-     * @param {{onNewCanvas?:Function, onOpenFile?:Function, onDismiss?:Function}} deps
+     * Inject the flows the tiles route into.
+     * @param {{onNewCanvas?:Function, onOpenFile?:Function}} deps
      */
     init(deps = {}) {
         this._deps = deps
@@ -48,14 +44,10 @@ class WelcomeDialog {
 
     /**
      * Show the dialog.
-     * @param {{fallThrough?:boolean,entry?:'boot'|'menu'}} [opts] - when true, closing WITHOUT a tile
-     *   choice runs `onDismiss` (used only for the first-run entry point so the
-     *   user still lands in the open dialog).
+     * @param {{entry?:'menu'}} [opts]
      */
-    show({ fallThrough = false, entry = 'menu' } = {}) {
+    show({ entry = 'menu' } = {}) {
         if (!this._dialog) this._createDialog()
-        this._chose = false
-        this._fallThrough = fallThrough
         this._entry = entry
         const checkbox = this._dialog.querySelector('#welcome-dontshow')
         if (checkbox) checkbox.checked = isWelcomeDismissed()
@@ -108,7 +100,6 @@ class WelcomeDialog {
         // Tiles route into the injected flows.
         this._dialog.querySelectorAll('.welcome-tile').forEach((btn) => {
             btn.addEventListener('click', () => {
-                this._chose = true
                 const action = btn.dataset.action
                 this.hide()
                 if (action === 'new') this._deps.onNewCanvas?.({ entry: this._entry })
@@ -129,12 +120,6 @@ class WelcomeDialog {
         // Backdrop click.
         this._dialog.addEventListener('click', (e) => {
             if (e.target === this._dialog) this.hide()
-        })
-
-        // Fall-through to the open dialog on dismiss (first-run only), unless a
-        // tile was chosen (the tile handler runs its own flow).
-        this._dialog.addEventListener('close', () => {
-            if (!this._chose && this._fallThrough) this._deps.onDismiss?.()
         })
     }
 }

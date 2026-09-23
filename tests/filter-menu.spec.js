@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 const EXPECTED_GROUPS = [
     {
@@ -206,7 +207,7 @@ const EXPECTED_GROUPS = [
 async function bootBlank(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.locator('#canvas-width').fill('128')

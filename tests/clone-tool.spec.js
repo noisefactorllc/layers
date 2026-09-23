@@ -1,10 +1,11 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 const FIXTURE_SIZE = 512
 
 async function createTransparentProject(page) {
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.fill('#canvas-width', String(FIXTURE_SIZE))

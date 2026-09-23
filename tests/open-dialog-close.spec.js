@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function openFileMenuItem(page, menuItemId) {
     await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
@@ -8,7 +9,7 @@ async function openFileMenuItem(page, menuItemId) {
 }
 
 async function createSolidProject(page) {
-    await page.waitForSelector('.open-dialog-backdrop.visible')
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
     await page.click('.canvas-size-dialog .action-btn.primary')
@@ -30,9 +31,16 @@ async function openMenuItemWithConfirm(page, menuItemId) {
 }
 
 test.describe('Open dialog close behavior', () => {
-    test('open dialog cannot be closed at startup (no active project)', async ({ page }) => {
+    // Every app trigger has an active project, so drive the non-closable mode directly.
+    test('open dialog cannot be closed with no active project to preserve', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await appReady(page)
+
+        await page.evaluate(async () => {
+            const { openDialog } = await import('/js/ui/open-dialog.js')
+            openDialog.show({ canClose: false })
+        })
 
         const backdrop = page.locator('.open-dialog-backdrop.visible')
         await expect(backdrop).toBeVisible()

@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.describe('Layer menu - Flatten Image', () => {
     test('flatten image combines all visible layers into one', async ({ page }) => {
@@ -7,7 +8,7 @@ test.describe('Layer menu - Flatten Image', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a solid base layer
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
@@ -57,8 +58,8 @@ test.describe('Layer menu - Flatten Image', () => {
     test('flatten captures an effect parameter update made in the same command turn', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+        await reopenNewProjectDialog(page)
         const backdrop = page.locator('.open-dialog-backdrop.visible')
-        await backdrop.waitFor()
         await page.locator('.media-option[data-type="solid"]').click()
         await page.locator('.canvas-size-dialog .action-btn.primary').click()
         await backdrop.waitFor({ state: 'hidden' })

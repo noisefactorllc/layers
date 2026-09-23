@@ -1,13 +1,13 @@
 import { test, expect } from './fixtures.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
-    const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
+    await reopenNewProjectDialog(page)
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
-    await backdrop.waitFor({ state: 'hidden' })
+    await page.locator('.open-dialog-backdrop.visible').waitFor({ state: 'hidden' })
 }
 
 test('an in-flight rebuild cannot observe a later stage candidate', async ({ page }) => {

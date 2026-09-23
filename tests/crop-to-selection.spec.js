@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.describe('Image menu - Crop to Selection', () => {
     test('crop to selection resizes canvas to selection bounds', async ({ page }) => {
@@ -7,7 +8,7 @@ test.describe('Image menu - Crop to Selection', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a solid base layer (1024x1024)
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')
@@ -190,8 +191,7 @@ test.describe('Image menu - Crop to Selection', () => {
     test('crop bakes drawing pixels into stable media that survives reload', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.locator('#loading-screen').waitFor({ state: 'hidden' })
-        const backdrop = page.locator('.open-dialog-backdrop.visible')
-        await backdrop.waitFor()
+        await appReady(page)
 
         const result = await page.evaluate(async () => {
             const app = window.layersApp

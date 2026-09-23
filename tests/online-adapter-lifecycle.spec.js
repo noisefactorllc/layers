@@ -1,11 +1,12 @@
 import { test, expect } from './fixtures.js'
 import { IN_PAGE_UNTIL } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
+    await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await backdrop.waitFor()
     await page.locator('.media-option[data-type="solid"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
@@ -485,7 +486,7 @@ test('remote commit finalizes the last local debounced state before its undo ent
     expect(result).toEqual({
         remoteIds: ['layer-710'],
         undoOk: true,
-        restoredId: expect.stringMatching(/^layer-0-[a-f0-9]{32}$/),
+        restoredId: expect.stringMatching(/^layer-1-[a-f0-9]{32}$/),
         restoredOpacity: 37,
         restoredCanvas: { width: 1024, height: 1024 },
     })
@@ -565,7 +566,7 @@ test('remote post-push failure restores exact finalized history without candidat
     }, IN_PAGE_UNTIL)
 
     expect(result).toEqual({
-        localId: expect.stringMatching(/^layer-0-[a-f0-9]{32}$/),
+        localId: expect.stringMatching(/^layer-1-[a-f0-9]{32}$/),
         layerId: result.localId,
         opacity: 37,
         sameUndoStack: true,

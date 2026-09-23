@@ -1,6 +1,7 @@
 // tests/fill-tool.spec.js
 import { test, expect } from './fixtures.js'
 import { appReady, appState } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.describe('Fill tool', () => {
     test('clicking on canvas creates a filled raster layer', async ({ page }) => {
@@ -8,9 +9,9 @@ test.describe('Fill tool', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a solid color project
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
-        await page.click('.action-btn.primary')
+        await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
         await appReady(page)
 
@@ -45,9 +46,9 @@ test.describe('Fill tool', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
-        await page.click('.action-btn.primary')
+        await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
 
         const before = await page.evaluate(() => {
@@ -97,9 +98,9 @@ test.describe('Fill tool', () => {
     test('reports a failed fill-layer commit outcome', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
-        await page.click('.action-btn.primary')
+        await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector(
             '.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
         await page.click('#fillToolBtn')

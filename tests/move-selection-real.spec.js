@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState, layerCount } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.describe('Move tool - real user flow', () => {
     test('draw selection then drag with move tool extracts to new layer', async ({ page }) => {
@@ -14,7 +15,7 @@ test.describe('Move tool - real user flow', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a transparent project via UI
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="transparent"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')

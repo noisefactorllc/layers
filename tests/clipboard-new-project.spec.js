@@ -1,10 +1,12 @@
 import { test, expect } from './fixtures.js'
 import { seedClipboardRead } from './helpers/clipboard.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.describe('New from Clipboard', () => {
     test('clipboard button is available on media pane', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await reopenNewProjectDialog(page)
 
         // Click Media to go to media pane
         await page.click('.media-option[data-type="media"]')
@@ -17,6 +19,7 @@ test.describe('New from Clipboard', () => {
     test('clicking clipboard with no image shows error toast', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await reopenNewProjectDialog(page)
 
         await seedClipboardRead(page)
 
@@ -31,6 +34,7 @@ test.describe('New from Clipboard', () => {
     test('clicking clipboard with image creates project at correct dimensions', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await reopenNewProjectDialog(page)
 
         await seedClipboardRead(page, { width: 200, height: 100, color: 'red' })
 

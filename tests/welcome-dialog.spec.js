@@ -1,13 +1,15 @@
 import { test, expect } from './fixtures.js'
 import { seedClipboardRead } from './helpers/clipboard.js'
+import { defaultProjectReady } from './waits.js'
 import path from 'node:path'
 
-// The first-run welcome splash is suppressed under the Playwright webdriver
-// flag; `?welcome=1` opts it back in so these tests exercise the real
-// first-run path.
-async function boot(page, query = '') {
-    await page.goto('/' + query, { waitUntil: 'networkidle' })
+// Marked clean so tile clicks skip the discard guard; guard tests below use a real dirty project.
+async function boot(page) {
+    await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+    await defaultProjectReady(page)
+    await page.evaluate(() => window.layersApp._markClean())
+    await reopenWelcome(page)
 }
 
 async function createProjectFromWelcome(page, type = 'solid', size) {
@@ -207,8 +209,8 @@ async function putPartiallyCorruptMediaProject(page) {
 }
 
 test.describe('Welcome dialog', () => {
-    test('auto-shows on first run (forced); open dialog suppressed', async ({ page }) => {
-        await boot(page, '?welcome=1')
+    test('opens from the menu with the open dialog not shown underneath', async ({ page }) => {
+        await boot(page)
         await expect(page.locator('.welcome-dialog[open]')).toBeVisible()
         expect(await page.locator('.open-dialog-backdrop.visible').count()).toBe(0)
         await expect(page.locator('.welcome-tile[data-action="new"]')).toBeVisible()
@@ -216,7 +218,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('quick-start controls have exact accessible names', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await expect(page.getByRole('button', { name: 'New canvas', exact: true })).toBeVisible()
         await expect(page.getByRole('button', { name: 'Open file', exact: true })).toBeVisible()
         await expect(page.getByRole('button', { name: 'Close', exact: true })).toBeVisible()
@@ -224,7 +226,7 @@ test.describe('Welcome dialog', () => {
 
     for (const action of ['new', 'open']) {
         test(`online empty composition commits offline after successful ${action}`, async ({ page }) => {
-            await boot(page, '?welcome=1')
+            await boot(page)
             await installOnlineSession(page)
 
             if (action === 'new') {
@@ -246,27 +248,28 @@ test.describe('Welcome dialog', () => {
         })
     }
 
-    test('"don\'t show again" persists and skips welcome next load', async ({ page }) => {
-        await boot(page, '?welcome=1')
-        await page.locator('.welcome-dialog[open]').waitFor()
+    test('"don\'t show again" persists across sessions', async ({ page }) => {
+        await boot(page)
         await page.locator('#welcome-dontshow').check()
+        expect(await page.evaluate(() => localStorage.getItem('layers-welcome-dismissed'))).toBe('true')
         await page.locator('.welcome-close').click()
 
-        await boot(page, '?welcome=1')
-        expect(await page.locator('.welcome-dialog[open]').count()).toBe(0)
-        await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
+        await boot(page)
+        await expect(page.locator('#welcome-dontshow')).toBeChecked()
     })
 
-    test('closing without choosing falls through to the open dialog', async ({ page }) => {
-        await boot(page, '?welcome=1')
-        await page.locator('.welcome-dialog[open]').waitFor()
+    test('closing without choosing simply closes, leaving the active canvas untouched', async ({ page }) => {
+        await boot(page)
+        const before = await page.evaluate(() => window.layersApp._layers.map(layer => layer.id))
         await page.locator('.welcome-close').click()
-        await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
+        await expect(page.locator('.welcome-dialog[open]')).toBeHidden()
+        await expect(page.locator('.open-dialog-backdrop.visible')).toHaveCount(0)
+        expect(await page.evaluate(() => window.layersApp._layers.map(layer => layer.id))).toEqual(before)
     })
 
     for (const dismissal of ['close', 'escape', 'backdrop']) {
-        test(`${dismissal} dismissal falls through once and inside clicks do not dismiss`, async ({ page }) => {
-            await boot(page, '?welcome=1')
+        test(`${dismissal} dismissal closes without replacing the project, and inside clicks do not dismiss`, async ({ page }) => {
+            await boot(page)
             await page.evaluate(() => {
                 window.__welcomeDismissCount = 0
                 const app = window.layersApp
@@ -293,13 +296,13 @@ test.describe('Welcome dialog', () => {
             }
 
             await expect(dialog).toBeHidden()
-            await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
-            expect(await page.evaluate(() => window.__welcomeDismissCount)).toBe(1)
+            await expect(page.locator('.open-dialog-backdrop.visible')).toHaveCount(0)
+            expect(await page.evaluate(() => window.__welcomeDismissCount)).toBe(0)
         })
     }
 
     test('re-opens from the logo menu with keyboard-accessible controls', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await page.locator('.welcome-dialog[open]').waitFor()
         await page.locator('.welcome-close').click()
 
@@ -318,7 +321,7 @@ test.describe('Welcome dialog', () => {
 
     for (const action of ['new', 'open']) {
         test(`${action} tile cancellation preserves a dirty project and stops replacement`, async ({ page }) => {
-            await boot(page, '?welcome=1')
+            await boot(page)
             await createProjectFromWelcome(page)
             const before = await layerIds(page)
             let fileChooserOpened = false
@@ -338,7 +341,7 @@ test.describe('Welcome dialog', () => {
     }
 
     test('native picker re-confirms after an intervening project mutation', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
 
         await reopenWelcome(page)
@@ -375,7 +378,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('new-canvas chooser re-confirms after an intervening project mutation', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
 
         await reopenWelcome(page)
@@ -412,7 +415,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('accepted online prompt followed by cancelled unsaved prompt stays online', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         await page.evaluate(() => {
             window.__welcomeWentOffline = false
@@ -442,7 +445,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('cancelled picker and replacement dialog keep an accepted online session online', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         await page.evaluate(() => {
             window.__welcomeWentOffline = false
@@ -467,7 +470,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('successful replacement commits an accepted online session offline', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         await page.evaluate(() => {
             window.__welcomeWentOffline = false
@@ -497,7 +500,8 @@ test.describe('Welcome dialog', () => {
     })
 
     test('corrupt first-run media falls through without installing a layer', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
+        const before = await layerIds(page)
         await installRejectedMediaLoad(page)
 
         const chooserPromise = page.waitForEvent('filechooser')
@@ -505,11 +509,11 @@ test.describe('Welcome dialog', () => {
         await chooseBrokenPng(await chooserPromise)
 
         await expect(page.locator('.open-dialog-backdrop.visible')).toBeVisible()
-        expect(await layerIds(page)).toEqual([])
+        expect(await layerIds(page)).toEqual(before)
     })
 
     test('corrupt replacement preserves the current project and falls through', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         const before = await page.evaluate(() => {
             const app = window.layersApp
@@ -551,7 +555,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('superseded delayed media load cannot mutate a newer solid project', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         await page.evaluate(() => {
             const app = window.layersApp
@@ -611,7 +615,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('failed newer media candidate cannot strand an installing replacement', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         const before = await page.evaluate(() => {
             const app = window.layersApp
@@ -676,7 +680,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('failed base installation preserves the committed project and online session', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         const before = await page.evaluate(() => {
             const app = window.layersApp
@@ -724,7 +728,7 @@ test.describe('Welcome dialog', () => {
 
     for (const corruption of ['invalid mask', 'missing media']) {
         test(`${corruption} project preserves the committed project and online session`, async ({ page }) => {
-            await boot(page, '?welcome=1')
+            await boot(page)
             await createProjectFromWelcome(page)
             const before = await page.evaluate(() => {
                 const app = window.layersApp
@@ -761,7 +765,7 @@ test.describe('Welcome dialog', () => {
     }
 
     test('partial saved-media preparation disposes candidates and preserves the project', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         const before = await page.evaluate(() => {
             const app = window.layersApp
@@ -815,7 +819,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('reopened Welcome treats an active empty project as replaceable on picker cancel', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         await page.evaluate(async () => {
             await window.LayersAgent.newProject({ width: 210, height: 120, name: 'Empty' })
@@ -837,7 +841,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('reopened Welcome resets active empty-project interaction state on success', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         await page.evaluate(async () => {
             await window.LayersAgent.newProject({ width: 210, height: 120, name: 'Empty' })
@@ -860,7 +864,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('replacement clears selection and copy positioning state', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         await page.evaluate(() => {
             const app = window.layersApp
@@ -883,7 +887,7 @@ test.describe('Welcome dialog', () => {
 
     for (const hasImage of [true, false]) {
         test(`online clipboard ${hasImage ? 'success commits offline' : 'without an image stays online'}`, async ({ page }) => {
-            await boot(page, '?welcome=1')
+            await boot(page)
             // This checks replacement and online state, independently of the
             // old document's resolution. Keep software GPU allocations small.
             await createProjectFromWelcome(page, 'solid', 128)
@@ -909,7 +913,7 @@ test.describe('Welcome dialog', () => {
     }
 
     test('cancelled project manager stays online', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         await installOnlineSession(page)
 
@@ -925,7 +929,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('project manager re-confirms after an intervening project mutation', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         const savedProjectId = await page.evaluate(async () => {
             const saved = await window.LayersAgent.saveProjectAs({ name: 'consent-target' })
@@ -970,7 +974,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('successful online project load selects the saved topmost layer and commits offline', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         await createProjectFromWelcome(page)
         const saved = await page.evaluate(async () => {
             await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'synth/gradient' })
@@ -998,7 +1002,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('Open file replacement unloads the prior media resource', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         const initialChooserPromise = page.waitForEvent('filechooser')
         await page.locator('.welcome-tile[data-action="open"]').click()
         let chooser = await initialChooserPromise
@@ -1030,7 +1034,7 @@ test.describe('Welcome dialog', () => {
 
     test('short viewport keeps both tiles and Close reachable', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 320 })
-        await boot(page, '?welcome=1')
+        await boot(page)
         const dialog = page.locator('.welcome-dialog[open]')
         expect(await dialog.evaluate(el => getComputedStyle(el).overflowY)).toBe('auto')
 
@@ -1046,7 +1050,7 @@ test.describe('Welcome dialog', () => {
     })
 
     test('Close button includes its Material Symbol and visible label', async ({ page }) => {
-        await boot(page, '?welcome=1')
+        await boot(page)
         const close = page.locator('.welcome-close')
         await expect(close.locator('.icon-material')).toHaveText('close')
         await expect(close).toContainText('Close')

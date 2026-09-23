@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.describe('Image menu - Canvas Size', () => {
     test('canvas size changes dimensions with anchor offset', async ({ page }) => {
@@ -7,7 +8,7 @@ test.describe('Image menu - Canvas Size', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
         // Create a solid base layer (1024x1024)
-        await page.waitForSelector('.open-dialog-backdrop.visible')
+        await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
         await page.click('.canvas-size-dialog .action-btn.primary')

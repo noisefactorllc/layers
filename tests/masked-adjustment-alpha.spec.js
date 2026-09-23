@@ -1,11 +1,13 @@
 import { test, expect } from './fixtures.js'
 import { PNG } from 'pngjs'
 import { installNoisemakerSource } from './noisemaker-source.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 test.beforeEach(async ({ page }) => {
     await installNoisemakerSource(page, ['mixer/alphaMask', 'filter/invert', 'filter/tint'])
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden' })
+    await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.fill('#canvas-width', '128')
     await page.fill('#canvas-height', '64')
