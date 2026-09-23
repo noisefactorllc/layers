@@ -287,4 +287,217 @@ test.describe('Select Menu', () => {
             selectionEnabled: false,
         })
     })
+
+    test('Cmd+D and Ctrl+D deselect active selection via keyboard', async ({ page }) => {
+        await setupApp(page)
+        await setRectSelection(page, 50, 50, 200, 200)
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+
+        await page.keyboard.press('Meta+d')
+        await appState(page, () => !window.layersApp._selectionManager.hasSelection())
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        await setRectSelection(page, 50, 50, 200, 200)
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+
+        await page.keyboard.press('Control+d')
+        await appState(page, () => !window.layersApp._selectionManager.hasSelection())
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+    })
+
+    test('Cmd+D and Ctrl+D suppress default browser bookmarking even with no active selection', async ({ page }) => {
+        await setupApp(page)
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        const results = await page.evaluate(() => {
+            const metaEvent = new KeyboardEvent('keydown', {
+                key: 'd',
+                code: 'KeyD',
+                metaKey: true,
+                bubbles: true,
+                cancelable: true,
+            })
+            document.dispatchEvent(metaEvent)
+
+            const ctrlEvent = new KeyboardEvent('keydown', {
+                key: 'd',
+                code: 'KeyD',
+                ctrlKey: true,
+                bubbles: true,
+                cancelable: true,
+            })
+            document.dispatchEvent(ctrlEvent)
+
+            return {
+                metaPrevented: metaEvent.defaultPrevented,
+                ctrlPrevented: ctrlEvent.defaultPrevented,
+            }
+        })
+        expect(results.metaPrevented).toBe(true)
+        expect(results.ctrlPrevented).toBe(true)
+    })
+
+    test('Cmd+Shift+I and Ctrl+Shift+I invert selection via keyboard', async ({ page }) => {
+        await setupApp(page)
+        await setRectSelection(page, 0, 0, 512, 512)
+
+        await page.keyboard.press('Meta+Shift+i')
+        await appState(page, () => window.layersApp._selectionManager.selectionPath?.type === 'mask')
+
+        let maskCheck = await page.evaluate(() => {
+            const sel = window.layersApp._selectionManager.selectionPath
+            if (sel?.type !== 'mask') return null
+            const insideIdx = (256 * sel.data.width + 256) * 4 + 3
+            const outsideIdx = (768 * sel.data.width + 768) * 4 + 3
+            return {
+                insideAlpha: sel.data.data[insideIdx],
+                outsideAlpha: sel.data.data[outsideIdx],
+            }
+        })
+        expect(maskCheck).toEqual({ insideAlpha: 0, outsideAlpha: 255 })
+
+        // Invert back with Ctrl+Shift+I
+        await page.keyboard.press('Control+Shift+i')
+        await appState(page, () => {
+            const sel = window.layersApp._selectionManager.selectionPath
+            if (sel?.type !== 'mask') return false
+            const insideIdx = (256 * sel.data.width + 256) * 4 + 3
+            return sel.data.data[insideIdx] === 255
+        })
+
+        maskCheck = await page.evaluate(() => {
+            const sel = window.layersApp._selectionManager.selectionPath
+            const insideIdx = (256 * sel.data.width + 256) * 4 + 3
+            const outsideIdx = (768 * sel.data.width + 768) * 4 + 3
+            return {
+                insideAlpha: sel.data.data[insideIdx],
+                outsideAlpha: sel.data.data[outsideIdx],
+            }
+        })
+        expect(maskCheck).toEqual({ insideAlpha: 255, outsideAlpha: 0 })
+    })
+
+    test('Cmd+Shift+I on full canvas selection cleanly deselects', async ({ page }) => {
+        await setupApp(page)
+        await page.keyboard.press('Meta+a')
+        await appState(page, () => window.layersApp._selectionManager.hasSelection())
+
+        await page.keyboard.press('Meta+Shift+i')
+        await appState(page, () => !window.layersApp._selectionManager.hasSelection())
+
+        const state = await page.evaluate(() => ({
+            hasSelection: window.layersApp._selectionManager.hasSelection(),
+            selectionPath: window.layersApp._selectionManager.selectionPath,
+            selectNoneDisabled: document.getElementById('selectNoneMenuItem')?.getAttribute('aria-disabled'),
+            selectInverseDisabled: document.getElementById('selectInverseMenuItem')?.getAttribute('aria-disabled'),
+        }))
+        expect(state.hasSelection).toBe(false)
+        expect(state.selectionPath).toBeNull()
+        expect(state.selectNoneDisabled).toBe('true')
+        expect(state.selectInverseDisabled).toBe('true')
+    })
+
+    test('Cmd+D and Cmd+Shift+I work across different active layer types and with no layer selected', async ({ page }) => {
+        await setupApp(page)
+
+        // 1. Drawing layer
+        await page.evaluate(async () => {
+            await window.layersApp._handleAddDrawingLayer('Drawing Layer')
+        })
+        await setRectSelection(page, 0, 0, 512, 512)
+        await page.keyboard.press('Meta+Shift+i')
+        await appState(page, () => window.layersApp._selectionManager.selectionPath?.type === 'mask')
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+        await page.keyboard.press('Meta+d')
+        await appState(page, () => !window.layersApp._selectionManager.hasSelection())
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        // 2. Text layer (effectId: filter/text)
+        await page.evaluate(async () => {
+            await window.layersApp._handleAddEffectLayer('filter/text')
+        })
+        await setRectSelection(page, 0, 0, 512, 512)
+        await page.keyboard.press('Meta+Shift+i')
+        await appState(page, () => window.layersApp._selectionManager.selectionPath?.type === 'mask')
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+        await page.keyboard.press('Meta+d')
+        await appState(page, () => !window.layersApp._selectionManager.hasSelection())
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        // 3. Effect layer (filter/blur)
+        await page.evaluate(async () => {
+            await window.layersApp._handleAddEffectLayer('filter/blur')
+        })
+        await setRectSelection(page, 0, 0, 512, 512)
+        await page.keyboard.press('Meta+Shift+i')
+        await appState(page, () => window.layersApp._selectionManager.selectionPath?.type === 'mask')
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+        await page.keyboard.press('Meta+d')
+        await appState(page, () => !window.layersApp._selectionManager.hasSelection())
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        // 4. No layer selected
+        await page.evaluate(() => {
+            window.layersApp._deselectAllLayers()
+        })
+        expect(await page.evaluate(() => window.layersApp._layerStack?.selectedLayerIds.length)).toBe(0)
+        await setRectSelection(page, 0, 0, 512, 512)
+        await page.keyboard.press('Meta+Shift+i')
+        await appState(page, () => window.layersApp._selectionManager.selectionPath?.type === 'mask')
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+        await page.keyboard.press('Meta+d')
+        await appState(page, () => !window.layersApp._selectionManager.hasSelection())
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+    })
+
+    test('Cmd+D and Cmd+Shift+I inside an input do not alter canvas selection', async ({ page }) => {
+        await setupApp(page)
+        await setRectSelection(page, 100, 100, 200, 200)
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+
+        // Activate brush to display drawing options bar containing #drawingSizeInput
+        await page.keyboard.press('b')
+        const input = page.locator('#drawingSizeInput')
+        await input.waitFor({ state: 'visible' })
+        await input.focus()
+
+        // Press Cmd+D and Cmd+Shift+I while typing/focused in input
+        await page.keyboard.press('Meta+d')
+        // Canvas selection must remain intact
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+        expect(await page.evaluate(() => window.layersApp._selectionManager.selectionPath?.type)).toBe('rect')
+
+        await page.keyboard.press('Meta+Shift+i')
+        // Canvas selection must not be inverted
+        expect(await page.evaluate(() => window.layersApp._selectionManager.selectionPath?.type)).toBe('rect')
+    })
+
+    test('setSelection with non-positive or malformed bounds safely clears selection', async ({ page }) => {
+        await setupApp(page)
+        await setRectSelection(page, 10, 10, 100, 100)
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(true)
+
+        // Rect with zero/negative or NaN width/height
+        await page.evaluate(() => window.layersApp._selectionManager.setSelection({ type: 'rect', x: 0, y: 0, width: 0, height: 100 }))
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        await setRectSelection(page, 10, 10, 100, 100)
+        await page.evaluate(() => window.layersApp._selectionManager.setSelection({ type: 'rect', x: 0, y: 0, width: NaN, height: 100 }))
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        // Oval with non-positive or non-finite radius
+        await setRectSelection(page, 10, 10, 100, 100)
+        await page.evaluate(() => window.layersApp._selectionManager.setSelection({ type: 'oval', cx: 50, cy: 50, rx: 0, ry: 50 }))
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        // Polygon with < 3 points
+        await setRectSelection(page, 10, 10, 100, 100)
+        await page.evaluate(() => window.layersApp._selectionManager.setSelection({ type: 'polygon', points: [{ x: 10, y: 10 }] }))
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+
+        // Unknown type
+        await setRectSelection(page, 10, 10, 100, 100)
+        await page.evaluate(() => window.layersApp._selectionManager.setSelection({ type: 'unknown_type' }))
+        expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+    })
 })

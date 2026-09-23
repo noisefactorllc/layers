@@ -4275,14 +4275,7 @@ class LayersApp {
                                 label: 'select inverse',
                                 shortcut: '⌘⇧I',
                                 disabled: () => !hasSelection(),
-                                onSelect: () => {
-                                    this._runPointerMutation(() => {
-                                        const mask = this._selectionManager.rasterizeSelection()
-                                        if (!mask) return
-                                        const inverted = invertMask(mask)
-                                        this._selectionManager.setSelection({ type: 'mask', data: inverted })
-                                    })
-                                },
+                                onSelect: () => { this._selectInverse() },
                             },
                             { type: 'separator' },
                             {
@@ -4914,18 +4907,6 @@ class LayersApp {
                 return
             }
 
-            // Cmd/Ctrl+Shift+I - inverse selection
-            if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'i' || e.key === 'I')) {
-                e.preventDefault()
-                if (this._selectionManager?.hasSelection()) {
-                    const mask = this._selectionManager.rasterizeSelection()
-                    if (mask) {
-                        this._selectionManager.setSelection({ type: 'mask', data: invertMask(mask) })
-                    }
-                }
-                return
-            }
-
             // Cmd/Ctrl+Z - undo
             if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') {
                 e.preventDefault()
@@ -4983,12 +4964,30 @@ class LayersApp {
             }
 
             // Cmd/Ctrl+A - select all (canvas selection when not focused in input)
-            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'a' || e.key === 'A' || e.code === 'KeyA')) {
                 e.preventDefault()
-                const { width, height } = this._canvas
-                this._selectionManager.setSelection({
-                    type: 'rect', x: 0, y: 0, width, height
+                this._runPointerMutation(() => {
+                    const { width, height } = this._canvas
+                    this._selectionManager.setSelection({
+                        type: 'rect', x: 0, y: 0, width, height
+                    })
                 })
+                return
+            }
+
+            // Cmd/Ctrl+D - deselect (prevent default even when unselected to suppress browser bookmark dialog)
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'd' || e.key === 'D' || e.code === 'KeyD')) {
+                e.preventDefault()
+                if (this._selectionManager?.hasSelection()) {
+                    this._runPointerMutation(() => this._selectionManager.clearSelection())
+                }
+                return
+            }
+
+            // Cmd/Ctrl+Shift+I - inverse selection
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && (e.key === 'i' || e.key === 'I' || e.code === 'KeyI')) {
+                e.preventDefault()
+                this._selectInverse()
                 return
             }
 
@@ -5129,17 +5128,10 @@ class LayersApp {
             if (e.key === 'Escape') {
                 if (this._selectionManager?.hasSelection()) {
                     e.preventDefault()
-                    this._selectionManager.clearSelection()
+                    this._runPointerMutation(() => this._selectionManager.clearSelection())
                 }
             }
 
-            // Cmd/Ctrl+D - deselect
-            if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
-                if (this._selectionManager?.hasSelection()) {
-                    e.preventDefault()
-                    this._selectionManager.clearSelection()
-                }
-            }
         })
     }
 
@@ -6833,6 +6825,16 @@ class LayersApp {
         const mask = this._selectionManager.rasterizeSelection()
         if (!mask) return
         this._selectionManager.setSelection({ type: 'mask', data: maskFn(mask, r) })
+    }
+
+    _selectInverse() {
+        if (!this._selectionManager?.hasSelection()) return
+        this._runPointerMutation(() => {
+            const mask = this._selectionManager.rasterizeSelection()
+            if (!mask) return
+            const inverted = invertMask(mask)
+            this._selectionManager.setSelection({ type: 'mask', data: inverted })
+        })
     }
 
     _updateSelectMenu() {

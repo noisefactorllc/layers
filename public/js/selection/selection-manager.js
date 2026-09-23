@@ -221,11 +221,51 @@ class SelectionManager {
     }
 
     /**
+     * Check if a mask has any selected pixels (alpha > 127)
+     * @param {ImageData} mask
+     * @returns {boolean}
+     * @private
+     */
+    _hasMaskSelectedPixels(mask) {
+        const data = mask?.data
+        if (!data) return false
+        for (let i = 3; i < data.length; i += 4) {
+            if (data[i] > 127) return true
+        }
+        return false
+    }
+
+    /**
      * Set the selection programmatically.
      * @param {SelectionPath} path
      */
     setSelection(path) {
         if (!path) {
+            this.clearSelection()
+            return
+        }
+        if (path.type === 'rect') {
+            if (!(path.width > 0) || !(path.height > 0)) {
+                this.clearSelection()
+                return
+            }
+        } else if (path.type === 'oval') {
+            if (!(path.rx > 0) || !(path.ry > 0)) {
+                this.clearSelection()
+                return
+            }
+        } else if (path.type === 'lasso' || path.type === 'polygon') {
+            if (!Array.isArray(path.points) || path.points.length < 3) {
+                this.clearSelection()
+                return
+            }
+        } else if (path.type === 'mask' || path.type === 'wand') {
+            const mask = path.type === 'wand' ? path.mask : path.data
+            if (!this._hasMaskSelectedPixels(mask)) {
+                this.clearSelection()
+                return
+            }
+        } else {
             this.clearSelection()
             return
         }
@@ -345,21 +385,13 @@ class SelectionManager {
 
         const combined = this._combineMasks(oldMask, newMask, this._selectionMode)
 
-        let hasSelection = false
-        for (let i = 3; i < combined.data.length; i += 4) {
-            if (combined.data[i] > 127) {
-                hasSelection = true
-                break
-            }
-        }
-
-        if (hasSelection) {
+        if (this._hasMaskSelectedPixels(combined)) {
             this._selectionPath = {
                 type: 'mask',
                 data: combined
             }
         } else {
-            this._selectionPath = null
+            this.clearSelection()
         }
     }
 
@@ -482,8 +514,10 @@ class SelectionManager {
                 if (this._selectionMode !== 'replace' && this._previousSelection) {
                     this._applySelectionWithMode(this._selectionPath)
                 }
-                this._startAnimation()
-                this.onSelectionChange?.()
+                if (this._selectionPath) {
+                    this._startAnimation()
+                    this.onSelectionChange?.()
+                }
             } else {
                 this.clearSelection()
             }
