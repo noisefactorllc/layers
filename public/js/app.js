@@ -124,6 +124,8 @@ class LayersApp {
         // Undo/redo
         this._undoManager = new UndoManager(50)
         this._undoDebounceTimer = null
+        this._undoPending = false
+        this._sliderDragActive = false
         this._restoring = false
 
         // Mask editing
@@ -291,7 +293,8 @@ class LayersApp {
             clearTimeout(this._undoDebounceTimer)
             this._undoDebounceTimer = null
         }
-        this._undoManager.pushState(this._createUndoSnapshot())
+        this._undoPending = false
+        const pushed = this._undoManager.pushState(this._createUndoSnapshot())
         this._updateUndoMenuState()
         // Publish funnel, systemic form: every composition mutation path in
         // this app records undo (directly or via the debounced sibling
@@ -303,7 +306,10 @@ class LayersApp {
         // caller's own mutation finishes. Redundant with the _rebuild()/
         // param-path hooks (schedulePublish() is idempotent while a publish
         // is already pending) but harmless.
-        this._onlineAdapter?.schedulePublish()
+        if (pushed) {
+            this._onlineAdapter?.schedulePublish()
+        }
+        return pushed
     }
 
     /**
@@ -313,11 +319,18 @@ class LayersApp {
      * @private
      */
     _pushUndoStateDebounced() {
+        this._undoPending = true
         if (this._undoDebounceTimer) {
             clearTimeout(this._undoDebounceTimer)
         }
         this._undoDebounceTimer = setTimeout(() => {
             this._undoDebounceTimer = null
+            if (this._sliderDragActive) {
+                // Drag gesture is still active (pointer is held down).
+                // Do not commit intermediate undo states while user is dragging.
+                return
+            }
+            this._undoPending = false
             this._pushUndoState()
         }, 500)
         // Update menu immediately so undo shows as available
@@ -331,17 +344,21 @@ class LayersApp {
     }
 
     /**
-     * If a debounce timer is pending, finalize it immediately.
+     * If a debounce timer or pending undo is active, finalize it immediately.
      * Call this before any non-debounced mutation so slider changes
      * get their own undo step.
      * @private
      */
     _finalizePendingUndo() {
-        if (this._undoDebounceTimer) {
-            clearTimeout(this._undoDebounceTimer)
-            this._undoDebounceTimer = null
-            this._pushUndoState()
+        if (this._undoDebounceTimer || this._undoPending) {
+            if (this._undoDebounceTimer) {
+                clearTimeout(this._undoDebounceTimer)
+                this._undoDebounceTimer = null
+            }
+            this._undoPending = false
+            return this._pushUndoState()
         }
+        return false
     }
 
     /** @private */
@@ -365,7 +382,7 @@ class LayersApp {
             undoStackArray: this._undoManager._stack,
             undoStack: this._undoManager._stack.slice(),
             undoIndex: this._undoManager._index,
-            undoWasPending: this._undoDebounceTimer !== null,
+            undoWasPending: this._undoDebounceTimer !== null || !!this._undoPending,
             activeLayerPosition,
         }
     }
@@ -377,6 +394,7 @@ class LayersApp {
             clearTimeout(this._undoDebounceTimer)
             this._undoDebounceTimer = null
         }
+        this._undoPending = false
         this._isDirty = previous.dirty
         this._projectMutationRevision = previous.mutationRevision
         previous.undoStackArray.splice(
@@ -401,7 +419,7 @@ class LayersApp {
             undoStackArray: this._undoManager._stack,
             undoStack: this._undoManager._stack.slice(),
             undoIndex: this._undoManager._index,
-            undoWasPending: this._undoDebounceTimer !== null,
+            undoWasPending: this._undoDebounceTimer !== null || !!this._undoPending,
         }
     }
 
@@ -411,6 +429,7 @@ class LayersApp {
             clearTimeout(this._undoDebounceTimer)
             this._undoDebounceTimer = null
         }
+        this._undoPending = false
         previous.layersArray.splice(0, previous.layersArray.length, ...previous.layers)
         this._layers = previous.layersArray
         this._isDirty = previous.dirty
@@ -2027,7 +2046,7 @@ class LayersApp {
             undoStackArray: this._undoManager._stack,
             undoStack: this._undoManager._stack.slice(),
             undoIndex: this._undoManager._index,
-            undoWasPending: this._undoDebounceTimer !== null,
+            undoWasPending: this._undoDebounceTimer !== null || !!this._undoPending,
             maskEditLayerId: this._maskEditLayerId,
             maskEditUi: this._maskEditMode ? this._captureMaskEditUiState() : null,
         }
@@ -2039,6 +2058,7 @@ class LayersApp {
             clearTimeout(this._undoDebounceTimer)
             this._undoDebounceTimer = null
         }
+        this._undoPending = false
         this._layers = previous.layers
         this._currentProjectId = previous.projectId
         this._currentProjectName = previous.projectName
@@ -4112,8 +4132,8 @@ class LayersApp {
                                 id: 'undoMenuItem',
                                 label: 'undo',
                                 shortcut: '⌘Z',
-                                // Pending debounce timer means uncommitted changes exist that _undo() can finalize
-                                disabled: () => !(this._undoManager.canUndo() || this._undoDebounceTimer !== null),
+                                // Pending debounce timer or gesture means uncommitted changes exist that _undo() can finalize
+                                disabled: () => !(this._undoManager.canUndo() || this._undoDebounceTimer !== null || this._undoPending),
                                 onSelect: () => { this._runPointerMutation(() => this._undo()) },
                             },
                             {
@@ -4599,6 +4619,60 @@ class LayersApp {
      */
     _setupLayerStackHandlers() {
         if (!this._layerStack) return
+
+        const CONTROL_SELECTOR = 'slider-value, .layer-opacity, input[type="range"], color-picker, .vector-picker'
+        let gestureInControls = false
+        const isControlEvent = (e) => {
+            if (e.target?.closest?.(CONTROL_SELECTOR)) return true
+            if (typeof e.composedPath === 'function') {
+                for (const el of e.composedPath()) {
+                    if (el?.matches?.(CONTROL_SELECTOR) || el?.classList?.contains('layer-opacity')) {
+                        return true
+                    }
+                }
+            }
+            return false
+        }
+
+        const onControlDown = (e) => {
+            if (isControlEvent(e)) {
+                gestureInControls = true
+                this._sliderDragActive = true
+            }
+        }
+        this._layerStack.addEventListener('pointerdown', onControlDown)
+        this._layerStack.addEventListener('mousedown', onControlDown)
+
+        const finalizeAfterLifecycle = () => {
+            if (this._projectLifecycleTail) {
+                this._projectLifecycleTail.then(
+                    () => { this._finalizePendingUndo() },
+                    () => { this._finalizePendingUndo() }
+                )
+            } else {
+                this._finalizePendingUndo()
+            }
+        }
+
+        const endGesture = () => {
+            if (!gestureInControls) return
+            gestureInControls = false
+            this._sliderDragActive = false
+            finalizeAfterLifecycle()
+        }
+        window.addEventListener('pointerup', endGesture)
+        window.addEventListener('pointercancel', endGesture)
+        window.addEventListener('mouseup', endGesture)
+        window.addEventListener('blur', endGesture)
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && gestureInControls) endGesture()
+        })
+
+        this._layerStack.addEventListener('change', (e) => {
+            if (!gestureInControls && isControlEvent(e)) {
+                finalizeAfterLifecycle()
+            }
+        })
 
         this._layerStack.addEventListener('layer-change', (e) => {
             const mutation = this._runPointerMutation(

@@ -314,7 +314,7 @@ class LayerItem extends HTMLElement {
         // Opacity change
         this.addEventListener('input', (e) => {
             const opacitySlider = e.target.closest('.layer-opacity')
-            if (opacitySlider && e.target === opacitySlider) {
+            if (opacitySlider) {
                 this._handleOpacityChange(parseInt(opacitySlider.value, 10))
             }
         })
@@ -480,6 +480,7 @@ class LayerItem extends HTMLElement {
      * Emit a change event
      * @param {string} property - Property that changed
      * @param {*} value - New value
+     * @param {*} previousValue - Previous value
      * @private
      */
     _emitChange(property, value, previousValue) {
