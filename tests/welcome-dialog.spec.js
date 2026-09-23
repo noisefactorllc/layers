@@ -3,12 +3,11 @@ import { seedClipboardRead } from './helpers/clipboard.js'
 import { defaultProjectReady } from './waits.js'
 import path from 'node:path'
 
-// Marked clean so tile clicks skip the discard guard; guard tests below use a real dirty project.
+// Boot's default canvas is clean, so tile clicks skip the discard guard; guard tests below use a real dirty project.
 async function boot(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await defaultProjectReady(page)
-    await page.evaluate(() => window.layersApp._markClean())
     await reopenWelcome(page)
 }
 

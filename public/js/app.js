@@ -1369,7 +1369,12 @@ class LayersApp {
             : false
         this._hideLoadingScreen()
         if (!joinedFromUrl) {
-            await toast.suppress(() => this._handleCreateSolidBase(1920, 1080))
+            // A reload keeps this tab's recovery slot, which still holds the
+            // unsaved work. Release it before the default canvas commits, or
+            // that commit clears the slot. The canvas starts clean: nothing
+            // to recover and no leave-page warning until the user edits.
+            await this._recovery.retain()
+            await toast.suppress(() => this._handleCreateSolidBase(1920, 1080, { dirty: false }))
             await this._notifyRecoverableWork()
         }
 
@@ -1636,6 +1641,7 @@ class LayersApp {
             leaveOnline = false,
             mutationToken = null,
             replacementConsent = null,
+            dirty = true,
         } = {}) {
         const generation = ++this._replacementGeneration
         return this._runProjectReplacement(mutationToken, async (token, replacementGate) => {
@@ -1645,7 +1651,7 @@ class LayersApp {
                 height,
                 projectId: null,
                 projectName: null,
-                dirty: true,
+                dirty,
                 selectedLayerId: layer.id,
                 mediaTextures: new Map(),
                 maskTextures: new Map()

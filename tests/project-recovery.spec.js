@@ -22,12 +22,6 @@ async function reopenRecoveryDialog(page) {
     await page.locator('#menu #recoverProjectMenuItem').click()
 }
 
-// Boot's default canvas is dirty, so restoring meets the unsaved-changes guard.
-async function acceptUnsavedGuard(page) {
-    const confirm = page.locator('.confirm-dialog-backdrop.visible')
-    await confirm.locator('#confirm-ok').click()
-}
-
 async function waitForCheckpoint(page, layerCount = 1) {
     await expect.poll(() => page.evaluate(async expectedLayers => {
         const request = indexedDB.open('layers-recovery')
@@ -53,6 +47,7 @@ async function startupState(page) {
             width: app._canvas.width,
             height: app._canvas.height,
             layers: app._layers.map(layer => layer.effectId),
+            dirty: app._isDirty,
             openDialog: !!document.querySelector('.open-dialog-backdrop.visible'),
             welcome: !!document.querySelector('.welcome-dialog[open]'),
             recovery: !!document.querySelector('.recovery-dialog'),
@@ -65,7 +60,7 @@ test('a clean boot lands on a 1080p solid canvas with no startup dialogs or toas
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForFunction(() => window.layersApp?._initialized === true, null, { timeout: 15000 })
     expect(await startupState(page)).toEqual({
-        width: 1920, height: 1080, layers: ['synth/solid'],
+        width: 1920, height: 1080, layers: ['synth/solid'], dirty: false,
         openDialog: false, welcome: false, recovery: false, toasts: [],
     })
 })
@@ -79,7 +74,7 @@ test('a boot with unsaved work keeps the default canvas and announces the work w
         .toBeVisible({ timeout: 30000 })
     await page.waitForFunction(() => window.layersApp?._initialized === true, null, { timeout: 15000 })
     expect(await startupState(page)).toMatchObject({
-        width: 1920, height: 1080, layers: ['synth/solid'],
+        width: 1920, height: 1080, layers: ['synth/solid'], dirty: false,
         openDialog: false, welcome: false, recovery: false,
     })
 })
@@ -111,7 +106,6 @@ test('reload recovers the exact unsaved document pixels, media, and masks', asyn
     await page.reload({ waitUntil: 'networkidle' })
     await reopenRecoveryDialog(page)
     await page.getByRole('button', { name: 'Restore', exact: true }).first().click()
-    await acceptUnsavedGuard(page)
     await expect.poll(() => page.evaluate(() => window.layersApp._layers.length), { timeout: 15000 }).toBe(before.layerCount)
     const after = await page.evaluate(async () => {
         const exported = await window.LayersAgent.exportImage({ format: 'png', captureOnly: true })
@@ -276,7 +270,6 @@ test('restoring a deferred copy adopts its slot, preserves it on failed save, an
     await page.getByRole('button', { name: 'Keep for later', exact: true }).click()
     await page.evaluate(() => window.layersApp._showRecoveryDialog())
     await page.getByRole('button', { name: 'Restore', exact: true }).click()
-    await acceptUnsavedGuard(page)
     await expect.poll(() => page.evaluate(() => window.layersApp._layers.length)).toBe(1)
     expect(await page.evaluate(() => window.layersApp._recovery._id)).toBe(original)
     const failed = await page.evaluate(async () => {

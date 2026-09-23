@@ -923,7 +923,6 @@ test.describe('Atomic project replacement', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.locator('#loading-screen').waitFor({ state: 'hidden' })
         await defaultProjectReady(page)
-        await page.evaluate(() => window.layersApp._markClean())
         await page.getByRole('menuitem', { name: 'Layers menu', exact: true }).click()
         await page.getByRole('menuitem', { name: 'welcome to Layers...', exact: true }).click()
         await page.locator('.welcome-dialog[open]').waitFor()
