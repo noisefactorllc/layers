@@ -1,18 +1,25 @@
 // Boot lands on a default solid canvas; reach the New Project chooser the way a user does.
 import { defaultProjectReady } from '../waits.js'
 
-export async function reopenNewProjectDialog(page) {
-    await defaultProjectReady(page)
-    // Playing the canvas being replaced starves input on CI's software GL;
-    // the new project's commit restarts playback.
-    const dirty = await page.evaluate(() => {
+// Playing a canvas the test is about to replace starves input on CI's
+// software GL; every project commit restarts playback.
+export async function pausePlayback(page) {
+    await page.evaluate(() => {
         const app = window.layersApp
         if (app._renderer.isRunning) app._togglePlayPause()
-        return app._isDirty
     })
+}
+
+export async function reopenNewProjectDialog(page) {
+    await defaultProjectReady(page)
+    await pausePlayback(page)
     await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
     await page.locator('#menu #newMenuItem').waitFor({ state: 'visible' })
     await page.locator('#menu #newMenuItem').click()
-    if (dirty) await page.locator('.confirm-dialog-backdrop.visible #confirm-ok').click()
-    await page.locator('.open-dialog-backdrop.visible').waitFor()
+    // A dirty project raises the discard guard first; a clean one goes straight to the chooser.
+    const confirm = page.locator('.confirm-dialog-backdrop.visible #confirm-ok')
+    const chooser = page.locator('.open-dialog-backdrop.visible')
+    await confirm.or(chooser).first().waitFor()
+    if (await confirm.isVisible()) await confirm.click()
+    await chooser.waitFor()
 }

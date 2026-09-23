@@ -24,7 +24,7 @@ export function appReady(page, options = {}) {
     )
 }
 
-/** Boot has finished, including its clean default 1080p solid canvas. */
+/** Boot has finished: its clean default canvas is installed unless a Seance URL join replaced it. */
 export function defaultProjectReady(page, options = {}) {
     return page.waitForFunction(
         () => window.layersApp?._initialized === true,

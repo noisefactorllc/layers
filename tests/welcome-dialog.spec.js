@@ -1,6 +1,7 @@
 import { test, expect } from './fixtures.js'
 import { seedClipboardRead } from './helpers/clipboard.js'
 import { defaultProjectReady } from './waits.js'
+import { pausePlayback } from './helpers/new-project.js'
 import path from 'node:path'
 
 // Boot's default canvas is clean, so tile clicks skip the discard guard; guard tests below use a real dirty project.
@@ -8,6 +9,7 @@ async function boot(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await defaultProjectReady(page)
+    await pausePlayback(page)
     await reopenWelcome(page)
 }
 

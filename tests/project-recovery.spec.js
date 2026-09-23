@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js'
-import { reopenNewProjectDialog } from './helpers/new-project.js'
+import { pausePlayback, reopenNewProjectDialog } from './helpers/new-project.js'
 import { defaultProjectReady } from './waits.js'
 
 async function boot(page) {
@@ -17,6 +17,7 @@ async function boot(page) {
 // Recovery copies are reached through File > recover unsaved work...
 async function reopenRecoveryDialog(page) {
     await defaultProjectReady(page)
+    await pausePlayback(page)
     await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
     await page.locator('#menu #recoverProjectMenuItem').waitFor({ state: 'visible' })
     await page.locator('#menu #recoverProjectMenuItem').click()
@@ -63,6 +64,15 @@ test('a clean boot lands on a 1080p solid canvas with no startup dialogs or toas
         width: 1920, height: 1080, layers: ['synth/solid'], dirty: false,
         openDialog: false, welcome: false, recovery: false, toasts: [],
     })
+    // The untouched canvas is not recoverable work and does not guard leaving.
+    await page.evaluate(() => window.layersApp._recovery.flush())
+    expect(await page.evaluate(async () =>
+        (await (await import('/js/utils/project-recovery.js')).listRecoveries()).length)).toBe(0)
+    let dialogs = 0
+    page.on('dialog', dialog => { dialogs++; return dialog.accept() })
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.waitForFunction(() => window.layersApp?._initialized === true, null, { timeout: 15000 })
+    expect(dialogs).toBe(0)
 })
 
 test('a boot with unsaved work keeps the default canvas and announces the work with a toast', async ({ page }) => {
