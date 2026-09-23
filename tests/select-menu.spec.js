@@ -397,10 +397,8 @@ test.describe('Select Menu', () => {
         expect(state.selectInverseDisabled).toBe('true')
     })
 
-    test('Cmd+D and Cmd+Shift+I work across different active layer types and with no layer selected', async ({ page }) => {
+    test('Cmd+D and Cmd+Shift+I work with drawing layer active', async ({ page }) => {
         await setupApp(page)
-
-        // 1. Drawing layer
         await page.evaluate(async () => {
             await window.layersApp._handleAddDrawingLayer('Drawing Layer')
         })
@@ -411,8 +409,10 @@ test.describe('Select Menu', () => {
         await page.keyboard.press('Meta+d')
         await appState(page, () => !window.layersApp._selectionManager.hasSelection())
         expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+    })
 
-        // 2. Text layer (effectId: filter/text)
+    test('Cmd+D and Cmd+Shift+I work with text layer active', async ({ page }) => {
+        await setupApp(page)
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('filter/text')
         })
@@ -423,8 +423,10 @@ test.describe('Select Menu', () => {
         await page.keyboard.press('Meta+d')
         await appState(page, () => !window.layersApp._selectionManager.hasSelection())
         expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+    })
 
-        // 3. Effect layer (filter/blur)
+    test('Cmd+D and Cmd+Shift+I work with effect layer active', async ({ page }) => {
+        await setupApp(page)
         await page.evaluate(async () => {
             await window.layersApp._handleAddEffectLayer('filter/blur')
         })
@@ -435,8 +437,10 @@ test.describe('Select Menu', () => {
         await page.keyboard.press('Meta+d')
         await appState(page, () => !window.layersApp._selectionManager.hasSelection())
         expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+    })
 
-        // 4. No layer selected
+    test('Cmd+D and Cmd+Shift+I work with no layer selected', async ({ page }) => {
+        await setupApp(page)
         await page.evaluate(() => {
             window.layersApp._deselectAllLayers()
         })
