@@ -1,16 +1,15 @@
 import { test, expect } from './fixtures.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function bootApp(page) {
     await page.goto('/')
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 30000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
-    const visible = await page.evaluate(() => !!document.querySelector('.open-dialog-backdrop.visible'))
-    if (visible) {
-        await page.click('.media-option[data-type="solid"]')
-        await page.waitForSelector('.canvas-size-dialog', { timeout: 15000 })
-        await page.click('.canvas-size-dialog .action-btn.primary')
-        await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 15000 })
-    }
+    await reopenNewProjectDialog(page)
+    await page.click('.media-option[data-type="solid"]')
+    await page.waitForSelector('.canvas-size-dialog', { timeout: 15000 })
+    await page.click('.canvas-size-dialog .action-btn.primary')
+    await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 15000 })
 }
 
 test.describe('Slider Undo/Redo Debounce Hygiene', () => {

@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -56,6 +57,7 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
     test('computed styles use theme tokens and update dynamically on theme switch', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await reopenNewProjectDialog(page)
 
         // Check dialog backdrop computed style
         const backdropBg = await page.evaluate(() => {
