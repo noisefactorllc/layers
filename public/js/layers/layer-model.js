@@ -157,11 +157,55 @@ export function cloneMask(mask) {
 }
 
 /**
+ * Generate a unique copy name for a duplicated layer adhering to Photoshop conventions.
+ * Examples:
+ * - "Layer 1" -> "Layer 1 copy"
+ * - "Layer 1 copy" -> "Layer 1 copy 2"
+ * - "Layer 1 copy 2" -> "Layer 1 copy 3"
+ *
+ * @param {string} name - Source layer name
+ * @param {Array<string>|Set<string>} existingNames - Current layer names in the project
+ * @returns {string} Unique layer name
+ */
+export function generateDuplicateLayerName(name, existingNames = []) {
+    const namesSet = existingNames instanceof Set ? existingNames : new Set(existingNames)
+    const trimmed = (name || 'Layer').trim()
+    const match = trimmed.match(/^(.*?) copy(?: (\d+))?$/)
+
+    let baseName
+    let nextIndex
+    if (match) {
+        baseName = match[1]
+        nextIndex = match[2] ? parseInt(match[2], 10) + 1 : 2
+    } else {
+        baseName = trimmed
+        nextIndex = 1
+    }
+
+    if (nextIndex === 1) {
+        const firstCandidate = `${baseName} copy`
+        if (!namesSet.has(firstCandidate)) {
+            return firstCandidate
+        }
+        nextIndex = 2
+    }
+
+    while (true) {
+        const candidate = `${baseName} copy ${nextIndex}`
+        if (!namesSet.has(candidate)) {
+            return candidate
+        }
+        nextIndex++
+    }
+}
+
+/**
  * Clone a layer with a new ID
  * @param {object} layer - Layer to clone
+ * @param {string} [newName] - Custom name for the cloned layer
  * @returns {object} Cloned layer
  */
-export function cloneLayer(layer) {
+export function cloneLayer(layer, newName = null) {
     const children = (layer.children || []).map(child => ({
         ...child,
         effectParams: JSON.parse(JSON.stringify(child.effectParams)),
@@ -171,7 +215,7 @@ export function cloneLayer(layer) {
     return {
         ...layer,
         id: ids[0],
-        name: `${layer.name} copy`,
+        name: newName || `${layer.name} copy`,
         effectParams: JSON.parse(JSON.stringify(layer.effectParams)),
         strokes: layer.strokes ? JSON.parse(JSON.stringify(layer.strokes)) : layer.strokes,
         drawingCanvas: null,

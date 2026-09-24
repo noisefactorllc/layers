@@ -12,6 +12,7 @@ import {
     createChildEffect,
     createDrawingLayer,
     cloneLayer,
+    generateDuplicateLayerName,
     decodeMasks,
     cloneMask,
     bumpLayerCounter,
@@ -4201,6 +4202,7 @@ class LayersApp {
                             {
                                 id: 'duplicateLayerMenuItem',
                                 label: 'duplicate layer',
+                                shortcut: '⌘J',
                                 disabled: () => selectedLayerIds().length !== 1,
                                 onSelect: () => { this._runPointerMutation(() => this._duplicateActiveLayer()) },
                             },
@@ -5088,6 +5090,15 @@ class LayersApp {
                 return
             }
 
+            // Cmd/Ctrl+J - duplicate active layer
+            if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'j' || e.key === 'J' || e.code === 'KeyJ')) {
+                e.preventDefault()
+                if (this._getActiveLayer()) {
+                    this._runPointerMutation(() => this._duplicateActiveLayer())
+                }
+                return
+            }
+
             // Delete key - delete selected layer
             if (e.key === 'Delete' || e.key === 'Backspace') {
                 const selected = this._layerStack?.getSelectedLayer()
@@ -5434,6 +5445,9 @@ class LayersApp {
         layer ||= this._getActiveLayer()
         if (!layer) return false
 
+        const existingNames = this._layers.map(l => l.name)
+        const newName = generateDuplicateLayerName(layer.name, existingNames)
+
         const canvasWidth = this._canvas.width
         const canvasHeight = this._canvas.height
 
@@ -5446,7 +5460,7 @@ class LayersApp {
             // effect's external texture is fully reconstructible from
             // effectParams (true for filter/text). Effect layers ride the
             // shared collab doc, so no online media gate here.
-            newLayer = cloneLayer(layer)
+            newLayer = cloneLayer(layer, newName)
         } else {
             // Gated unconditionally (not just for an already-media active
             // layer): this rasterizes the active layer's composite into a
@@ -5466,7 +5480,7 @@ class LayersApp {
             const blob = await offscreen.convertToBlob({ type: 'image/png' })
             const file = new File([blob], 'duplicated.png', { type: 'image/png' })
 
-            newLayer = createMediaLayer(file, 'image', `${layer.name} copy`)
+            newLayer = createMediaLayer(file, 'image', newName)
             try {
                 const resource = await this._renderer.prepareMediaResource(file, 'image')
                 mediaOverrides.set(newLayer.id, resource)

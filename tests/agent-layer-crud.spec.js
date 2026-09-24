@@ -189,6 +189,101 @@ test.describe('duplicateLayer', () => {
         const copy = result.env.state.layers.find(l => l.id === result.env.result.layerId)
         expect(copy.effect.id).toBe('filter/text')
     })
+
+    test('duplicating layers assigns unique Photoshop-style copy names', async ({ page }) => {
+        await bootApp(page)
+        const baseLayer = await page.evaluate(() => window.layersApp._layers[0])
+        const baseName = baseLayer.name
+
+        // First duplicate of base layer -> "Base copy"
+        const firstDup = await page.evaluate((id) =>
+            window.LayersAgent.duplicateLayer({ layerId: id }), baseLayer.id)
+        expect(firstDup.ok).toBe(true)
+        const firstCopy = firstDup.state.layers.find(l => l.id === firstDup.result.layerId)
+        expect(firstCopy.name).toBe(`${baseName} copy`)
+
+        // Second duplicate of base layer -> "Base copy 2"
+        const secondDup = await page.evaluate((id) =>
+            window.LayersAgent.duplicateLayer({ layerId: id }), baseLayer.id)
+        expect(secondDup.ok).toBe(true)
+        const secondCopy = secondDup.state.layers.find(l => l.id === secondDup.result.layerId)
+        expect(secondCopy.name).toBe(`${baseName} copy 2`)
+
+        // Duplicate the first copy ("Base copy") -> "Base copy 3"
+        const thirdDup = await page.evaluate((id) =>
+            window.LayersAgent.duplicateLayer({ layerId: id }), firstCopy.id)
+        expect(thirdDup.ok).toBe(true)
+        const thirdCopy = thirdDup.state.layers.find(l => l.id === thirdDup.result.layerId)
+        expect(thirdCopy.name).toBe(`${baseName} copy 3`)
+    })
+
+    test('Cmd+J keyboard shortcut duplicates active layer and selects the duplicate', async ({ page }) => {
+        await bootApp(page)
+        const initialCount = await page.evaluate(() => window.layersApp._layers.length)
+        const baseLayer = await page.evaluate(() => window.layersApp._layers[0])
+
+        // Ensure base layer is selected
+        await page.evaluate((id) => {
+            window.layersApp._layerStack.selectedLayerIds = [id]
+            window.layersApp._layerStack.selectedLayerId = id
+        }, baseLayer.id)
+
+        // Press Meta+j (Mac) or Control+j
+        await page.keyboard.press('Meta+j')
+        await page.waitForFunction(
+            (expected) => window.layersApp._layers.length === expected,
+            initialCount + 1,
+            { timeout: 5000 }
+        )
+
+        const layers = await page.evaluate(() => window.layersApp._layers)
+        expect(layers.length).toBe(initialCount + 1)
+        const newLayer = layers[layers.length - 1]
+        expect(newLayer.name).toBe(`${baseLayer.name} copy`)
+
+        // The new layer should be selected
+        const selectedId = await page.evaluate(() => window.layersApp._layerStack?.selectedLayerId)
+        expect(selectedId).toBe(newLayer.id)
+    })
+
+    test('Cmd+J does not duplicate layer when focused in input', async ({ page }) => {
+        await bootApp(page)
+        const initialCount = await page.evaluate(() => window.layersApp._layers.length)
+
+        // Create and focus a temporary input
+        await page.evaluate(() => {
+            const input = document.createElement('input')
+            input.id = 'test-temp-input'
+            document.body.appendChild(input)
+            input.focus()
+        })
+
+        await page.keyboard.press('Meta+j')
+        // Give time for any unexpected event handling
+        await page.waitForTimeout(300)
+
+        const finalCount = await page.evaluate(() => {
+            document.getElementById('test-temp-input')?.remove()
+            return window.layersApp._layers.length
+        })
+        expect(finalCount).toBe(initialCount)
+    })
+
+    test('duplicateLayer menu item displays ⌘J shortcut accelerator', async ({ page }) => {
+        await bootApp(page)
+        const shortcut = await page.evaluate(() => {
+            const item = window.layersApp._menuBar?._items?.find(m => m.id === 'duplicateLayerMenuItem')
+            if (item) return item.shortcut
+            // Also inspect registered menu definition if menubar stores items differently
+            for (const menu of (window.layersApp._menuBar?.menus || [])) {
+                for (const item of (menu.items || [])) {
+                    if (item.id === 'duplicateLayerMenuItem') return item.shortcut
+                }
+            }
+            return null
+        })
+        expect(shortcut).toBe('⌘J')
+    })
 })
 
 test.describe('reorderLayer', () => {
