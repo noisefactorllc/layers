@@ -46,6 +46,7 @@ export class ShapeTool {
     set opacity(v) { this._opacity = Math.max(0, Math.min(1, v)) }
     get filled() { return this._filled }
     set filled(v) { this._filled = v }
+    get isDrawing() { return this._state === State.DRAWING }
 
     activate() {
         if (this._active) return

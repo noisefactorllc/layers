@@ -154,6 +154,14 @@ class SelectionManager {
     }
 
     /**
+     * True while a selection drag gesture is active
+     * @returns {boolean}
+     */
+    get isDrawing() {
+        return this._isDrawing
+    }
+
+    /**
      * Get magic wand tolerance
      * @returns {number}
      */

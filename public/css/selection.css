@@ -55,6 +55,26 @@
     cursor: crosshair;
 }
 
+/* Pan tool cursor */
+#selectionOverlay.pan-tool {
+    cursor: grab;
+}
+
+#selectionOverlay.pan-tool.panning {
+    cursor: grabbing;
+}
+
+#canvas-panel.pan-tool,
+#canvas-panel.pan-tool * {
+    cursor: grab;
+}
+
+#canvas-panel.panning,
+#canvas-panel.panning * {
+    cursor: grabbing;
+    user-select: none;
+}
+
 /* Mask overlay canvas - rubylith display for mask editing */
 #maskOverlay {
     max-width: 100%;

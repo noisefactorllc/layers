@@ -44,6 +44,7 @@ import { EraserTool } from './tools/eraser-tool.js'
 import { ShapeTool } from './tools/shape-tool.js'
 import { FillTool } from './tools/fill-tool.js'
 import { EyedropperTool } from './tools/eyedropper-tool.js'
+import { PanTool } from './tools/pan-tool.js'
 import { UndoManager } from './utils/undo-manager.js'
 import { invertMask, expandMask, contractMask, borderMask, featherMask, smoothMask, colorRange } from './selection/selection-modify.js'
 import { selectionParamDialog } from './ui/selection-param-dialog.js'
@@ -104,8 +105,17 @@ class LayersApp {
         this._colorRangePicking = false
         this._colorRangePickCleanup = null
         this._moveTool = null
-        this._currentTool = 'selection' // 'selection' | 'move' | 'clone' | 'transform' | 'brush' | 'eraser' | 'shape' | 'fill' | 'eyedropper'
+        this._panTool = null
+        this._currentTool = 'selection' // 'selection' | 'move' | 'clone' | 'transform' | 'brush' | 'eraser' | 'shape' | 'fill' | 'eyedropper' | 'pan'
         this._previousTool = 'selection'
+
+        // Spacebar Pan Toggle state
+        this._spacePanActive = false
+        this._spacePanStartTime = 0
+        this._spacePanDragged = false
+        this._spacePanToggled = false
+        this._toolBeforeSpacePan = null
+        this._restoreToolOnPanEnd = null
 
         // Global foreground color
         this._foregroundColor = '#000000'
@@ -1249,6 +1259,26 @@ class LayersApp {
             runMutation: task => this._runPointerMutation(task),
             setForegroundColor: (c) => this._setForegroundColor(c),
             restorePreviousTool: () => this._setToolMode(this._previousTool)
+        })
+
+        // Initialize pan tool
+        this._panTool = new PanTool({
+            overlay: this._selectionOverlay,
+            panel: document.getElementById('canvas-panel'),
+            toolClass: 'pan-tool',
+            onPanStart: () => {
+                this._spacePanDragged = true
+            },
+            onPanEnd: () => {
+                if (this._restoreToolOnPanEnd) {
+                    const next = this._restoreToolOnPanEnd
+                    this._restoreToolOnPanEnd = null
+                    this._toolBeforeSpacePan = null
+                    this._spacePanActive = false
+                    this._spacePanToggled = false
+                    this._setToolMode(next)
+                }
+            }
         })
 
         if (!this._canvas) {
@@ -4344,7 +4374,7 @@ class LayersApp {
                         type: 'button',
                         id: 'playPauseBtn',
                         classes: 'menu-icon-btn',
-                        attrs: { title: 'Play/Pause (Space)' },
+                        attrs: { title: 'Play/Pause' },
                         icon: () => (this._renderer?.isRunning ? 'pause' : 'play_arrow'),
                         onSelect: () => {
                             const mutationToken = this._tryAcquireProjectLifecycle()
@@ -4555,6 +4585,13 @@ class LayersApp {
         })
         document.getElementById('fillToolBtn')?.addEventListener('click', () => this._setToolMode('fill'))
         document.getElementById('eyedropperToolBtn')?.addEventListener('click', () => this._setToolMode('eyedropper'))
+        document.getElementById('handToolBtn')?.addEventListener('click', () => {
+            this._spacePanToggled = false
+            this._spacePanActive = false
+            this._toolBeforeSpacePan = null
+            this._restoreToolOnPanEnd = null
+            this._setToolMode('pan')
+        })
 
         // Color well input
         document.getElementById('colorWellInput')?.addEventListener('input', (e) => {
@@ -5018,8 +5055,8 @@ class LayersApp {
                 return
             }
 
-            // Don't handle other shortcuts if in input
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.contentEditable === 'true') {
+            // Don't handle other shortcuts if in input or open dialog
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.isContentEditable || e.target.contentEditable === 'true' || Boolean(document.querySelector('dialog[open], .seance-dialog[open]'))) {
                 return
             }
 
@@ -5060,10 +5097,9 @@ class LayersApp {
                 }
             }
 
-            // Space - toggle play/pause
-            if (e.key === ' ') {
-                e.preventDefault()
-                this._togglePlayPause()
+            // Space - pan tool temporary hold / quick toggle
+            if (!e.ctrlKey && !e.metaKey && (e.key === ' ' || e.code === 'Space')) {
+                this._handleSpaceKeyDown(e)
                 return
             }
 
@@ -5163,6 +5199,14 @@ class LayersApp {
                 this._setToolMode('eyedropper')
                 return
             }
+            if (!e.ctrlKey && !e.metaKey && (e.key === 'h' || e.key === 'H' || e.code === 'KeyH')) {
+                if (this._currentTool === 'pan') {
+                    this._setToolMode(this._previousTool || 'selection')
+                } else {
+                    this._setToolMode('pan')
+                }
+                return
+            }
 
             // Brush size shortcuts
             if (!e.ctrlKey && !e.metaKey && e.key === '[') {
@@ -5184,14 +5228,52 @@ class LayersApp {
                 return
             }
 
-            // Escape - clear selection
+            // Escape - clear selection or cancel space pan
             if (e.key === 'Escape') {
+                if (this._spacePanActive || this._spacePanToggled) {
+                    e.preventDefault()
+                    this._exitSpacePan()
+                    return
+                }
                 if (this._selectionManager?.hasSelection()) {
                     e.preventDefault()
                     this._runPointerMutation(() => this._selectionManager.clearSelection())
                 }
             }
 
+        })
+
+        // Spacebar release
+        document.addEventListener('keyup', (e) => {
+            if (e.key === ' ' || e.code === 'Space') {
+                this._handleSpaceKeyUp(e)
+            }
+        })
+
+        // Safety nets: exit space pan if window loses focus or document is hidden
+        window.addEventListener('blur', () => {
+            if (this._spacePanActive || this._spacePanToggled) {
+                this._exitSpacePan()
+            }
+        })
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && (this._spacePanActive || this._spacePanToggled)) {
+                this._exitSpacePan()
+            }
+        })
+
+        // If focus moves to an input field or dialog, exit space pan
+        document.addEventListener('focusin', (e) => {
+            if ((this._spacePanActive || this._spacePanToggled) && (
+                e.target.tagName === 'INPUT' ||
+                e.target.tagName === 'TEXTAREA' ||
+                e.target.tagName === 'SELECT' ||
+                e.target.isContentEditable ||
+                e.target.closest?.('dialog[open], .seance-dialog[open]')
+            )) {
+                this._exitSpacePan()
+            }
         })
     }
 
@@ -6189,8 +6271,95 @@ class LayersApp {
     }
 
     /**
+     * Handle Spacebar keydown for Pan tool
+     * @param {KeyboardEvent} e
+     * @private
+     */
+    _handleSpaceKeyDown(e) {
+        if (e.repeat) return
+        if (e.ctrlKey || e.metaKey) return
+
+        // If user is currently drawing, erasing, dragging, transforming, selecting, or panning, ignore spacebar
+        if (
+            this._brushTool?.isDrawing ||
+            this._eraserTool?.isErasing ||
+            this._moveTool?.isDragging ||
+            this._cloneTool?.isDragging ||
+            this._transformTool?.isTransforming ||
+            this._shapeTool?.isDrawing ||
+            this._selectionManager?.isDrawing ||
+            this._panTool?.isPanning
+        ) {
+            return
+        }
+
+        e.preventDefault()
+
+        // If pan is already active via a previous space quick-toggle, tapping space toggles it off
+        if (this._spacePanToggled && this._currentTool === 'pan') {
+            this._exitSpacePan()
+            return
+        }
+
+        if (this._spacePanActive) return
+
+        this._toolBeforeSpacePan = this._currentTool
+        this._spacePanActive = true
+        this._spacePanStartTime = performance.now()
+        this._spacePanDragged = false
+        this._spacePanToggled = false
+
+        this._setToolMode('pan')
+    }
+
+    /**
+     * Handle Spacebar keyup for Pan tool
+     * @param {KeyboardEvent} e
+     * @private
+     */
+    _handleSpaceKeyUp(e) {
+        if (e.code !== 'Space' && e.key !== ' ') return
+        if (!this._spacePanActive) return
+
+        const duration = performance.now() - this._spacePanStartTime
+
+        // If user actively dragged or held space for >= 450ms, it was a hold gesture.
+        // If it was a quick tap (< 450ms and no dragging occurred), it acts as a toggle:
+        // remain in pan mode until the next tap or tool selection.
+        if (this._spacePanDragged || duration >= 450) {
+            // If pointer drag is currently still mid-flight, postpone restoring tool until pointer release
+            if (this._panTool?.isPanning) {
+                this._restoreToolOnPanEnd = this._toolBeforeSpacePan || 'selection'
+                this._spacePanActive = false
+                this._spacePanToggled = false
+            } else {
+                this._exitSpacePan()
+            }
+        } else {
+            // Quick toggle: stays in pan mode
+            this._spacePanActive = false
+            this._spacePanToggled = true
+        }
+    }
+
+    /**
+     * Exit temporary or toggled space-pan mode and restore previous tool
+     * @private
+     */
+    _exitSpacePan() {
+        this._spacePanActive = false
+        this._spacePanToggled = false
+        const targetTool = this._toolBeforeSpacePan || 'selection'
+        this._toolBeforeSpacePan = null
+        this._restoreToolOnPanEnd = null
+        if (this._currentTool === 'pan') {
+            this._setToolMode(targetTool)
+        }
+    }
+
+    /**
      * Set current tool mode
-     * @param {'selection' | 'move' | 'clone' | 'transform' | 'brush' | 'eraser' | 'shape' | 'fill' | 'eyedropper'} tool
+     * @param {'selection' | 'move' | 'clone' | 'transform' | 'brush' | 'eraser' | 'shape' | 'fill' | 'eyedropper' | 'pan'} tool
      * @private
      */
     _setToolMode(tool) {
@@ -6202,7 +6371,15 @@ class LayersApp {
             }
         }
         this._cancelColorRangePick()
-        if (tool === 'eyedropper') this._previousTool = this._currentTool
+        if (tool !== 'pan') {
+            this._spacePanActive = false
+            this._spacePanToggled = false
+            this._toolBeforeSpacePan = null
+            this._restoreToolOnPanEnd = null
+        }
+        if (tool === 'eyedropper' || (tool === 'pan' && this._currentTool !== 'pan')) {
+            this._previousTool = this._currentTool
+        }
         this._currentTool = tool
 
         // Deactivate all tools
@@ -6214,6 +6391,7 @@ class LayersApp {
         this._shapeTool?.deactivate()
         this._fillTool?.deactivate()
         this._eyedropperTool?.deactivate()
+        this._panTool?.deactivate()
 
         // Update button states
         document.getElementById('moveToolBtn')?.classList.toggle('active', tool === 'move')
@@ -6225,6 +6403,7 @@ class LayersApp {
         document.getElementById('shapeToolBtn')?.classList.toggle('active', tool === 'shape')
         document.getElementById('fillToolBtn')?.classList.toggle('active', tool === 'fill')
         document.getElementById('eyedropperToolBtn')?.classList.toggle('active', tool === 'eyedropper')
+        document.getElementById('handToolBtn')?.classList.toggle('active', tool === 'pan')
 
         // Clear selection tool checkmarks when not in selection mode
         if (tool !== 'selection') {
@@ -6242,6 +6421,7 @@ class LayersApp {
         else if (tool === 'shape') this._shapeTool?.activate()
         else if (tool === 'fill') this._fillTool?.activate()
         else if (tool === 'eyedropper') this._eyedropperTool?.activate()
+        else if (tool === 'pan') this._panTool?.activate()
 
         // Show/hide drawing options bar
         const drawingTools = ['brush', 'eraser', 'shape', 'fill']
@@ -6269,6 +6449,7 @@ class LayersApp {
         this._selectionOverlay?.classList.toggle('shape-tool', tool === 'shape')
         this._selectionOverlay?.classList.toggle('fill-tool', tool === 'fill')
         this._selectionOverlay?.classList.toggle('eyedropper-tool', tool === 'eyedropper')
+        this._selectionOverlay?.classList.toggle('pan-tool', tool === 'pan')
     }
 
     _updateToolButtons() {
