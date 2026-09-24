@@ -38,8 +38,9 @@ test('generateDuplicateLayerName treats words containing "copy" as normal base n
 })
 
 test('generateDuplicateLayerName handles empty or missing name', () => {
-    const name = generateDuplicateLayerName('', [])
-    assert.equal(name, 'Layer copy')
+    assert.equal(generateDuplicateLayerName('', []), 'Layer copy')
+    assert.equal(generateDuplicateLayerName('   ', []), 'Layer copy')
+    assert.equal(generateDuplicateLayerName(undefined, []), 'Layer copy')
 })
 
 test('cloneLayer accepts custom name', () => {

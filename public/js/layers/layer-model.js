@@ -169,7 +169,7 @@ export function cloneMask(mask) {
  */
 export function generateDuplicateLayerName(name, existingNames = []) {
     const namesSet = existingNames instanceof Set ? existingNames : new Set(existingNames)
-    const trimmed = (name || 'Layer').trim()
+    const trimmed = name?.trim() || 'Layer'
     const match = trimmed.match(/^(.*?) copy(?: (\d+))?$/)
 
     let baseName
