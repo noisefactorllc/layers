@@ -29,10 +29,13 @@ export class ShapeTool {
         this._currentPt = null
         this._mutationToken = null
         this._sharedMutationToken = null
+        this._lastCoords = null
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
         this._onMouseUp = this._onMouseUp.bind(this)
+        this._onKeyDown = this._onKeyDown.bind(this)
+        this._onKeyUp = this._onKeyUp.bind(this)
         this._cancelGesture = this._cancelGesture.bind(this)
     }
 
@@ -57,6 +60,8 @@ export class ShapeTool {
             const handler = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp][i]
             this._overlay.addEventListener(evt, handler)
         })
+        document.addEventListener('keydown', this._onKeyDown)
+        document.addEventListener('keyup', this._onKeyUp)
         this._overlay.addEventListener('pointercancel', this._cancelGesture)
         window.addEventListener('blur', this._cancelGesture)
     }
@@ -69,12 +74,15 @@ export class ShapeTool {
         this._state = State.IDLE
         this._startPt = null
         this._currentPt = null
+        this._lastCoords = null
         this._clearPreview()
 
         MOUSE_EVENTS.forEach((evt, i) => {
             const handler = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp][i]
             this._overlay.removeEventListener(evt, handler)
         })
+        document.removeEventListener('keydown', this._onKeyDown)
+        document.removeEventListener('keyup', this._onKeyUp)
         this._overlay.removeEventListener('pointercancel', this._cancelGesture)
         window.removeEventListener('blur', this._cancelGesture)
     }
@@ -99,22 +107,52 @@ export class ShapeTool {
         this._state = State.DRAWING
         this._startPt = this._getCanvasCoords(e)
         this._currentPt = { ...this._startPt }
+        this._lastCoords = { ...this._startPt }
     }
 
     _onMouseMove(e) {
         if (this._state !== State.DRAWING) return
-        this._currentPt = this._getCanvasCoords(e)
+        const coords = this._getCanvasCoords(e)
+        this._lastCoords = coords
+        this._currentPt = { ...coords }
 
         // Shift = constrain to square/circle
         if (e.shiftKey && (this._shapeType === 'rect' || this._shapeType === 'ellipse')) {
             const dx = this._currentPt.x - this._startPt.x
             const dy = this._currentPt.y - this._startPt.y
             const size = Math.max(Math.abs(dx), Math.abs(dy))
-            this._currentPt.x = this._startPt.x + size * Math.sign(dx)
-            this._currentPt.y = this._startPt.y + size * Math.sign(dy)
+            const signX = dx < 0 ? -1 : 1
+            const signY = dy < 0 ? -1 : 1
+            this._currentPt.x = this._startPt.x + size * signX
+            this._currentPt.y = this._startPt.y + size * signY
         }
 
         this._drawPreview()
+    }
+
+    _onKeyDown(e) {
+        if (!this._active) return
+        if (e.key === 'Shift' && this._state === State.DRAWING && this._startPt && this._lastCoords &&
+            (this._shapeType === 'rect' || this._shapeType === 'ellipse')) {
+            this._currentPt = { ...this._lastCoords }
+            const dx = this._currentPt.x - this._startPt.x
+            const dy = this._currentPt.y - this._startPt.y
+            const size = Math.max(Math.abs(dx), Math.abs(dy))
+            const signX = dx < 0 ? -1 : 1
+            const signY = dy < 0 ? -1 : 1
+            this._currentPt.x = this._startPt.x + size * signX
+            this._currentPt.y = this._startPt.y + size * signY
+            this._drawPreview()
+        }
+    }
+
+    _onKeyUp(e) {
+        if (!this._active) return
+        if (e.key === 'Shift' && this._state === State.DRAWING && this._startPt && this._lastCoords &&
+            (this._shapeType === 'rect' || this._shapeType === 'ellipse')) {
+            this._currentPt = { ...this._lastCoords }
+            this._drawPreview()
+        }
     }
 
     _cancelGesture() {
@@ -123,6 +161,7 @@ export class ShapeTool {
         this._state = State.IDLE
         this._startPt = null
         this._currentPt = null
+        this._lastCoords = null
         this._mutationToken = null
         token?.release()
         if (this._sharedMutationToken?.released) this._sharedMutationToken = null
@@ -133,6 +172,19 @@ export class ShapeTool {
         if (this._state !== State.DRAWING) return
         this._state = State.IDLE
 
+        if (this._lastCoords && (this._shapeType === 'rect' || this._shapeType === 'ellipse')) {
+            this._currentPt = { ...this._lastCoords }
+            if (e?.shiftKey) {
+                const dx = this._currentPt.x - this._startPt.x
+                const dy = this._currentPt.y - this._startPt.y
+                const size = Math.max(Math.abs(dx), Math.abs(dy))
+                const signX = dx < 0 ? -1 : 1
+                const signY = dy < 0 ? -1 : 1
+                this._currentPt.x = this._startPt.x + size * signX
+                this._currentPt.y = this._startPt.y + size * signY
+            }
+        }
+
         // Capture this gesture's state and clear instance state BEFORE awaiting,
         // so a new shape begun during the rebuild isn't clobbered on resume.
         const startPt = this._startPt
@@ -140,6 +192,7 @@ export class ShapeTool {
         const mutationToken = this._mutationToken
         this._startPt = null
         this._currentPt = null
+        this._lastCoords = null
         this._mutationToken = null
 
         try {

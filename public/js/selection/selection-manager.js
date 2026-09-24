@@ -123,8 +123,14 @@ class SelectionManager {
         /** @type {boolean} */
         this._enabled = true
 
+        /** @type {{x: number, y: number} | null} */
+        this._lastCoords = null
+
         /** @type {Function|null} */
         this.onSelectionChange = null
+
+        this._handleKeyDown = this._handleKeyDown.bind(this)
+        this._handleKeyUp = this._handleKeyUp.bind(this)
     }
 
     /**
@@ -294,7 +300,8 @@ class SelectionManager {
         this._overlay.addEventListener('mouseup', (e) => this._handleMouseUp(e))
         this._overlay.addEventListener('mouseleave', (e) => this._handleMouseUp(e))
         this._overlay.addEventListener('dblclick', (e) => this._handleDoubleClick(e))
-        document.addEventListener('keydown', (e) => this._handleKeyDown(e))
+        document.addEventListener('keydown', this._handleKeyDown)
+        document.addEventListener('keyup', this._handleKeyUp)
     }
 
     /**
@@ -454,6 +461,7 @@ class SelectionManager {
 
         this._isDrawing = true
         this._drawStart = coords
+        this._lastCoords = coords
         this._selectionPath = null
         this._stopAnimation()
         this._clearOverlay() // drop any stale marching-ants frame from the prior selection
@@ -480,7 +488,9 @@ class SelectionManager {
         if (!this._isDrawing || !this._drawStart) return
 
         const coords = this._getCanvasCoords(e)
+        this._lastCoords = coords
         const constrain = e.shiftKey
+        const fromCenter = e.altKey
 
         if (this._currentTool === 'lasso') {
             this._lassoPoints.push(coords)
@@ -492,7 +502,7 @@ class SelectionManager {
             return
         }
 
-        this._updateSelectionPath(this._drawStart, coords, constrain)
+        this._updateSelectionPath(this._drawStart, coords, constrain, fromCenter)
         this._drawPreview()
     }
 
@@ -506,6 +516,11 @@ class SelectionManager {
         if (!this._isDrawing) return
 
         this._isDrawing = false
+
+        if (this._drawStart && this._lastCoords &&
+            (this._currentTool === 'rectangle' || this._currentTool === 'oval')) {
+            this._updateSelectionPath(this._drawStart, this._lastCoords, e.shiftKey, e.altKey)
+        }
 
         if (this._selectionPath) {
             const path = this._selectionPath
@@ -532,6 +547,7 @@ class SelectionManager {
         }
 
         this._drawStart = null
+        this._lastCoords = null
     }
 
     /**
@@ -539,22 +555,43 @@ class SelectionManager {
      * @param {{x: number, y: number}} start
      * @param {{x: number, y: number}} end
      * @param {boolean} constrain - Constrain to square/circle
+     * @param {boolean} fromCenter - Draw centered at start
      * @private
      */
-    _updateSelectionPath(start, end, constrain) {
-        let width = end.x - start.x
-        let height = end.y - start.y
+    _updateSelectionPath(start, end, constrain, fromCenter = false) {
+        let x, y, w, h
 
-        if (constrain) {
-            const size = Math.max(Math.abs(width), Math.abs(height))
-            width = Math.sign(width) * size || size
-            height = Math.sign(height) * size || size
+        if (fromCenter) {
+            let halfW = Math.abs(end.x - start.x)
+            let halfH = Math.abs(end.y - start.y)
+
+            if (constrain) {
+                const halfSize = Math.max(halfW, halfH)
+                halfW = halfSize
+                halfH = halfSize
+            }
+
+            w = halfW * 2
+            h = halfH * 2
+            x = start.x - halfW
+            y = start.y - halfH
+        } else {
+            let width = end.x - start.x
+            let height = end.y - start.y
+
+            if (constrain) {
+                const size = Math.max(Math.abs(width), Math.abs(height))
+                const signX = width < 0 ? -1 : 1
+                const signY = height < 0 ? -1 : 1
+                width = signX * size
+                height = signY * size
+            }
+
+            x = width < 0 ? start.x + width : start.x
+            y = height < 0 ? start.y + height : start.y
+            w = Math.abs(width)
+            h = Math.abs(height)
         }
-
-        const x = width < 0 ? start.x + width : start.x
-        const y = height < 0 ? start.y + height : start.y
-        const w = Math.abs(width)
-        const h = Math.abs(height)
 
         if (this._currentTool === 'rectangle') {
             this._selectionPath = { type: 'rect', x, y, width: w, height: h }
@@ -722,15 +759,53 @@ class SelectionManager {
     }
 
     /**
-     * Handle keydown (escape cancels polygon)
+     * Handle keydown (escape cancels polygon/drag, Shift/Alt updates live preview)
      * @param {KeyboardEvent} e
      * @private
      */
     _handleKeyDown(e) {
-        if (e.key === 'Escape' && this._isPolygonDrawing) {
-            this._polygonPoints = []
-            this._isPolygonDrawing = false
-            this._clearOverlay()
+        if (e.key === 'Escape') {
+            if (this._isPolygonDrawing) {
+                this._polygonPoints = []
+                this._isPolygonDrawing = false
+                this._clearOverlay()
+                return
+            }
+            if (this._isDrawing) {
+                this._isDrawing = false
+                this._drawStart = null
+                this._lastCoords = null
+                this._lassoPoints = []
+                this._selectionPath = this._previousSelection
+                if (this._selectionPath) {
+                    this._startAnimation()
+                } else {
+                    this._clearOverlay()
+                }
+                this.onSelectionChange?.()
+                return
+            }
+        }
+
+        if (this._isDrawing && this._drawStart && this._lastCoords &&
+            (this._currentTool === 'rectangle' || this._currentTool === 'oval') &&
+            (e.key === 'Shift' || e.key === 'Alt')) {
+            this._updateSelectionPath(this._drawStart, this._lastCoords, e.shiftKey, e.altKey)
+            this._drawPreview()
+        }
+    }
+
+    /**
+     * Handle keyup (Shift/Alt updates live preview)
+     * @param {KeyboardEvent} e
+     * @private
+     */
+    _handleKeyUp(e) {
+        if (this._isDrawing && this._drawStart && this._lastCoords &&
+            (this._currentTool === 'rectangle' || this._currentTool === 'oval') &&
+            (e.key === 'Shift' || e.key === 'Alt')) {
+            this._updateSelectionPath(this._drawStart, this._lastCoords, e.shiftKey, e.altKey)
+            this._drawPreview()
         }
     }
 
@@ -991,6 +1066,8 @@ class SelectionManager {
     destroy() {
         this._stopAnimation()
         this._clearOverlay()
+        document.removeEventListener('keydown', this._handleKeyDown)
+        document.removeEventListener('keyup', this._handleKeyUp)
     }
 }
 

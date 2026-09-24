@@ -46,10 +46,13 @@ class MoveTool {
         this._cancelRequested = false
         this._mutationToken = null
         this._gestureMutationState = null
+        this._lastCoords = null
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
         this._onMouseUp = this._onMouseUp.bind(this)
+        this._onKeyDown = this._onKeyDown.bind(this)
+        this._onKeyUp = this._onKeyUp.bind(this)
         this._onCancel = this._onCancel.bind(this)
     }
 
@@ -64,6 +67,8 @@ class MoveTool {
 
         const handlers = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp]
         MOUSE_EVENTS.forEach((evt, i) => this._overlay.addEventListener(evt, handlers[i]))
+        document.addEventListener('keydown', this._onKeyDown)
+        document.addEventListener('keyup', this._onKeyUp)
         this._overlay.addEventListener('pointercancel', this._onCancel)
         window.addEventListener('blur', this._onCancel)
         this._overlay.classList.add(this._toolClass)
@@ -75,6 +80,8 @@ class MoveTool {
 
         const handlers = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp]
         MOUSE_EVENTS.forEach((evt, i) => this._overlay.removeEventListener(evt, handlers[i]))
+        document.removeEventListener('keydown', this._onKeyDown)
+        document.removeEventListener('keyup', this._onKeyUp)
         this._overlay.removeEventListener('pointercancel', this._onCancel)
         window.removeEventListener('blur', this._onCancel)
         this._overlay.classList.remove(this._toolClass)
@@ -109,6 +116,7 @@ class MoveTool {
         this._pointerUpPending = false
         this._cancelRequested = false
         this._gestureMutationState = null
+        this._lastCoords = null
     }
 
     _getCanvasCoords(e) {
@@ -212,18 +220,66 @@ class MoveTool {
         if (!this._dragStart || !this._layerStartPos) return
 
         const coords = this._getCanvasCoords(e)
+        this._lastCoords = coords
+        let dx = coords.x - this._dragStart.x
+        let dy = coords.y - this._dragStart.y
+
+        if (e.shiftKey) {
+            if (Math.abs(dx) >= Math.abs(dy)) {
+                dy = 0
+            } else {
+                dx = 0
+            }
+        }
+
         this._updateLayerPosition(
-            this._layerStartPos.x + coords.x - this._dragStart.x,
-            this._layerStartPos.y + coords.y - this._dragStart.y
+            this._layerStartPos.x + dx,
+            this._layerStartPos.y + dy
         )
     }
 
-    _onMouseUp() {
+    _onKeyDown(e) {
+        if (!this._active) return
+        if (e.key === 'Shift' && this._state === State.DRAGGING && this._lastCoords && this._layerStartPos && this._dragStart) {
+            let dx = this._lastCoords.x - this._dragStart.x
+            let dy = this._lastCoords.y - this._dragStart.y
+            if (Math.abs(dx) >= Math.abs(dy)) {
+                dy = 0
+            } else {
+                dx = 0
+            }
+            this._updateLayerPosition(this._layerStartPos.x + dx, this._layerStartPos.y + dy)
+        }
+    }
+
+    _onKeyUp(e) {
+        if (!this._active) return
+        if (e.key === 'Shift' && this._state === State.DRAGGING && this._lastCoords && this._layerStartPos && this._dragStart) {
+            let dx = this._lastCoords.x - this._dragStart.x
+            let dy = this._lastCoords.y - this._dragStart.y
+            this._updateLayerPosition(this._layerStartPos.x + dx, this._layerStartPos.y + dy)
+        }
+    }
+
+    _onMouseUp(e) {
         if (this._state === State.EXTRACTING) {
             // Extraction still running — remember the release so _doAsyncThenDrag
             // completes the gesture instead of starting a drag.
             this._pointerUpPending = true
             return
+        }
+
+        if (this._state === State.DRAGGING && this._lastCoords && this._layerStartPos && this._dragStart) {
+            let dx = this._lastCoords.x - this._dragStart.x
+            let dy = this._lastCoords.y - this._dragStart.y
+            if (e?.shiftKey) {
+                if (Math.abs(dx) >= Math.abs(dy)) {
+                    dy = 0
+                } else {
+                    dx = 0
+                }
+            }
+            this._updateLayerPosition(this._layerStartPos.x + dx, this._layerStartPos.y + dy)
         }
 
         const didClone = this._didCloneOperation

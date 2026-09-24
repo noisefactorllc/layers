@@ -65,11 +65,13 @@ class TransformTool {
         this._startTransform = null
         this._mutationToken = null
         this._gestureMutationState = null
+        this._lastCoords = null
 
         this._onMouseDown = this._onMouseDown.bind(this)
         this._onMouseMove = this._onMouseMove.bind(this)
         this._onMouseUp = this._onMouseUp.bind(this)
         this._onKeyDown = this._onKeyDown.bind(this)
+        this._onKeyUp = this._onKeyUp.bind(this)
         this._onCancel = this._onCancel.bind(this)
     }
 
@@ -85,6 +87,7 @@ class TransformTool {
         const handlers = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp]
         MOUSE_EVENTS.forEach((evt, i) => this._overlay.addEventListener(evt, handlers[i]))
         document.addEventListener('keydown', this._onKeyDown)
+        document.addEventListener('keyup', this._onKeyUp)
         this._overlay.addEventListener('pointercancel', this._onCancel)
         window.addEventListener('blur', this._onCancel)
         this._overlay.classList.add('transform-tool')
@@ -98,6 +101,7 @@ class TransformTool {
         const handlers = [this._onMouseDown, this._onMouseMove, this._onMouseUp, this._onMouseUp]
         MOUSE_EVENTS.forEach((evt, i) => this._overlay.removeEventListener(evt, handlers[i]))
         document.removeEventListener('keydown', this._onKeyDown)
+        document.removeEventListener('keyup', this._onKeyUp)
         this._overlay.removeEventListener('pointercancel', this._onCancel)
         window.removeEventListener('blur', this._onCancel)
         this._overlay.classList.remove('transform-tool')
@@ -128,6 +132,7 @@ class TransformTool {
         this._startBounds = null
         this._startTransform = null
         this._gestureMutationState = null
+        this._lastCoords = null
     }
 
     _getCanvasCoords(e) {
@@ -251,6 +256,7 @@ class TransformTool {
 
     _onMouseMove(e) {
         const coords = this._getCanvasCoords(e)
+        this._lastCoords = coords
 
         if (this._state === State.DRAGGING) {
             this._handleDrag(coords, e)
@@ -290,6 +296,17 @@ class TransformTool {
             this._commitTransform?.()
             return
         }
+
+        if (this._state === State.DRAGGING && this._lastCoords && (e.key === 'Shift' || e.key === 'Alt')) {
+            this._handleDrag(this._lastCoords, e)
+        }
+    }
+
+    _onKeyUp(e) {
+        if (!this._active) return
+        if (this._state === State.DRAGGING && this._lastCoords && (e.key === 'Shift' || e.key === 'Alt')) {
+            this._handleDrag(this._lastCoords, e)
+        }
     }
 
     // --- Drag logic ---
@@ -300,7 +317,7 @@ class TransformTool {
         const handle = this._activeHandle
 
         if (handle === Handle.MOVE) {
-            this._handleMoveDrag(coords)
+            this._handleMoveDrag(coords, e)
         } else if (this._isRotateHandle(handle)) {
             this._handleRotateDrag(coords, e)
         } else {
@@ -310,9 +327,17 @@ class TransformTool {
         this._drawOverlay()
     }
 
-    _handleMoveDrag(coords) {
-        const dx = coords.x - this._dragStart.x
-        const dy = coords.y - this._dragStart.y
+    _handleMoveDrag(coords, e) {
+        let dx = coords.x - this._dragStart.x
+        let dy = coords.y - this._dragStart.y
+
+        if (e?.shiftKey) {
+            if (Math.abs(dx) >= Math.abs(dy)) {
+                dy = 0
+            } else {
+                dx = 0
+            }
+        }
 
         this._applyTransform({
             offsetX: this._startTransform.offsetX + dx,
@@ -365,13 +390,10 @@ class TransformTool {
 
         // Determine scale deltas based on handle
         if (this._isCornerHandle(handle) || this._isHorizontalEdge(handle)) {
-            const sign = (handle === Handle.LEFT || handle === Handle.TOP_LEFT || handle === Handle.BOTTOM_LEFT) ? -1 : 1
-            if (this._isCornerHandle(handle) || this._isHorizontalEdge(handle)) {
-                if (handle === Handle.LEFT || handle === Handle.TOP_LEFT || handle === Handle.BOTTOM_LEFT) {
-                    newScaleX = st.scaleX - dx / baseWidth
-                } else if (handle === Handle.RIGHT || handle === Handle.TOP_RIGHT || handle === Handle.BOTTOM_RIGHT) {
-                    newScaleX = st.scaleX + dx / baseWidth
-                }
+            if (handle === Handle.LEFT || handle === Handle.TOP_LEFT || handle === Handle.BOTTOM_LEFT) {
+                newScaleX = st.scaleX - dx / baseWidth
+            } else if (handle === Handle.RIGHT || handle === Handle.TOP_RIGHT || handle === Handle.BOTTOM_RIGHT) {
+                newScaleX = st.scaleX + dx / baseWidth
             }
         }
 
@@ -384,10 +406,20 @@ class TransformTool {
         }
 
         // Shift = constrain aspect ratio
-        if (e.shiftKey && this._isCornerHandle(handle)) {
-            const avgScale = (Math.abs(newScaleX) + Math.abs(newScaleY)) / 2
-            newScaleX = avgScale * Math.sign(newScaleX || 1)
-            newScaleY = avgScale * Math.sign(newScaleY || 1)
+        if (e.shiftKey) {
+            if (this._isCornerHandle(handle)) {
+                const ratioX = Math.abs(newScaleX / (st.scaleX || 1))
+                const ratioY = Math.abs(newScaleY / (st.scaleY || 1))
+                const scaleFactor = (ratioX + ratioY) / 2
+                newScaleX = Math.abs(st.scaleX) * scaleFactor * Math.sign(newScaleX || st.scaleX || 1)
+                newScaleY = Math.abs(st.scaleY) * scaleFactor * Math.sign(newScaleY || st.scaleY || 1)
+            } else if (this._isHorizontalEdge(handle)) {
+                const scaleFactor = Math.abs(newScaleX / (st.scaleX || 1))
+                newScaleY = Math.abs(st.scaleY) * scaleFactor * Math.sign(st.scaleY || 1)
+            } else if (this._isVerticalEdge(handle)) {
+                const scaleFactor = Math.abs(newScaleY / (st.scaleY || 1))
+                newScaleX = Math.abs(st.scaleX) * scaleFactor * Math.sign(st.scaleX || 1)
+            }
         }
 
         // Alt = scale from center (no offset adjustment needed since offset is center-relative)
