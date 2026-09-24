@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js'
-import { appReady } from './waits.js'
+import { appReady, defaultProjectReady } from './waits.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
 import fs from 'fs'
 import path from 'path'
@@ -125,6 +125,94 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         }
         if (hiddenResults.wandRowHasHide) {
             expect(hiddenResults.wandRowDisplay).toBe('none')
+        }
+    })
+
+    test('theme switching preserves accessible contrast on UI controls across light and dark themes', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await defaultProjectReady(page)
+        await page.locator('.layer-item').first().waitFor({ state: 'visible', timeout: 10000 })
+
+        const contrastResults = await page.evaluate(async () => {
+            function getRgb(colorStr, bgStr = '#ffffff') {
+                const canvas = document.createElement('canvas')
+                canvas.width = 1
+                canvas.height = 1
+                const ctx = canvas.getContext('2d', { willReadFrequently: true })
+                ctx.fillStyle = bgStr
+                ctx.fillRect(0, 0, 1, 1)
+                ctx.fillStyle = colorStr
+                ctx.fillRect(0, 0, 1, 1)
+                const data = ctx.getImageData(0, 0, 1, 1).data
+                return [data[0] / 255, data[1] / 255, data[2] / 255]
+            }
+
+            function luminance([r, g, b]) {
+                const a = [r, g, b].map(v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
+                return a[0] * 0.2126 + a[1] * 0.7152 + a[2] * 0.0722
+            }
+
+            function contrastRatio(c1, c2, baseBg = '#000000') {
+                const l1 = luminance(getRgb(c1, baseBg))
+                const l2 = luminance(getRgb(c2, baseBg))
+                const lighter = Math.max(l1, l2)
+                const darker = Math.min(l1, l2)
+                return (lighter + 0.05) / (darker + 0.05)
+            }
+
+            const testContainer = document.createElement('div')
+            testContainer.id = 'theme-contrast-test-fixture'
+            testContainer.innerHTML = `
+                <button class="action-btn">Secondary</button>
+                <button class="action-btn primary">Primary</button>
+                <button class="action-btn danger">Danger</button>
+            `
+            document.body.appendChild(testContainer)
+
+            const themes = ['dark', 'light', 'neutral-dark', 'neutral-light', 'cyberpunk', 'corporate']
+            const report = {}
+
+            for (const theme of themes) {
+                document.documentElement.dataset.theme = theme
+                // Settle render pipeline cleanly across frames
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+
+                const item = document.querySelector('.layer-item')
+                if (!item) throw new Error(`Missing .layer-item for theme ${theme}`)
+                const name = item.querySelector('.layer-name')
+                if (!name) throw new Error(`Missing .layer-name for theme ${theme}`)
+                const opacityDisplay = item.querySelector('.layer-opacity .value-display')
+                if (!opacityDisplay) throw new Error(`Missing .layer-opacity .value-display for theme ${theme}`)
+                const itemBg = window.getComputedStyle(item).backgroundColor
+
+                const btnDefault = testContainer.querySelector('.action-btn')
+                const btnPrimary = testContainer.querySelector('.action-btn.primary')
+                const btnDanger = testContainer.querySelector('.action-btn.danger')
+
+                const primaryBg = window.getComputedStyle(document.documentElement).getPropertyValue('--hf-accent-3').trim()
+                const dangerBg = window.getComputedStyle(document.documentElement).getPropertyValue('--hf-red').trim()
+
+                report[theme] = {
+                    nameContrast: contrastRatio(window.getComputedStyle(name).color, itemBg),
+                    opacityContrast: contrastRatio(window.getComputedStyle(opacityDisplay).color, itemBg),
+                    btnDefaultContrast: contrastRatio(window.getComputedStyle(btnDefault).color, window.getComputedStyle(btnDefault).backgroundColor),
+                    primaryBtnContrast: contrastRatio(window.getComputedStyle(btnPrimary).color, primaryBg),
+                    dangerBtnContrast: contrastRatio(window.getComputedStyle(btnDanger).color, dangerBg)
+                }
+            }
+
+            testContainer.remove()
+            document.documentElement.removeAttribute('data-theme')
+            return report
+        })
+
+        for (const [theme, metrics] of Object.entries(contrastResults)) {
+            // WCAG AA requirement for normal text is 4.5:1
+            expect(metrics.nameContrast, `${theme} layer name contrast`).toBeGreaterThanOrEqual(4.5)
+            expect(metrics.opacityContrast, `${theme} opacity display contrast`).toBeGreaterThanOrEqual(4.5)
+            expect(metrics.btnDefaultContrast, `${theme} default button contrast`).toBeGreaterThanOrEqual(4.5)
+            expect(metrics.primaryBtnContrast, `${theme} primary button contrast`).toBeGreaterThanOrEqual(4.5)
+            expect(metrics.dangerBtnContrast, `${theme} danger button contrast`).toBeGreaterThanOrEqual(4.5)
         }
     })
 })

@@ -11,17 +11,17 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    background: var(--hf-color-3);
+    background: var(--hf-bg-elevated);
     border: 1px solid var(--hf-color-2);
     border-radius: var(--hf-radius-md);
     margin-bottom: 6px;
     overflow: visible;
-    transition: all 0.12s ease-out;
+    transition: border-color 0.12s ease-out, box-shadow 0.12s ease-out;
     cursor: pointer;
 }
 
 .layer-item:hover {
-    border-color: var(--hf-color-3);
+    border-color: var(--hf-border-subtle);
 }
 
 .layer-item.selected {
@@ -144,8 +144,8 @@
 }
 
 .layer-visibility:hover {
-    color: var(--hf-color-7);
-    background: var(--hf-color-3);
+    color: var(--hf-text-bright);
+    background: var(--hf-bg-muted);
 }
 
 .layer-visibility:focus-visible {
@@ -250,7 +250,7 @@
 .layer-name {
     font-size: 13px;
     font-weight: 500;
-    color: var(--hf-color-7);
+    color: var(--hf-text-bright);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -262,7 +262,8 @@
 }
 
 .layer-name:hover {
-    background: var(--hf-color-3);
+    background: var(--hf-bg-muted);
+    color: var(--hf-text-bright);
 }
 
 .layer-name.editing {
@@ -273,7 +274,7 @@
 
 .layer-type {
     font-size: 10px;
-    color: var(--hf-color-5);
+    color: var(--hf-text-normal);
 }
 
 .layer-type.media {
@@ -358,8 +359,8 @@
 }
 
 .layer-params-toggle:hover {
-    color: var(--hf-color-7);
-    background: var(--hf-color-3);
+    color: var(--hf-text-bright);
+    background: var(--hf-bg-muted);
 }
 
 .layer-params-toggle:focus-visible {
@@ -401,6 +402,19 @@
     align-items: center;
     gap: 8px;
     flex: 1;
+}
+
+.layer-opacity .value-display {
+    color: var(--hf-text-normal);
+    font-weight: 500;
+}
+
+.layer-opacity .slider {
+    background: var(--hf-bg-muted);
+}
+
+.layer-opacity .slider:hover {
+    background: color-mix(in srgb, var(--hf-accent-3) 25%, var(--hf-bg-muted) 75%);
 }
 
 /* Shorter slider when expando toggle is present */
@@ -476,7 +490,7 @@ effect-params {
 
 .effect-params-title {
     font-size: 10px;
-    color: var(--hf-color-5);
+    color: var(--hf-text-normal);
     font-weight: 600;
 }
 
@@ -497,7 +511,8 @@ effect-params {
 
 .control-label {
     font-size: 11px;
-    color: var(--hf-color-5);
+    color: var(--hf-text-normal);
+    font-weight: 500;
     text-transform: lowercase;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -530,25 +545,38 @@ effect-params {
     grid-column: 2 / -1;
 }
 
+.control-group slider-value .value-display {
+    color: var(--hf-text-normal);
+    font-weight: 500;
+}
+
+.control-group slider-value .slider {
+    background: var(--hf-bg-muted);
+}
+
+.control-group slider-value .slider:hover {
+    background: color-mix(in srgb, var(--hf-accent-3) 25%, var(--hf-bg-muted) 75%);
+}
+
 /* Button control */
 .control-button {
     padding: 4px 12px;
     font-size: 10px;
     font-family: var(--font-body);
-    background: var(--hf-bg-elevated);
-    border: 1px solid var(--hf-color-2);
+    background: var(--hf-bg-surface);
+    border: 1px solid var(--hf-border-subtle);
     border-radius: var(--hf-radius-sm);
-    color: var(--hf-color-6);
+    color: var(--hf-text-normal);
     cursor: pointer;
     transition: all 0.12s ease-out;
-    grid-column: 2 / 4;
+    grid-column: 2 / -1;
     justify-self: start;
 }
 
 .control-button:hover {
-    border-color: var(--hf-accent-3);
-    color: var(--hf-accent-3);
-    background: color-mix(in srgb, var(--hf-accent-3) 12%, transparent 88%);
+    border-color: var(--hf-border-hover);
+    color: var(--hf-text-bright);
+    background: var(--hf-bg-muted);
 }
 
 /* Text input control */
@@ -559,16 +587,16 @@ effect-params {
     font-family: var(--font-body);
     font-size: 11px;
     background: var(--hf-bg-elevated);
-    border: 1px solid var(--hf-color-2);
+    border: 1px solid var(--hf-border-subtle);
     border-radius: var(--hf-radius-sm);
-    color: var(--hf-color-7);
-    grid-column: 2 / 4;
+    color: var(--hf-text-bright);
+    grid-column: 2 / -1;
     transition: border-color 0.12s ease-out;
 }
 
 .control-text:hover,
 .control-textarea:hover {
-    border-color: var(--hf-color-3);
+    border-color: var(--hf-border-hover);
 }
 
 .control-text:focus,

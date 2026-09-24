@@ -16,17 +16,19 @@
     font-family: var(--font-body);
     font-size: 13px;
     font-weight: 500;
-    color: var(--hf-color-7);
-    background: linear-gradient(180deg, var(--hf-color-3) 0%, var(--hf-color-1) 100%);
-    border: none;
+    color: var(--hf-text-normal);
+    background: var(--hf-bg-elevated);
+    border: 1px solid var(--hf-border-subtle);
     border-radius: var(--hf-radius-sm);
     cursor: pointer;
-    transition: all 0.12s ease-out;
+    transition: transform 0.12s ease-out, box-shadow 0.12s ease-out;
     white-space: nowrap;
 }
 
 .action-btn:hover {
-    background: linear-gradient(180deg, var(--hf-color-3) 0%, var(--hf-color-3) 100%);
+    background: var(--hf-bg-muted);
+    border-color: var(--hf-border-hover);
+    color: var(--hf-text-bright);
 }
 
 .action-btn:active {
@@ -35,29 +37,43 @@
 
 .action-btn:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px var(--hf-accent-3);
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
+}
+
+.action-btn:disabled,
+.action-btn[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+    box-shadow: none;
 }
 
 .action-btn.primary {
-    background: linear-gradient(180deg, var(--hf-accent-3) 0%, var(--hf-accent-2) 100%);
-    color: var(--hf-color-7);
+    background: linear-gradient(180deg, var(--hf-accent-3) 0%, color-mix(in srgb, var(--hf-accent-3) 88%, var(--hf-color-1) 12%) 100%);
+    border-color: color-mix(in srgb, var(--hf-accent-3) 75%, transparent 25%);
+    color: var(--hf-color-1);
     font-weight: 600;
 }
 
 .action-btn.primary:hover {
     background: linear-gradient(180deg, var(--hf-accent-4) 0%, var(--hf-accent-3) 100%);
+    border-color: var(--hf-accent-4);
     box-shadow: 0 0 20px color-mix(in srgb, var(--hf-accent-3) 40%, transparent);
+    color: var(--hf-color-1);
 }
 
 .action-btn.danger {
-    background: linear-gradient(180deg, var(--hf-red) 0%, color-mix(in srgb, var(--hf-red) 80%, var(--hf-color-1) 20%) 100%);
-    color: var(--hf-color-7);
+    background: linear-gradient(180deg, var(--hf-red) 0%, color-mix(in srgb, var(--hf-red) 85%, var(--hf-color-1) 15%) 100%);
+    border-color: color-mix(in srgb, var(--hf-red) 75%, transparent 25%);
+    color: var(--hf-color-1);
     font-weight: 600;
 }
 
 .action-btn.danger:hover {
     background: linear-gradient(180deg, color-mix(in srgb, var(--hf-red) 85%, var(--hf-color-7) 15%) 0%, var(--hf-red) 100%);
+    border-color: var(--hf-red);
     box-shadow: 0 0 20px color-mix(in srgb, var(--hf-red) 40%, transparent);
+    color: var(--hf-color-1);
 }
 
 .action-btn.small {
