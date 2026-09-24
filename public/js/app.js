@@ -2820,6 +2820,7 @@ class LayersApp {
             },
         })
         if (outcome.status !== 'committed') return outcome
+        this._renderer.removeMaskTexture(childId)
         try {
             toast.info('Effect mask deleted')
         } catch (err) {
@@ -3340,6 +3341,7 @@ class LayersApp {
                 selectionAnchor: nextSelectedIds.at(-1) || null,
             })
             if (outcome.status !== 'committed') return outcome
+            if (child.mask) this._renderer.removeMaskTexture(child.id)
             try {
                 toast.info(`Deleted effect: ${child.name}`)
             } catch (err) {
@@ -3380,6 +3382,9 @@ class LayersApp {
             this._renderer.unloadMedia(layerId)
         }
         if (layer.mask) this._renderer.removeMaskTexture(layer.id)
+        for (const child of (layer.children || [])) {
+            if (child.mask) this._renderer.removeMaskTexture(child.id)
+        }
         try {
             toast.info(`Deleted layer: ${layer.name}`)
         } catch (err) {

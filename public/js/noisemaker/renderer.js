@@ -764,6 +764,7 @@ export class LayersRenderer {
             this._uploadMaskTextures({ strict: strictTextures })
             this._uploadTextTextures({ strict: strictTextures })
             this._applyAllLayerParams({ strict: strictTextures })
+            this._pruneOrphanedGpuTextures()
 
             return { success: true }
         } catch (err) {
@@ -1188,6 +1189,18 @@ export class LayersRenderer {
     }
 
     _uploadMediaTextures({ strict = false } = {}) {
+        const liveMediaLayerIds = new Set(
+            this._layers
+                .filter(layer => layer.sourceType === 'media' || layer.sourceType === 'drawing')
+                .map(layer => layer.id)
+        )
+        for (const [id, media] of this._mediaTextures.entries()) {
+            if (!liveMediaLayerIds.has(id)) {
+                this.disposeMediaResource(media)
+                this._mediaTextures.delete(id)
+            }
+        }
+
         const visibleMediaLayers = this._layers.filter(l =>
             l.visible && (l.sourceType === 'media' || l.sourceType === 'drawing'))
         const allStepIndices = this._getMediaStepIndices()
@@ -1530,6 +1543,10 @@ export class LayersRenderer {
         if (!media) return
         this.disposeMediaResource(media)
         this._mediaTextures.delete(layerId)
+        const stepIndex = this._layerStepMap?.get(layerId)
+        if (stepIndex !== undefined) {
+            this._destroyBackendTexture(`imageTex_step_${stepIndex}`)
+        }
     }
 
     /**
@@ -1547,6 +1564,129 @@ export class LayersRenderer {
      */
     removeMaskTexture(layerId) {
         this._maskTextures.delete(layerId)
+        const stepIndex = this._layerStepMap?.get(`mask_${layerId}`)
+        if (stepIndex !== undefined) {
+            this._destroyBackendTexture(`imageTex_step_${stepIndex}`)
+        }
+    }
+
+    /**
+     * Destroy a texture on the WebGL/WebGPU backend, freeing GPU memory.
+     * @param {string} id - Texture ID
+     * @private
+     */
+    _destroyBackendTexture(id) {
+        const backend = this._renderer?.pipeline?.backend
+        if (!backend || typeof backend.destroyTexture !== 'function') return
+        if (backend.textures?.has(id)) {
+            try {
+                backend.destroyTexture(id)
+            } catch (err) {
+                console.warn(`[LayersRenderer] Failed to destroy backend texture ${id}:`, err)
+            }
+        }
+    }
+
+    /**
+     * Prune textures on the WebGL/WebGPU backend that are no longer referenced
+     * by the current pipeline graph passes, surfaces, or active layer/mask step slots.
+     * This frees GPU texture memory when layers, effects, or masks are deleted,
+     * reordered, flattened, or replaced.
+     * @private
+     */
+    _pruneOrphanedGpuTextures() {
+        const pipeline = this._renderer?.pipeline
+        const backend = pipeline?.backend
+        if (!backend?.textures || typeof backend.destroyTexture !== 'function') return
+
+        const liveTexIds = new Set()
+
+        // 1. Default global surfaces that Noisemaker maintains for 3D, mesh, geo, and base outputs
+        for (const id of backend.textures.keys()) {
+            if (id.startsWith('global_vol') ||
+                id.startsWith('global_mesh') ||
+                id.startsWith('global_geo') ||
+                id.startsWith('global_o0_') ||
+                id.startsWith('global_o1_') ||
+                id.startsWith('global_o2_') ||
+                id.startsWith('global_o3_') ||
+                id.startsWith('global_o4_') ||
+                id.startsWith('global_o5_') ||
+                id.startsWith('global_o6_') ||
+                id.startsWith('global_o7_')) {
+                liveTexIds.add(id)
+            }
+        }
+
+        // 2. Active pipeline surfaces (read/write surfaces dynamically created for current pipeline)
+        if (pipeline.surfaces) {
+            for (const surface of pipeline.surfaces.values()) {
+                if (surface?.read) liveTexIds.add(surface.read)
+                if (surface?.write) liveTexIds.add(surface.write)
+            }
+        }
+
+        // 3. Textures declared in the current graph
+        if (pipeline.graph?.textures) {
+            for (const id of pipeline.graph.textures.keys()) {
+                liveTexIds.add(id)
+            }
+        }
+
+        // 4. Textures referenced in current pass inputs or produced in pass outputs
+        if (pipeline.graph?.passes) {
+            for (const pass of pipeline.graph.passes) {
+                if (pass.inputs) {
+                    for (const texId of Object.values(pass.inputs)) {
+                        if (typeof texId === 'string') liveTexIds.add(texId)
+                    }
+                }
+                if (pass.outputs) {
+                    for (const texId of Object.values(pass.outputs)) {
+                        if (typeof texId === 'string') liveTexIds.add(texId)
+                    }
+                }
+            }
+        }
+
+        // 5. Active dynamic step textures for media, drawings, masks, and text
+        if (this._layerStepMap) {
+            for (const layer of this._layers) {
+                if (layer.visible && (layer.sourceType === 'media' || layer.sourceType === 'drawing')) {
+                    const stepIndex = this._layerStepMap.get(layer.id)
+                    if (stepIndex !== undefined) {
+                        liveTexIds.add(`imageTex_step_${stepIndex}`)
+                    }
+                }
+                if (layer.visible && layer.mask && layer.maskEnabled !== false) {
+                    const stepIndex = this._layerStepMap.get(`mask_${layer.id}`)
+                    if (stepIndex !== undefined) {
+                        liveTexIds.add(`imageTex_step_${stepIndex}`)
+                    }
+                }
+                for (const child of (layer.children || [])) {
+                    if (layer.visible && child.visible && child.mask) {
+                        const stepIndex = this._layerStepMap.get(`mask_${child.id}`)
+                        if (stepIndex !== undefined) {
+                            liveTexIds.add(`imageTex_step_${stepIndex}`)
+                        }
+                    }
+                }
+                if (layer.visible && layer.sourceType === 'effect' && this._isTextEffect(layer.effectId)) {
+                    const stepIndex = this._layerStepMap.get(layer.id)
+                    if (stepIndex !== undefined) {
+                        liveTexIds.add(`textTex_step_${stepIndex}`)
+                    }
+                }
+            }
+        }
+
+        // Destroy every backend texture that is not in the live set
+        for (const id of Array.from(backend.textures.keys())) {
+            if (!liveTexIds.has(id)) {
+                this._destroyBackendTexture(id)
+            }
+        }
     }
 
     _isTextEffect(effectId) {
