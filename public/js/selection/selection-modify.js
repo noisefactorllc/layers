@@ -246,6 +246,7 @@ function featherMask(mask, r) {
 
     const inside = distanceToUnselected(mask)
     const outside = distanceToSelected(mask)
+    const invRadiusFactor = 127.5 / radius
 
     return buildMask(mask.width, mask.height, (i) => {
         const wasSelected = data[i * 4 + 3] > 127
@@ -253,12 +254,12 @@ function featherMask(mask, r) {
         if (wasSelected) {
             const d = Math.max(0, inside[i] - 0.5)
             if (d >= radius) return 255
-            return Math.round(127.5 + (d / radius) * 127.5)
+            return Math.round(127.5 + d * invRadiusFactor)
         }
 
         const d = Math.max(0, outside[i] - 0.5)
         if (d >= radius) return 0
-        return Math.round(127.5 - (d / radius) * 127.5)
+        return Math.round(127.5 - d * invRadiusFactor)
     })
 }
 

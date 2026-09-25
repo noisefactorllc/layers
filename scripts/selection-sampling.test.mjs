@@ -35,14 +35,19 @@ test('a failed capture preserves the selection and releases the next click', asy
     assert.equal(applied, true)
 })
 
-test('featherMask: non-positive radius returns binary mask', () => {
+test('featherMask: non-positive or non-finite radius returns binary mask', () => {
     const data = new Uint8ClampedArray(4 * 4)
     data[3] = 255; data[7] = 255; data[11] = 0; data[15] = 0
     const mask = { data, width: 4, height: 1 }
+    const expected = [255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0]
     const res0 = featherMask(mask, 0)
-    assert.deepEqual(Array.from(res0.data), [255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0])
+    assert.deepEqual(Array.from(res0.data), expected)
     const resNeg = featherMask(mask, -5)
-    assert.deepEqual(Array.from(resNeg.data), [255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0])
+    assert.deepEqual(Array.from(resNeg.data), expected)
+    const resNaN = featherMask(mask, NaN)
+    assert.deepEqual(Array.from(resNaN.data), expected)
+    const resInvalid = featherMask(mask, 'invalid')
+    assert.deepEqual(Array.from(resInvalid.data), expected)
 })
 
 test('featherMask: r=1 softens the boundary edge instead of clipping', () => {
