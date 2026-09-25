@@ -215,4 +215,46 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
             expect(metrics.dangerBtnContrast, `${theme} danger button contrast`).toBeGreaterThanOrEqual(4.5)
         }
     })
+
+    test('toolbar icon buttons have consistent 32x32 sizing, states, and Handfish tooltips', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await defaultProjectReady(page)
+
+        // 1. Sizing consistency across toolbar buttons
+        const buttonInfo = await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('#toolbar .menu-icon-btn'))
+            return buttons.map(btn => {
+                const rect = btn.getBoundingClientRect()
+                return {
+                    id: btn.id,
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                    hasTooltip: btn.classList.contains('tooltip'),
+                    dataTitle: btn.getAttribute('data-title'),
+                    title: btn.getAttribute('title')
+                }
+            })
+        })
+
+        expect(buttonInfo.length).toBeGreaterThan(5)
+        for (const btn of buttonInfo) {
+            expect(btn.width, `${btn.id} width`).toBe(32)
+            expect(btn.height, `${btn.id} height`).toBe(32)
+            expect(btn.hasTooltip, `${btn.id} should have tooltip class`).toBe(true)
+            expect(btn.dataTitle, `${btn.id} data-title should match title`).toBe(btn.title)
+        }
+
+        // 2. Handfish tooltip layer activates on hover
+        const brushBtn = page.locator('#brushToolBtn')
+        await brushBtn.hover()
+        const tooltipLayer = page.locator('#hf-tooltip-layer')
+        await expect(tooltipLayer).toBeVisible({ timeout: 2000 })
+        const text = await tooltipLayer.textContent()
+        expect(text).toContain('Brush Tool')
+
+        // Moving mouse away hides the tooltip
+        await page.mouse.move(0, 0)
+        await expect(tooltipLayer).toBeHidden({ timeout: 2000 })
+    })
 })
+

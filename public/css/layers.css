@@ -72,7 +72,7 @@
     padding: 4px;
     line-height: 1;
     border-radius: var(--hf-radius-sm);
-    transition: all 0.12s ease-out;
+    transition: color var(--hf-transition), background var(--hf-transition), opacity var(--hf-transition), box-shadow var(--hf-transition), transform var(--hf-transition);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -80,13 +80,20 @@
     opacity: 0;
 }
 
-.layer-item:hover .layer-add-child {
+.layer-item:hover .layer-add-child,
+.layer-item:focus-within .layer-add-child {
     opacity: 1;
 }
 
 .layer-add-child:hover {
     color: var(--hf-accent-3);
     background: color-mix(in srgb, var(--hf-accent-3) 12%, transparent 88%);
+}
+
+.layer-add-child:focus-visible {
+    opacity: 1;
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 .layer-add-child .icon-material {
@@ -136,7 +143,7 @@
     padding: 4px;
     line-height: 1;
     border-radius: var(--hf-radius-sm);
-    transition: all 0.12s ease-out;
+    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition), transform var(--hf-transition);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -150,7 +157,7 @@
 
 .layer-visibility:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px var(--hf-accent-3);
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 .layer-visibility:active {
@@ -294,7 +301,7 @@
     padding: 4px;
     line-height: 1;
     border-radius: var(--hf-radius-sm);
-    transition: all 0.12s ease-out;
+    transition: color var(--hf-transition), background var(--hf-transition), opacity var(--hf-transition), box-shadow var(--hf-transition), transform var(--hf-transition);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -302,7 +309,8 @@
     opacity: 0;
 }
 
-.layer-item:hover .layer-delete {
+.layer-item:hover .layer-delete,
+.layer-item:focus-within .layer-delete {
     opacity: 1;
 }
 
@@ -312,8 +320,9 @@
 }
 
 .layer-delete:focus-visible {
+    opacity: 1;
     outline: none;
-    box-shadow: 0 0 0 2px var(--hf-accent-3);
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 .layer-delete:active {
@@ -351,7 +360,7 @@
     padding: 2px;
     line-height: 1;
     border-radius: var(--hf-radius-sm);
-    transition: all 0.12s ease-out;
+    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition), transform var(--hf-transition);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -365,7 +374,7 @@
 
 .layer-params-toggle:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px var(--hf-accent-3);
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 .layer-params-toggle:active {

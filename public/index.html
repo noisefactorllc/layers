@@ -113,12 +113,12 @@
         <div id="toolbar">
             <div id="toolbarBackdrop"></div>
             <div class="menu tool-split-btn" id="selectionMenu">
-                <button id="selectionToolBtn" class="menu-icon-btn" title="Rectangular Marquee Tool (M)">
+                <button id="selectionToolBtn" class="menu-icon-btn tooltip" data-title="Rectangular Marquee Tool (M)" aria-label="Rectangular Marquee Tool (M)" title="Rectangular Marquee Tool (M)">
                     <svg id="selectionToolIcon" class="selection-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="1 2" stroke-linecap="round">
                         <rect x="2" y="4" width="16" height="12"/>
                     </svg>
                 </button>
-                <span class="menu-title tool-caret icon-material">arrow_right</span>
+                <span class="menu-title tool-caret icon-material tooltip" role="button" tabindex="0" data-title="More selection tools" aria-label="More selection tools">arrow_right</span>
                 <div class="menu-items hide">
                     <div class="tool-menu-item checked" data-shape="rectangle">
                         <span>Box</span>
@@ -148,19 +148,19 @@
                     </div>
                 </div>
             </div>
-            <button id="moveToolBtn" class="menu-icon-btn" title="Move Tool (V)"><span class="icon-material">drag_pan</span></button>
-            <button id="cloneToolBtn" class="menu-icon-btn" title="Clone Tool (S)"><span class="icon-material">approval</span></button>
-            <button id="transformToolBtn" class="menu-icon-btn" title="Transform Tool (T)"><span class="icon-material">transform</span></button>
+            <button id="moveToolBtn" class="menu-icon-btn tooltip" data-title="Move Tool (V)" aria-label="Move Tool (V)" title="Move Tool (V)"><span class="icon-material">drag_pan</span></button>
+            <button id="cloneToolBtn" class="menu-icon-btn tooltip" data-title="Clone Tool (S)" aria-label="Clone Tool (S)" title="Clone Tool (S)"><span class="icon-material">approval</span></button>
+            <button id="transformToolBtn" class="menu-icon-btn tooltip" data-title="Transform Tool (T)" aria-label="Transform Tool (T)" title="Transform Tool (T)"><span class="icon-material">transform</span></button>
             <div class="toolbar-separator"></div>
-            <button id="textToolBtn" class="menu-icon-btn" title="Add Text Layer"><span class="icon-material">text_fields</span></button>
+            <button id="textToolBtn" class="menu-icon-btn tooltip" data-title="Add Text Layer" aria-label="Add Text Layer" title="Add Text Layer"><span class="icon-material">text_fields</span></button>
             <div class="toolbar-separator"></div>
-            <button id="brushToolBtn" class="menu-icon-btn" title="Brush Tool (B)"><span class="icon-material">brush</span></button>
-            <button id="eraserToolBtn" class="menu-icon-btn" title="Eraser Tool (E)"><span class="icon-material">ink_eraser</span></button>
+            <button id="brushToolBtn" class="menu-icon-btn tooltip" data-title="Brush Tool (B)" aria-label="Brush Tool (B)" title="Brush Tool (B)"><span class="icon-material">brush</span></button>
+            <button id="eraserToolBtn" class="menu-icon-btn tooltip" data-title="Eraser Tool (E)" aria-label="Eraser Tool (E)" title="Eraser Tool (E)"><span class="icon-material">ink_eraser</span></button>
             <div class="menu tool-split-btn" id="shapeMenu">
-                <button id="shapeToolBtn" class="menu-icon-btn" title="Shape Tool (U)">
+                <button id="shapeToolBtn" class="menu-icon-btn tooltip" data-title="Shape Tool (U)" aria-label="Shape Tool (U)" title="Shape Tool (U)">
                     <span class="icon-material">crop_square</span>
                 </button>
-                <span class="menu-title tool-caret icon-material">arrow_right</span>
+                <span class="menu-title tool-caret icon-material tooltip" role="button" tabindex="0" data-title="More shape tools" aria-label="More shape tools">arrow_right</span>
                 <div class="menu-items hide">
                     <div class="tool-menu-item checked" data-shape="rect" data-filled="false"><span>Box</span><span class="icon-material">crop_square</span></div>
                     <div class="tool-menu-item" data-shape="rect" data-filled="true"><span>Filled Box</span><span class="icon-material">square</span></div>
@@ -168,11 +168,11 @@
                     <div class="tool-menu-item" data-shape="ellipse" data-filled="true"><span>Filled Oval</span><span class="icon-material">lens</span></div>
                 </div>
             </div>
-            <button id="fillToolBtn" class="menu-icon-btn" title="Fill Tool (G)"><span class="icon-material">format_color_fill</span></button>
-            <button id="eyedropperToolBtn" class="menu-icon-btn" title="Eyedropper (I)"><span class="icon-material">colorize</span></button>
-            <button id="handToolBtn" class="menu-icon-btn" title="Hand Tool (H)"><span class="icon-material">pan_tool</span></button>
+            <button id="fillToolBtn" class="menu-icon-btn tooltip" data-title="Fill Tool (G)" aria-label="Fill Tool (G)" title="Fill Tool (G)"><span class="icon-material">format_color_fill</span></button>
+            <button id="eyedropperToolBtn" class="menu-icon-btn tooltip" data-title="Eyedropper (I)" aria-label="Eyedropper (I)" title="Eyedropper (I)"><span class="icon-material">colorize</span></button>
+            <button id="handToolBtn" class="menu-icon-btn tooltip" data-title="Hand Tool (H)" aria-label="Hand Tool (H)" title="Hand Tool (H)"><span class="icon-material">pan_tool</span></button>
             <div class="toolbar-separator"></div>
-            <div id="colorWell" class="color-well" style="background-color: #000000;" title="Foreground Color">
+            <div id="colorWell" class="color-well tooltip" data-title="Foreground Color" aria-label="Foreground Color" style="background-color: #000000;" title="Foreground Color">
                 <input type="color" id="colorWellInput" value="#000000">
             </div>
         </div>
@@ -197,7 +197,7 @@
                 Tolerance
                 <input type="range" id="drawingToleranceInput" min="0" max="255" value="32">
             </label>
-            <button id="drawingOptionsClose" class="drawing-options-close" title="Close">&times;</button>
+            <button id="drawingOptionsClose" class="drawing-options-close tooltip" data-title="Close" aria-label="Close" title="Close">&times;</button>
         </div>
 
         <!-- Canvas Panel -->
@@ -225,7 +225,7 @@
             <div class="layers-header">
                 <h2>Layers</h2>
                 <div class="layers-header-buttons">
-                    <button class="add-layer-btn" id="addLayerBtn" title="Add layer">
+                    <button class="add-layer-btn tooltip" id="addLayerBtn" data-title="Add layer" aria-label="Add layer" title="Add layer">
                         <span class="icon-material">add</span>
                     </button>
                 </div>
@@ -241,7 +241,7 @@
         <div class="export-modal-title">
             <span class="material-symbols-outlined" style="font-size: 18px;">movie</span>
             <span id="exportModalTitle">Export Video Clip</span>
-            <button class="export-modal-close" id="exportCancelBtn">&#10005;</button>
+            <button class="export-modal-close tooltip" id="exportCancelBtn" data-title="Close" aria-label="Close">&#10005;</button>
         </div>
         <div id="exportDialogView" class="export-modal-content">
             <div class="export-settings-grid">
@@ -325,7 +325,7 @@
         <div class="export-modal-title">
             <span class="material-symbols-outlined" style="font-size: 18px;">image</span>
             <span id="exportImageModalTitle">Export Image</span>
-            <button class="export-modal-close" id="exportImageCancelBtn">&#10005;</button>
+            <button class="export-modal-close tooltip" id="exportImageCancelBtn" data-title="Close" aria-label="Close">&#10005;</button>
         </div>
         <div class="export-modal-content">
             <div class="export-settings-grid">
@@ -367,7 +367,7 @@
         <div class="export-modal-title">
             <span class="material-symbols-outlined" style="font-size: 18px;">font_download</span>
             <span id="fontInstallModalTitle">Install Font Bundle</span>
-            <button class="export-modal-close" id="fontInstallCloseBtn">&#10005;</button>
+            <button class="export-modal-close tooltip" id="fontInstallCloseBtn" data-title="Close" aria-label="Close">&#10005;</button>
         </div>
         <div id="fontInstallContentView" class="export-modal-content">
             <p class="font-install-description">

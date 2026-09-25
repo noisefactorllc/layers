@@ -117,7 +117,7 @@ class LayerItem extends HTMLElement {
                 <div class="layer-drag-handle" title="Drag to reorder">
                     <span class="icon-material">drag_indicator</span>
                 </div>
-                <button class="layer-visibility ${isVisible ? 'visible' : ''}" title="Toggle visibility">
+                <button class="layer-visibility tooltip ${isVisible ? 'visible' : ''}" data-title="Toggle visibility" aria-label="Toggle visibility" title="Toggle visibility">
                     <span class="icon-material">${isVisible ? 'visibility' : 'visibility_off'}</span>
                 </button>
                 <div class="layer-thumbnail">
@@ -130,15 +130,15 @@ class LayerItem extends HTMLElement {
                     <div class="layer-name" contenteditable="false" spellcheck="false">${this._escapeHtml(layer.name)}</div>
                     <div class="layer-type ${layer.sourceType}">${this._formatLayerType(layer)}</div>
                 </div>
-                ${!this._isChild ? `<button class="layer-add-child" title="Add effect">
+                ${!this._isChild ? `<button class="layer-add-child tooltip" data-title="Add effect" aria-label="Add effect" title="Add effect">
                     <span class="icon-material">add</span>
                 </button>` : ''}
-                <button class="layer-delete" title="Delete layer">
+                <button class="layer-delete tooltip" data-title="Delete layer" aria-label="Delete layer" title="Delete layer">
                     <span class="icon-material">close</span>
                 </button>
             </div>
             <div class="layer-controls">
-                <button class="layer-params-toggle ${this._paramsExpanded ? 'expanded' : ''}" title="Toggle parameters">
+                <button class="layer-params-toggle tooltip ${this._paramsExpanded ? 'expanded' : ''}" data-title="Toggle parameters" aria-label="Toggle parameters" title="Toggle parameters">
                     <span class="icon-material">arrow_right</span>
                 </button>
                 ${!this._isChild ? `<select-dropdown class="layer-blend-mode" title="Blend mode"></select-dropdown>

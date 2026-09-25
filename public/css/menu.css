@@ -214,7 +214,22 @@
 
 #toolbar .menu-icon-btn {
     margin: 0;
-    padding: 0.3em;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--hf-radius-sm);
+    color: var(--hf-text-normal);
+}
+
+#toolbar .menu-icon-btn:focus-visible {
+    position: relative;
+    z-index: 2;
 }
 
 #toolbar .menu {
@@ -353,20 +368,22 @@
     cursor: pointer;
     padding: 4px 6px;
     margin: -4px -6px;
-    border-radius: 4px;
+    border-radius: var(--hf-radius-sm);
     line-height: 1;
     display: inline-flex;
     align-items: center;
-    transition: color 0.15s ease, background 0.15s ease;
+    justify-content: center;
+    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition);
 }
 
 .menu-icon-btn:hover {
-    color: var(--hf-accent-4);
+    color: var(--hf-text-bright);
+    background: var(--hf-bg-muted);
 }
 
 .menu-icon-btn:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px var(--hf-accent-3);
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 .menu-icon-btn.disabled {
@@ -375,7 +392,12 @@
 }
 
 .menu-icon-btn.active {
-    color: var(--hf-color-7);
+    color: var(--hf-accent-3);
+    background: var(--hf-bg-muted);
+}
+
+.menu-icon-btn.active:hover {
+    color: var(--hf-accent-4);
     background: var(--hf-bg-muted);
 }
 
@@ -914,19 +936,20 @@
     margin: -4px -6px;
     opacity: 1;
     color: inherit;
-    border-radius: 4px;
+    border-radius: var(--hf-radius-sm);
     line-height: 1;
-    transition: color 0.15s ease, background 0.15s ease;
+    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition);
 }
 
 #menu .hf-menubar-btn.menu-icon-btn:hover {
     opacity: 1;
-    color: var(--hf-accent-4);
+    color: var(--hf-text-bright);
+    background: var(--hf-bg-muted);
 }
 
 #menu .hf-menubar-btn.menu-icon-btn:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px var(--hf-accent-3);
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 /* .icon-material analog for component-rendered glyphs (color: inherit —

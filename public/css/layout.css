@@ -112,12 +112,18 @@ html, body {
     padding: 2px 4px;
     font-size: 14px;
     line-height: 1;
-    border-radius: 3px;
-    transition: color 0.15s ease;
+    border-radius: var(--hf-radius-sm);
+    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition);
 }
 
 .drawing-options-close:hover {
     color: var(--hf-accent-4);
+    background: var(--hf-bg-muted);
+}
+
+.drawing-options-close:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 /* Canvas Panel */
@@ -200,20 +206,28 @@ html, body {
 .layers-header .add-layer-btn {
     background: none;
     border: none;
-    color: var(--hf-color-5);
+    color: var(--hf-text-dim, var(--hf-color-5));
     cursor: pointer;
-    padding: 4px;
+    width: 28px;
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0;
     line-height: 1;
     border-radius: var(--hf-radius-sm);
-    transition: all 0.12s ease-out;
+    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition);
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
 .layers-header .add-layer-btn:hover {
-    color: var(--hf-color-6);
-    background: color-mix(in srgb, var(--hf-color-5) 15%, transparent 85%);
+    color: var(--hf-text-bright);
+    background: var(--hf-bg-muted);
+}
+
+.layers-header .add-layer-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 .layers-header .add-layer-btn .icon-material {
@@ -306,6 +320,16 @@ html, body {
     cursor: pointer;
     overflow: hidden;
     flex-shrink: 0;
+    transition: border-color var(--hf-transition), box-shadow var(--hf-transition);
+}
+
+.color-well:hover {
+    border-color: var(--hf-border-hover);
+}
+
+.color-well:focus-within {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 .color-well input[type="color"] {
@@ -334,12 +358,18 @@ html, body {
     color: var(--hf-text-dim, var(--hf-color-5));
     user-select: none;
     line-height: 1;
-    transition: color 0.15s ease;
+    transition: color var(--hf-transition);
     z-index: 1;
 }
 
 .tool-caret:hover {
     color: var(--hf-text-bright, var(--hf-color-7));
+}
+
+.tool-caret:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-accent-3);
+    border-radius: var(--hf-radius-sm);
 }
 
 .tool-split-btn .menu-items {

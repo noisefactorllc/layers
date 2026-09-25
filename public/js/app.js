@@ -58,12 +58,13 @@ import { StrokeRenderer } from './drawing/stroke-renderer.js'
 import { autoLevels, autoContrast, autoWhiteBalance } from './utils/auto-adjust.js'
 import { bootstrapAgent } from './agent/index.js'
 import { captureProjectSnapshotOverride } from './agent/snapshot.js'
-import { SeanceDialog, initEscapeHandler } from 'handfish'  // Register <seance-dialog> custom element
+import { SeanceDialog, initEscapeHandler, initializeTooltips } from 'handfish'  // Register <seance-dialog> custom element
 import { LOGO_SVG, IMAGE_SUBMENUS, FILTER_CATEGORIES } from './menuData.js'
 import { createLayersOnlineAdapter } from './collab/onlineAdapter.js'
 import { assertRemoteNodeSemantics } from './collab/docModel.js'
 
 initEscapeHandler()
+initializeTooltips()
 
 const ONLINE_COLLABORATION_FEATURE = 'onlineCollaboration'
 const MAX_CANVAS_DIMENSION = 8192
@@ -4380,8 +4381,8 @@ class LayersApp {
                     {
                         type: 'button',
                         id: 'playPauseBtn',
-                        classes: 'menu-icon-btn',
-                        attrs: { title: 'Play/Pause' },
+                        classes: 'menu-icon-btn tooltip',
+                        attrs: { title: 'Play/Pause', 'data-title': 'Play/Pause', 'aria-label': 'Play/Pause' },
                         icon: () => (this._renderer?.isRunning ? 'pause' : 'play_arrow'),
                         onSelect: () => {
                             const mutationToken = this._tryAcquireProjectLifecycle()
@@ -4463,7 +4464,7 @@ class LayersApp {
             const items = menu.querySelector('.menu-items')
 
             if (title && items) {
-                title.addEventListener('click', (e) => {
+                const toggleMenu = (e) => {
                     e.stopPropagation()
                     const shouldOpen = items.classList.contains('hide')
                     closeDropdowns(items)
@@ -4471,6 +4472,13 @@ class LayersApp {
                     setTitleExpanded(title, shouldOpen)
                     if (shouldOpen) {
                         positionToolbarFlyout(menu, title, items)
+                    }
+                }
+                title.addEventListener('click', toggleMenu)
+                title.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+                        e.preventDefault()
+                        toggleMenu(e)
                     }
                 })
             }
@@ -5391,6 +5399,7 @@ class LayersApp {
             if (titles[tool]) {
                 selectionBtn.title = titles[tool]
                 selectionBtn.setAttribute('aria-label', titles[tool])
+                selectionBtn.setAttribute('data-title', titles[tool])
             }
         }
 

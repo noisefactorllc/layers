@@ -1128,13 +1128,21 @@ dialog[open] {
     padding: 0.25em 0.5em;
     line-height: 1;
     opacity: 0.7;
-    transition: opacity 0.15s ease;
+    border-radius: var(--hf-radius-sm);
+    transition: opacity var(--hf-transition), color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition);
     margin-left: auto;
 }
 
 .export-modal-close:hover {
     opacity: 1;
-    color: var(--hf-color-7);
+    color: var(--hf-text-bright);
+    background: var(--hf-bg-muted);
+}
+
+.export-modal-close:focus-visible {
+    opacity: 1;
+    outline: none;
+    box-shadow: 0 0 0 2px var(--hf-bg-base), 0 0 0 4px var(--hf-accent-3);
 }
 
 .export-modal-content {
