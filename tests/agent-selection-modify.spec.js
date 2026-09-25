@@ -83,6 +83,33 @@ test.describe('featherSelection / smoothSelection / borderSelection', () => {
         expect(env.state.selection.kind).toBe('color-range')
     })
 
+    test('featherSelection produces symmetric falloff and softens at r=1', async ({ page }) => {
+        await bootApp(page)
+        await page.evaluate(() =>
+            window.LayersAgent.setRectangleSelection({ x: 100, y: 100, width: 200, height: 200 }))
+        const env = await page.evaluate(() =>
+            window.LayersAgent.featherSelection({ pixels: 2 }))
+        expect(env.ok).toBe(true)
+
+        const samples = await page.evaluate(() => {
+            const sm = window.layersApp._selectionManager
+            const mask = sm._selectionPath?.data
+            if (!mask) return null
+            const y = 200
+            const res = []
+            for (let x = 298; x <= 301; x++) {
+                res.push({ x, a: mask.data[(y * mask.width + x) * 4 + 3] })
+            }
+            return res
+        })
+        expect(samples).not.toBeNull()
+        const insideAdj = samples.find(s => s.x === 299).a
+        const outsideAdj = samples.find(s => s.x === 300).a
+        expect(insideAdj).toBeGreaterThan(128)
+        expect(outsideAdj).toBeLessThan(128)
+        expect(insideAdj + outsideAdj).toBe(255)
+    })
+
     test('featherSelection NO_SELECTION', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() =>

@@ -38,7 +38,9 @@ function buildMask(width, height, fn) {
     for (let i = 0; i < size; i++) {
         fillPixel(result, i, fn(i))
     }
-    return new ImageData(result, width, height)
+    return typeof ImageData !== 'undefined'
+        ? new ImageData(result, width, height)
+        : { data: result, width, height }
 }
 
 /**
@@ -227,21 +229,21 @@ function borderMask(mask, r) {
 
 /**
  * Feather selection with linear alpha gradient using distance fields.
- * Ramps from 255 at r inside the selection edge, through ~50% at the edge
- * itself, to 0 at r outside — one continuous, monotone falloff centered on
- * the original boundary.
- *
- * (The previous version ramped the inside branch down to ~0 AT the edge and
- * restarted the outside branch at ~255 just past it, producing a sawtooth:
- * a hard edge on the boundary with the effect's strongest band rendered
- * outside the user's selection.)
+ * Ramps from 255 at r inside the selection edge, through 50% at the edge
+ * contour itself, to 0 at r outside — one continuous, monotone falloff centered
+ * exactly on the original boundary without clipping or directional bias.
  *
  * @param {ImageData} mask - Input selection mask
  * @param {number} r - Feather radius in pixels
  * @returns {ImageData} New mask with feathered edges
  */
 function featherMask(mask, r) {
+    const radius = Number(r)
     const { data } = mask
+    if (!Number.isFinite(radius) || radius <= 0) {
+        return buildMask(mask.width, mask.height, (i) => data[i * 4 + 3] > 127 ? 255 : 0)
+    }
+
     const inside = distanceToUnselected(mask)
     const outside = distanceToSelected(mask)
 
@@ -249,12 +251,14 @@ function featherMask(mask, r) {
         const wasSelected = data[i * 4 + 3] > 127
 
         if (wasSelected) {
-            if (inside[i] >= r) return 255
-            return Math.round(128 + (inside[i] / r) * 127)
+            const d = Math.max(0, inside[i] - 0.5)
+            if (d >= radius) return 255
+            return Math.round(127.5 + (d / radius) * 127.5)
         }
 
-        if (outside[i] >= r) return 0
-        return Math.round(128 - (outside[i] / r) * 128)
+        const d = Math.max(0, outside[i] - 0.5)
+        if (d >= radius) return 0
+        return Math.round(127.5 - (d / radius) * 127.5)
     })
 }
 
