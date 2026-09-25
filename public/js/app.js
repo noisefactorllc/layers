@@ -547,7 +547,11 @@ class LayersApp {
             strokeHandler: this._brushTool?.onStrokeComplete || null,
             bannerClass: banner?.className ?? null,
             brushTitle: brushBtn?.getAttribute('title') ?? null,
+            brushDataTitle: brushBtn?.getAttribute('data-title') ?? null,
+            brushAriaLabel: brushBtn?.getAttribute('aria-label') ?? null,
             eraserTitle: eraserBtn?.getAttribute('title') ?? null,
+            eraserDataTitle: eraserBtn?.getAttribute('data-title') ?? null,
+            eraserAriaLabel: eraserBtn?.getAttribute('aria-label') ?? null,
             overlayClass: overlay?.className ?? null,
             overlayStyle: overlay?.style.cssText ?? null,
             overlayWidth: overlay?.width ?? 0,
@@ -571,7 +575,11 @@ class LayersApp {
             else element.setAttribute(name, value)
         }
         restoreAttribute(document.getElementById('brushToolBtn'), 'title', previous.brushTitle)
+        restoreAttribute(document.getElementById('brushToolBtn'), 'data-title', previous.brushDataTitle ?? previous.brushTitle)
+        restoreAttribute(document.getElementById('brushToolBtn'), 'aria-label', previous.brushAriaLabel ?? previous.brushTitle)
         restoreAttribute(document.getElementById('eraserToolBtn'), 'title', previous.eraserTitle)
+        restoreAttribute(document.getElementById('eraserToolBtn'), 'data-title', previous.eraserDataTitle ?? previous.eraserTitle)
+        restoreAttribute(document.getElementById('eraserToolBtn'), 'aria-label', previous.eraserAriaLabel ?? previous.eraserTitle)
 
         const overlay = document.getElementById('maskOverlay')
         if (!overlay) return
@@ -3111,10 +3119,14 @@ class LayersApp {
 
         // Show mask edit banner
         document.getElementById('maskEditBanner')?.classList.remove('hidden')
-        const brushBtn = document.getElementById('brushToolBtn')
-        const eraserBtn = document.getElementById('eraserToolBtn')
-        if (brushBtn) brushBtn.title = 'Reveal (B) — paints white on mask'
-        if (eraserBtn) eraserBtn.title = 'Hide (E) — paints black on mask'
+        const setToolTitle = (el, text) => {
+            if (!el) return
+            el.title = text
+            el.setAttribute('data-title', text)
+            el.setAttribute('aria-label', text)
+        }
+        setToolTitle(document.getElementById('brushToolBtn'), 'Reveal (B) — paints white on mask')
+        setToolTitle(document.getElementById('eraserToolBtn'), 'Hide (E) — paints black on mask')
 
         this._renderMaskOverlay(layer)
         this._updateLayerStack()
@@ -3164,10 +3176,14 @@ class LayersApp {
 
         // Hide mask edit banner and restore tool titles
         document.getElementById('maskEditBanner')?.classList.add('hidden')
-        const brushBtn = document.getElementById('brushToolBtn')
-        const eraserBtn = document.getElementById('eraserToolBtn')
-        if (brushBtn) brushBtn.title = 'Brush Tool (B)'
-        if (eraserBtn) eraserBtn.title = 'Eraser Tool (E)'
+        const setToolTitle = (el, text) => {
+            if (!el) return
+            el.title = text
+            el.setAttribute('data-title', text)
+            el.setAttribute('aria-label', text)
+        }
+        setToolTitle(document.getElementById('brushToolBtn'), 'Brush Tool (B)')
+        setToolTitle(document.getElementById('eraserToolBtn'), 'Eraser Tool (E)')
 
         const overlay = document.getElementById('maskOverlay')
         if (overlay) {
@@ -4430,7 +4446,7 @@ class LayersApp {
         // <menu-bar> component (see _setupMenuBar); everything below serves
         // the #toolbar menus, which share the .menu/.menu-items classes.
         const setTitleExpanded = (title, expanded) => {
-            if (title?.hasAttribute('aria-expanded')) {
+            if (title) {
                 title.setAttribute('aria-expanded', String(expanded))
             }
         }
@@ -4464,7 +4480,7 @@ class LayersApp {
             const items = menu.querySelector('.menu-items')
 
             if (title && items) {
-                const toggleMenu = (e) => {
+                const toggleMenu = (e, { focusFirst = false } = {}) => {
                     e.stopPropagation()
                     const shouldOpen = items.classList.contains('hide')
                     closeDropdowns(items)
@@ -4472,13 +4488,44 @@ class LayersApp {
                     setTitleExpanded(title, shouldOpen)
                     if (shouldOpen) {
                         positionToolbarFlyout(menu, title, items)
+                        if (focusFirst) {
+                            const firstItem = items.querySelector('.tool-menu-item')
+                            if (firstItem) firstItem.focus()
+                        }
                     }
                 }
                 title.addEventListener('click', toggleMenu)
                 title.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown' || e.key === 'ArrowRight') {
                         e.preventDefault()
-                        toggleMenu(e)
+                        toggleMenu(e, { focusFirst: true })
+                    }
+                })
+
+                items.addEventListener('keydown', (e) => {
+                    const menuItems = Array.from(items.querySelectorAll('.tool-menu-item'))
+                    const currentIndex = menuItems.indexOf(document.activeElement)
+                    if (e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        const nextIndex = currentIndex < menuItems.length - 1 ? currentIndex + 1 : 0
+                        menuItems[nextIndex]?.focus()
+                    } else if (e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        const prevIndex = currentIndex > 0 ? currentIndex - 1 : menuItems.length - 1
+                        menuItems[prevIndex]?.focus()
+                    } else if (e.key === 'Escape' || e.key === 'ArrowLeft') {
+                        e.preventDefault()
+                        items.classList.add('hide')
+                        setTitleExpanded(title, false)
+                        title.focus()
+                    } else if (e.key === 'Enter' || e.key === ' ') {
+                        if (currentIndex >= 0) {
+                            e.preventDefault()
+                            menuItems[currentIndex].click()
+                            items.classList.add('hide')
+                            setTitleExpanded(title, false)
+                            title.focus()
+                        }
                     }
                 })
             }

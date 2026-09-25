@@ -302,7 +302,9 @@
     color: var(--hf-accent-4);
 }
 
+.menu-items div:focus,
 .menu-items div:focus-visible,
+#logoMenu > .menu-items > button:focus,
 #logoMenu > .menu-items > button:focus-visible {
     outline: none;
     box-shadow: 0 0 0 2px var(--hf-accent-3);
@@ -373,12 +375,16 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition);
+    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition), transform var(--hf-transition);
 }
 
 .menu-icon-btn:hover {
     color: var(--hf-text-bright);
     background: var(--hf-bg-muted);
+}
+
+.menu-icon-btn:active {
+    transform: scale(0.95);
 }
 
 .menu-icon-btn:focus-visible {

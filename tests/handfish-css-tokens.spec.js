@@ -255,6 +255,64 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         // Moving mouse away hides the tooltip
         await page.mouse.move(0, 0)
         await expect(tooltipLayer).toBeHidden({ timeout: 2000 })
+
+        // 3. Dual-ring focus-visible styling on toolbar button
+        const focusRing = await page.evaluate(() => {
+            const btn = document.getElementById('brushToolBtn')
+            btn.focus()
+            const style = window.getComputedStyle(btn)
+            return {
+                boxShadow: style.boxShadow,
+                outlineStyle: style.outlineStyle
+            }
+        })
+        expect(focusRing.boxShadow).toContain('0px 0px 0px 2px')
+        expect(focusRing.boxShadow).toContain('0px 0px 0px 4px')
+
+        // 4. Toolbar caret ARIA and keyboard navigation
+        const caret = page.locator('#selectionMenu .tool-caret')
+        await expect(caret).toHaveAttribute('aria-expanded', 'false')
+        await caret.focus()
+        await page.keyboard.press('Enter')
+        await expect(caret).toHaveAttribute('aria-expanded', 'true')
+        const selectionFlyout = page.locator('#selectionMenu .menu-items')
+        await expect(selectionFlyout).not.toHaveClass(/hide/)
+
+        // First item is focused
+        const activeShape = await page.evaluate(() => document.activeElement?.getAttribute('data-shape'))
+        expect(activeShape).toBe('rectangle')
+
+        // ArrowDown navigates to next item
+        await page.keyboard.press('ArrowDown')
+        const nextShape = await page.evaluate(() => document.activeElement?.getAttribute('data-shape'))
+        expect(nextShape).toBe('oval')
+
+        // Escape closes flyout and restores focus to caret
+        await page.keyboard.press('Escape')
+        await expect(selectionFlyout).toHaveClass(/hide/)
+        await expect(caret).toHaveAttribute('aria-expanded', 'false')
+
+        // 5. Mask edit mode synchronizes data-title and aria-label in lockstep
+        await page.evaluate(() => {
+            const app = window.layersApp
+            const layer = app._layers[0]
+            if (layer && !layer.mask) {
+                layer.mask = new Uint8Array(app._canvas.width * app._canvas.height).fill(255)
+            }
+            app._enterMaskEditMode(layer.id)
+        })
+
+        const maskBrushTitle = await brushBtn.getAttribute('data-title')
+        const maskBrushAria = await brushBtn.getAttribute('aria-label')
+        expect(maskBrushTitle).toBe('Reveal (B) — paints white on mask')
+        expect(maskBrushAria).toBe('Reveal (B) — paints white on mask')
+
+        // Exit mask edit mode restores original tool labels
+        await page.evaluate(() => window.layersApp._exitMaskEditMode())
+        const restoredBrushTitle = await brushBtn.getAttribute('data-title')
+        const restoredBrushAria = await brushBtn.getAttribute('aria-label')
+        expect(restoredBrushTitle).toBe('Brush Tool (B)')
+        expect(restoredBrushAria).toBe('Brush Tool (B)')
     })
 })
 
