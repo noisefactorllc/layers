@@ -102,6 +102,8 @@ class LayersApp {
         this._currentProjectName = null
         this._isDirty = false
         this._zoomMode = 'fit' // 'fit', '50', '100', '200'
+        this._wheelZoomAccumulator = 0
+        this._pendingZoomAnchor = null
         this._selectionManager = null
         this._copyOrigin = null
         this._colorRangePicking = false
@@ -1389,6 +1391,10 @@ class LayersApp {
                 this._applyZoom()
             }
         })
+
+        // Ctrl/Cmd+wheel (trackpad pinch) zoom anchored to the pointer
+        const canvasPanel = document.getElementById('canvas-panel')
+        canvasPanel?.addEventListener('wheel', (e) => this._onWheelZoom(e), { passive: false })
 
         // Apply default zoom mode
         this._applyZoom()
@@ -3979,6 +3985,90 @@ class LayersApp {
             el.style.width = widthPx
             el.style.height = heightPx
         }
+
+        // Pointer-anchored zoom: keep the captured canvas fraction under the
+        // pointer while the display size changes. Keyboard and menu zoom
+        // paths leave no pending anchor and never re-scroll.
+        const anchor = this._pendingZoomAnchor
+        this._pendingZoomAnchor = null
+        if (anchor) {
+            this._scrollToZoomAnchor(anchor)
+        }
+    }
+
+    /**
+     * Capture a pointer-anchored zoom anchor: the pointer position plus the
+     * fraction of the canvas it lies on.
+     * @param {WheelEvent} e
+     * @returns {{clientX: number, clientY: number, fx: number, fy: number}|null}
+     * @private
+     */
+    _captureZoomAnchor(e) {
+        const canvas = this._canvas
+        if (!canvas) return null
+        const rect = canvas.getBoundingClientRect()
+        if (rect.width <= 0 || rect.height <= 0) return null
+        const fx = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+        const fy = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height))
+        return { clientX: e.clientX, clientY: e.clientY, fx, fy }
+    }
+
+    /**
+     * Scroll the canvas panel so the anchored canvas fraction stays under
+     * the pointer after a zoom step.
+     * @param {{clientX: number, clientY: number, fx: number, fy: number}} anchor
+     * @private
+     */
+    _scrollToZoomAnchor(anchor) {
+        const panel = document.getElementById('canvas-panel')
+        if (!panel || !this._canvas) return
+        const rect = this._canvas.getBoundingClientRect()
+        const dx = rect.left + anchor.fx * rect.width - anchor.clientX
+        const dy = rect.top + anchor.fy * rect.height - anchor.clientY
+        panel.scrollLeft += dx
+        panel.scrollTop += dy
+    }
+
+    /**
+     * Handle Ctrl/Cmd+wheel (trackpad pinch) zoom over the canvas panel.
+     * Plain wheel input still scrolls the panel natively.
+     * @param {WheelEvent} e
+     * @private
+     */
+    _onWheelZoom(e) {
+        if (!e.ctrlKey && !e.metaKey) return
+
+        // Ignore pinch gestures during active pointer mutations (same guard
+        // set as the spacebar pan toggle).
+        if (
+            this._brushTool?.isDrawing ||
+            this._eraserTool?.isErasing ||
+            this._moveTool?.isDragging ||
+            this._cloneTool?.isDragging ||
+            this._transformTool?.isTransforming ||
+            this._shapeTool?.isDrawing ||
+            this._selectionManager?.isDrawing ||
+            this._panTool?.isPanning
+        ) {
+            return
+        }
+
+        e.preventDefault()
+
+        // Normalize line-mode deltas and accumulate so a continuous trackpad
+        // pinch produces at most one discrete zoom step per threshold.
+        const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
+        this._wheelZoomAccumulator += delta
+        const threshold = 30
+        if (this._wheelZoomAccumulator <= -threshold) {
+            this._wheelZoomAccumulator = 0
+            this._pendingZoomAnchor = this._captureZoomAnchor(e)
+            this._zoomIn()
+        } else if (this._wheelZoomAccumulator >= threshold) {
+            this._wheelZoomAccumulator = 0
+            this._pendingZoomAnchor = this._captureZoomAnchor(e)
+            this._zoomOut()
+        }
     }
 
     /**
@@ -4016,6 +4106,8 @@ class LayersApp {
         // If at fit, stay at fit. Otherwise go to previous step.
         if (currentIndex > 0) {
             this._setZoom(steps[currentIndex - 1])
+        } else {
+            this._pendingZoomAnchor = null
         }
     }
 
