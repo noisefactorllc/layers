@@ -324,5 +324,90 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         expect(restoredBrushTitle).toBe('Brush Tool (B)')
         expect(restoredBrushAria).toBe('Brush Tool (B)')
     })
+
+    test('modal dialog chrome resolves from --hf-* tokens and re-themes on theme switch', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+
+        // Open the New Project dialog, then the Canvas Size dialog (New Canvas path)
+        await reopenNewProjectDialog(page)
+        await page.click('.media-option[data-type="solid"]')
+        const dialog = page.locator('.canvas-size-dialog')
+        await dialog.waitFor({ state: 'visible', timeout: 5000 })
+
+        const metrics = await page.evaluate(() => {
+            const dialogEl = document.querySelector('.canvas-size-dialog')
+            const cs = el => window.getComputedStyle(el)
+            const root = document.documentElement
+            const token = name => cs(root).getPropertyValue(name).trim()
+            const header = dialogEl.querySelector('.dialog-header')
+            return {
+                tokens: {
+                    space4: token('--hf-space-4'),
+                    space5: token('--hf-space-5'),
+                    space6: token('--hf-space-6'),
+                    sizeXl: token('--hf-size-xl'),
+                    sizeXs: token('--hf-size-xs'),
+                    space3: token('--hf-space-3'),
+                    space2: token('--hf-space-2'),
+                    bgSurface: token('--hf-bg-surface'),
+                    borderHover: token('--hf-border-hover')
+                },
+                headerPaddingTop: cs(header).paddingTop,
+                headerPaddingLeft: cs(header).paddingLeft,
+                h2FontSize: cs(dialogEl.querySelector('.dialog-header h2')).fontSize,
+                bodyPaddingTop: cs(dialogEl.querySelector('.dialog-body')).paddingTop,
+                bodyScrollbarColor: cs(dialogEl.querySelector('.dialog-body')).scrollbarColor,
+                actionsPaddingTop: cs(dialogEl.querySelector('.dialog-actions')).paddingTop,
+                presetPaddingTop: cs(dialogEl.querySelector('.size-preset')).paddingTop,
+                presetLabelFontSize: cs(dialogEl.querySelector('.preset-label')).fontSize,
+                inputUnitPaddingTop: cs(dialogEl.querySelector('.input-unit')).paddingTop,
+                remProbe: (() => {
+                    const probe = document.createElement('div')
+                    probe.style.position = 'absolute'
+                    probe.style.height = '1rem'
+                    document.body.appendChild(probe)
+                    const h = parseFloat(window.getComputedStyle(probe).height)
+                    probe.remove()
+                    return h
+                })()
+            }
+        })
+
+        const px = v => {
+            const n = parseFloat(v)
+            return v.endsWith('rem') ? `${n * metrics.remProbe}px` : `${n}px`
+        }
+        expect(metrics.headerPaddingTop).toBe(px(metrics.tokens.space4))
+        expect(metrics.headerPaddingLeft).toBe(px(metrics.tokens.space5))
+        expect(metrics.h2FontSize).toBe(px(metrics.tokens.sizeXl))
+        expect(metrics.bodyPaddingTop).toBe(px(metrics.tokens.space6))
+        expect(metrics.actionsPaddingTop).toBe(px(metrics.tokens.space4))
+        expect(metrics.presetPaddingTop).toBe(px(metrics.tokens.space3))
+        expect(metrics.presetLabelFontSize).toBe(px(metrics.tokens.sizeXs))
+        expect(metrics.inputUnitPaddingTop).toBe(px(metrics.tokens.space2))
+        // Scroll region is themed, not an OS-default island (scrollbar-color: auto
+        // means browser default); exact color equality is covered by the
+        // theme-switch assertions below because computed color formats differ.
+        expect(metrics.bodyScrollbarColor).not.toBe('auto')
+
+        // Theme switch re-resolves the themed scrollbar and paddings
+        const before = await page.evaluate(() => ({
+            scrollbar: window.getComputedStyle(document.querySelector('.canvas-size-dialog .dialog-body')).scrollbarColor,
+            bgSurface: window.getComputedStyle(document.documentElement).getPropertyValue('--hf-bg-surface').trim()
+        }))
+        await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'cyberpunk'))
+        const after = await page.evaluate(() => ({
+            scrollbar: window.getComputedStyle(document.querySelector('.canvas-size-dialog .dialog-body')).scrollbarColor,
+            bgSurface: window.getComputedStyle(document.documentElement).getPropertyValue('--hf-bg-surface').trim()
+        }))
+        expect(after.bgSurface).not.toBe(before.bgSurface)
+        // scrollbar-color re-resolves from the theme's tokens (format-normalized
+        // comparison, since engines serialize colors differently)
+        const norm = s => s.replace(/\s+/g, '').toLowerCase()
+        expect(norm(after.scrollbar)).not.toBe(norm(before.scrollbar))
+
+        await page.evaluate(() => document.documentElement.removeAttribute('data-theme'))
+    })
 })
 

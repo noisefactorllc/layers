@@ -244,8 +244,8 @@
 
 dialog {
     background: color-mix(in srgb, var(--hf-color-2) 92%, transparent 8%);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: var(--hf-glass-blur);
+    -webkit-backdrop-filter: var(--hf-glass-blur);
     border: none;
     border-radius: var(--hf-radius-xl);
     box-shadow: var(--hf-shadow-xl);
@@ -291,15 +291,15 @@ dialog[open] {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 20px;
+    padding: var(--hf-space-4) var(--hf-space-5);
     background: linear-gradient(180deg, color-mix(in srgb, var(--hf-color-7) 2%, transparent) 0%, transparent 100%);
     border-bottom: 1px solid var(--hf-color-2);
 }
 
 .dialog-header h2 {
     font-family: var(--font-accent);
-    font-size: 20px;
-    font-weight: 600;
+    font-size: var(--hf-size-xl);
+    font-weight: var(--hf-weight-semibold);
     color: var(--hf-color-7);
     margin: 0;
 }
@@ -308,7 +308,7 @@ dialog[open] {
     background: none;
     border: none;
     color: var(--hf-color-5);
-    font-size: 20px;
+    font-size: var(--hf-size-xl);
     cursor: pointer;
     padding: 0;
     line-height: 1;
@@ -318,7 +318,7 @@ dialog[open] {
     align-items: center;
     justify-content: center;
     border-radius: var(--hf-radius-sm);
-    transition: all 0.12s ease-out;
+    transition: color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition), transform var(--hf-transition);
 }
 
 .dialog-close.hidden {
@@ -336,16 +336,42 @@ dialog[open] {
 }
 
 .dialog-body {
-    padding: 24px;
+    padding: var(--hf-space-6);
     overflow-y: auto;
     max-height: calc(85vh - 120px);
+    scrollbar-color: var(--hf-border-hover) var(--hf-bg-surface);
+    scrollbar-width: thin;
+}
+
+.dialog-body::-webkit-scrollbar {
+    width: var(--hf-space-3);
+    height: var(--hf-space-3);
+}
+
+.dialog-body::-webkit-scrollbar-track,
+.dialog-body::-webkit-scrollbar-corner {
+    background: var(--hf-bg-surface);
+}
+
+.dialog-body::-webkit-scrollbar-thumb {
+    background: var(--hf-bg-muted);
+    border: var(--hf-border-width) solid var(--hf-bg-surface);
+    border-radius: var(--hf-radius-pill);
+}
+
+.dialog-body::-webkit-scrollbar-thumb:hover {
+    background: var(--hf-accent);
+}
+
+.dialog-body::-webkit-scrollbar-thumb:active {
+    background: var(--hf-accent-hover);
 }
 
 .dialog-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 12px;
-    padding: 16px 24px;
+    gap: var(--hf-space-3);
+    padding: var(--hf-space-4) var(--hf-space-6);
     background: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--hf-color-7) 2%, transparent) 100%);
     border-top: 1px solid var(--hf-color-2);
 }
@@ -355,15 +381,15 @@ dialog[open] {
    ========================================================================= */
 
 .form-field {
-    margin-bottom: 16px;
+    margin-bottom: var(--hf-space-4);
 }
 
 .form-field label {
     display: block;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: var(--hf-size-sm);
+    font-weight: var(--hf-weight-medium);
     color: var(--hf-color-6);
-    margin-bottom: 6px;
+    margin-bottom: var(--hf-space-2);
 }
 
 .form-field input[type="text"],
@@ -600,15 +626,15 @@ dialog[open] {
 .confirm-dialog .dialog-body,
 .info-dialog .dialog-body,
 .choice-dialog .dialog-body {
-    padding: 24px;
+    padding: var(--hf-space-6);
 }
 
 .confirm-dialog .confirm-message,
 .info-dialog .info-message,
 .choice-dialog .choice-message {
     margin: 0;
-    font-size: 14px;
-    line-height: 1.5;
+    font-size: var(--hf-size-base);
+    line-height: var(--hf-leading-normal);
     color: var(--hf-color-7);
 }
 
@@ -617,8 +643,8 @@ dialog[open] {
 .choice-dialog .dialog-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    padding: 16px 24px;
+    gap: var(--hf-space-2);
+    padding: var(--hf-space-4) var(--hf-space-6);
     border-top: 1px solid var(--hf-color-2);
 }
 
@@ -771,24 +797,24 @@ dialog[open] {
 }
 
 .confirm-message {
-    font-size: 14px;
-    line-height: 1.6;
+    font-size: var(--hf-size-base);
+    line-height: var(--hf-leading-normal);
     color: var(--hf-color-6);
 }
 
 .confirm-message span {
     color: var(--hf-color-7);
-    font-weight: 500;
+    font-weight: var(--hf-weight-medium);
 }
 
 .saving-indicator {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 12px;
-    padding: 24px;
+    gap: var(--hf-space-3);
+    padding: var(--hf-space-6);
     color: var(--hf-color-6);
-    font-size: 14px;
+    font-size: var(--hf-size-base);
 }
 
 /* =========================================================================
@@ -910,7 +936,7 @@ dialog[open] {
 }
 
 .settings-dialog .dialog-body {
-    padding: 32px;
+    padding: var(--hf-space-8);
     overflow: visible;
 }
 
@@ -921,8 +947,8 @@ dialog[open] {
 .size-presets {
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
-    margin-bottom: 24px;
+    gap: var(--hf-space-3);
+    margin-bottom: var(--hf-space-6);
 }
 
 .size-preset {
@@ -930,8 +956,8 @@ dialog[open] {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    padding: 12px;
+    gap: var(--hf-space-2);
+    padding: var(--hf-space-3);
     min-width: 90px;
     flex: 1;
     font-family: var(--font-body);
@@ -939,7 +965,7 @@ dialog[open] {
     border: 2px solid var(--hf-color-3);
     border-radius: var(--hf-radius-md);
     cursor: pointer;
-    transition: all 0.12s ease-out;
+    transition: color var(--hf-transition), background var(--hf-transition), border-color var(--hf-transition), box-shadow var(--hf-transition);
 }
 
 .size-preset:hover {
@@ -968,22 +994,22 @@ dialog[open] {
     background: var(--hf-bg-elevated);
     border: 1px solid var(--hf-color-5);
     border-radius: 2px;
-    transition: all 0.12s ease-out;
+    transition: border-color var(--hf-transition), background var(--hf-transition), box-shadow var(--hf-transition);
 }
 
 .preset-label {
-    font-size: 11px;
-    font-weight: 500;
+    font-size: var(--hf-size-xs);
+    font-weight: var(--hf-weight-medium);
     color: var(--hf-color-6);
     white-space: nowrap;
-    transition: color 0.12s ease-out;
+    transition: color var(--hf-transition);
 }
 
 .size-inputs {
     display: flex;
     align-items: flex-start;
-    gap: 16px;
-    margin-bottom: 12px;
+    gap: var(--hf-space-4);
+    margin-bottom: var(--hf-space-3);
 }
 
 .size-inputs .form-field {
@@ -992,8 +1018,8 @@ dialog[open] {
 }
 
 .size-separator {
-    margin-top: 28px;
-    font-size: 16px;
+    margin-top: calc(var(--hf-space-6) + var(--hf-space-1));
+    font-size: var(--hf-size-md);
     color: var(--hf-color-5);
 }
 
@@ -1009,8 +1035,8 @@ dialog[open] {
 }
 
 .input-unit {
-    padding: 10px 12px;
-    font-size: 13px;
+    padding: var(--hf-space-2) var(--hf-space-3);
+    font-size: var(--hf-size-sm);
     color: var(--hf-color-5);
     background: var(--hf-bg-elevated);
     border: 1px solid var(--hf-color-3);
@@ -1020,7 +1046,7 @@ dialog[open] {
 }
 
 .size-limits {
-    font-size: 11px;
+    font-size: var(--hf-size-xs);
     color: var(--hf-color-5);
     text-align: center;
 }
