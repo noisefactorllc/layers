@@ -256,17 +256,24 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         await page.mouse.move(0, 0)
         await expect(tooltipLayer).toBeHidden({ timeout: 2000 })
 
-        // 3. Dual-ring focus-visible styling on toolbar button
-        const focusRing = await page.evaluate(() => {
-            const btn = document.getElementById('brushToolBtn')
-            btn.focus()
-            const style = window.getComputedStyle(btn)
-            return {
-                boxShadow: style.boxShadow,
-                outlineStyle: style.outlineStyle
-            }
-        })
-        expect(focusRing.boxShadow).toContain('0px 0px 0px 2px')
+        // 3. Dual-ring focus-visible styling on toolbar button. The ring
+        // animates in over a 0.15s box-shadow transition (var(--hf-transition)
+        // from the Handfish token sheet), so a synchronous read right after
+        // focus() captures the transition's start state — transparent,
+        // 0-spread shadows — in every engine. Poll until the transition lands.
+        await page.evaluate(() => document.getElementById('brushToolBtn').focus())
+        let focusRing = { boxShadow: '', outlineStyle: '' }
+        await expect.poll(async () => {
+            focusRing = await page.evaluate(() => {
+                const btn = document.getElementById('brushToolBtn')
+                const style = window.getComputedStyle(btn)
+                return {
+                    boxShadow: style.boxShadow,
+                    outlineStyle: style.outlineStyle
+                }
+            })
+            return focusRing.boxShadow
+        }, { timeout: 5000 }).toContain('0px 0px 0px 2px')
         expect(focusRing.boxShadow).toContain('0px 0px 0px 4px')
 
         // 4. Toolbar caret ARIA and keyboard navigation
@@ -292,12 +299,15 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         await expect(selectionFlyout).toHaveClass(/hide/)
         await expect(caret).toHaveAttribute('aria-expanded', 'false')
 
-        // 5. Mask edit mode synchronizes data-title and aria-label in lockstep
-        await page.evaluate(() => {
+        // 5. Mask edit mode synchronizes data-title and aria-label in lockstep.
+        // Masks are ImageData-shaped (width/height plus RGBA-stride data) and
+        // are created by the app itself; a fully revealed mask is all 255s.
+        await page.evaluate(async () => {
             const app = window.layersApp
             const layer = app._layers[0]
             if (layer && !layer.mask) {
-                layer.mask = new Uint8Array(app._canvas.width * app._canvas.height).fill(255)
+                await app._addLayerMask(layer.id)
+                layer.mask.data.fill(255)
             }
             app._enterMaskEditMode(layer.id)
         })
