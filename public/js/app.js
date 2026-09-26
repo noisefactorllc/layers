@@ -6970,7 +6970,13 @@ class LayersApp {
             } catch (err) {
                 console.error('[Layers] Failed to save project:', err)
                 try {
-                    toast.error('Failed to save project')
+                    const isQuotaError = err?.name === 'QuotaExceededError'
+                        || err?.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+                    if (isQuotaError) {
+                        toast.warning('Not enough storage to save this project. Delete unused projects or large media, then try saving again.')
+                    } else {
+                        toast.error('Failed to save project')
+                    }
                 } catch (toastError) {
                     console.error('[Layers] Failed to show save error:', toastError)
                 }

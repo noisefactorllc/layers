@@ -256,4 +256,70 @@ test.describe('saveProject / openProject / deleteProject', () => {
         expect(env.ok).toBe(true)
         expect(env.state.project.id).toBeNull()
     })
+
+    test('IndexedDB quota failure shows an actionable warning toast', async ({ page }) => {
+        await bootApp(page)
+        const outcome = await page.evaluate(async () => {
+            const original = IDBObjectStore.prototype.put
+            IDBObjectStore.prototype.put = function () {
+                if (this.transaction.mode === 'readwrite') {
+                    throw new DOMException('Storage quota reached', 'QuotaExceededError')
+                }
+                return original.apply(this, arguments)
+            }
+            try {
+                await window.layersApp._saveProject(null, 'quota-check')
+                return { rejected: false }
+            } catch (error) {
+                return {
+                    rejected: true,
+                    name: error?.name,
+                    toasts: [...document.querySelectorAll('#toast-container .toast')].map(t => ({
+                        type: [...t.classList].find(c => c.startsWith('toast-') && c !== 'toast-visible' && c !== 'toast-hiding'),
+                        message: t.querySelector('.toast-message')?.textContent,
+                    })),
+                }
+            } finally {
+                IDBObjectStore.prototype.put = original
+            }
+        })
+        expect(outcome.rejected).toBe(true)
+        expect(outcome.name).toBe('QuotaExceededError')
+        const warning = outcome.toasts.find(t => t.type === 'toast-warning')
+        expect(warning?.message).toContain('Not enough storage to save this project')
+        expect(outcome.toasts.find(t => t.type === 'toast-error')).toBeUndefined()
+    })
+
+    test('non-quota save failures keep the generic error toast', async ({ page }) => {
+        await bootApp(page)
+        const outcome = await page.evaluate(async () => {
+            const original = IDBObjectStore.prototype.put
+            IDBObjectStore.prototype.put = function () {
+                if (this.transaction.mode === 'readwrite') {
+                    throw new DOMException('disk I/O failed', 'InvalidStateError')
+                }
+                return original.apply(this, arguments)
+            }
+            try {
+                await window.layersApp._saveProject(null, 'io-fail-check')
+                return { rejected: false }
+            } catch (error) {
+                return {
+                    rejected: true,
+                    name: error?.name,
+                    toasts: [...document.querySelectorAll('#toast-container .toast')].map(t => ({
+                        type: [...t.classList].find(c => c.startsWith('toast-') && c !== 'toast-visible' && c !== 'toast-hiding'),
+                        message: t.querySelector('.toast-message')?.textContent,
+                    })),
+                }
+            } finally {
+                IDBObjectStore.prototype.put = original
+            }
+        })
+        expect(outcome.rejected).toBe(true)
+        expect(outcome.name).toBe('InvalidStateError')
+        const errorToast = outcome.toasts.find(t => t.type === 'toast-error')
+        expect(errorToast?.message).toContain('Failed to save project')
+        expect(outcome.toasts.find(t => t.type === 'toast-warning')).toBeUndefined()
+    })
 })
