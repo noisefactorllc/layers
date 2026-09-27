@@ -6,6 +6,7 @@
  */
 
 import './layer-item.js'
+import { structuralSignature } from './layer-item.js'
 
 /**
  * LayerStack - Web component for the layer list
@@ -31,11 +32,20 @@ class LayerStack extends HTMLElement {
 
     /**
      * Set the layers array
+     *
+     * Reconciles the existing layer-item elements instead of rebuilding the
+     * stack from scratch: items whose layer structure is unchanged are
+     * patched in place (or left untouched), so a property-only change such
+     * as a visibility toggle does not tear down every control in the panel,
+     * drop focus from the eye button, or re-create thumbnail canvases.
+     * Structural changes (add, remove, reorder, type change) still rebuild
+     * the affected items.
+     *
      * @param {Array} layers - Array of layer objects (bottom to top order)
      */
     set layers(layers) {
         this._layers = layers || []
-        this._render()
+        this._renderLayers()
     }
 
     /**
@@ -96,7 +106,7 @@ class LayerStack extends HTMLElement {
     }
 
     /**
-     * Render the layer stack
+     * Render the layer stack (full rebuild)
      * @private
      */
     _render() {
@@ -143,6 +153,105 @@ class LayerStack extends HTMLElement {
                 this.appendChild(childItem)
             }
         }
+    }
+
+    /**
+     * Reconcile the rendered items against the current layers.
+     * @private
+     */
+    _renderLayers() {
+        if (this._layers.length === 0 || this.querySelector('.empty-state')) {
+            this._render()
+            return
+        }
+
+        // Desired flat display order: layers top-first, each followed by its
+        // child effects in stack order.
+        const reversedLayers = [...this._layers].reverse()
+        const desired = []
+        for (let i = 0; i < reversedLayers.length; i++) {
+            const layer = reversedLayers[i]
+            desired.push({ layer, isChild: false, parentId: null, isBase: i === reversedLayers.length - 1 })
+            for (const child of (layer.children || [])) {
+                desired.push({ layer: child, isChild: true, parentId: layer.id, isBase: false })
+            }
+        }
+
+        const items = [...this.querySelectorAll('layer-item')]
+        const byKey = new Map()
+        for (const item of items) {
+            const key = this._itemKey(item)
+            if (key) byKey.set(key, item)
+        }
+
+        let structureChanged = items.length !== desired.length
+        for (const entry of desired) {
+            const key = this._entryKey(entry)
+            const item = byKey.get(key)
+            if (!item) {
+                structureChanged = true
+                const created = document.createElement('layer-item')
+                created.layer = entry.layer
+                if (entry.isBase) created.setAttribute('base', '')
+                if (entry.isChild) {
+                    created.isChild = true
+                    created.parentLayerId = entry.parentId
+                }
+                if (this._selectedLayerIds.has(entry.layer.id)) {
+                    created.selected = true
+                }
+                byKey.set(key, created)
+            } else if (item.hasAttribute('base') !== entry.isBase
+                || item.isChild !== entry.isChild
+                || structuralSignature(entry.layer) !== item._structuralSig) {
+                // Structural change: rebuild this item's contents in place.
+                if (entry.isBase) item.setAttribute('base', '')
+                else item.removeAttribute('base')
+                if (item.isChild !== entry.isChild) {
+                    item.isChild = entry.isChild
+                    item.parentLayerId = entry.parentId
+                }
+                item.layer = entry.layer
+            } else {
+                // Property-only change: patch in place (no-op when nothing
+                // displayed changed).
+                item.sync(entry.layer)
+            }
+        }
+
+        for (const [key, item] of byKey) {
+            if (!desired.some(entry => this._entryKey(entry) === key)) {
+                item.remove()
+                structureChanged = true
+            }
+        }
+
+        // Re-append in display order only when the order actually changed, so
+        // a property-only toggle never moves (and therefore never blurs) a
+        // focused control.
+        const currentKeys = [...this.querySelectorAll('layer-item')]
+            .map(item => this._itemKey(item))
+        const desiredKeys = desired.map(entry => this._entryKey(entry))
+        if (structureChanged
+            || currentKeys.length !== desiredKeys.length
+            || currentKeys.some((key, i) => key !== desiredKeys[i])) {
+            for (const entry of desired) {
+                const item = byKey.get(this._entryKey(entry))
+                if (item) this.appendChild(item)
+            }
+        }
+    }
+
+    /** @private */
+    _itemKey(item) {
+        if (!item._layer?.id) return null
+        // parentLayerId has only a setter on layer-item; read the backing field.
+        return (item.isChild ? (item._parentLayerId || '') : '') + '/' + item._layer.id
+    }
+
+    /** @private */
+    _entryKey(entry) {
+        return (entry.parentId || '') + '/' + entry.layer.id
     }
 
     /**

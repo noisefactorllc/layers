@@ -162,6 +162,91 @@ class LayerItem extends HTMLElement {
 
         this._initEffectParams()
         this._renderMaskThumbnail()
+        this._maskRef = layer.mask
+        this._paramsRef = layer.effectParams
+        this._structuralSig = structuralSignature(layer)
+    }
+
+    /**
+     * Patch the item in place for a layer whose structure is unchanged.
+     *
+     * Full re-render destroys every control (blend dropdown, params panel,
+     * mask thumbnail canvas), which on a visibility toggle means the whole
+     * stack's controls are torn down and focus on the eye button is dropped.
+     * sync() updates the displayed state from the model unconditionally —
+     * including on commits that were dropped or rolled back, where the model
+     * was restored and any optimistic or user-visible drift (eye icon flip,
+     * slider position, name text) must be repaired. It never rebuilds the
+     * DOM, so the focused element keeps both its node and its focus.
+     *
+     * Structural changes still route through `layer =` (full re-render) by
+     * the caller (layer-stack).
+     * @param {object} layer - Fresh layer object
+     */
+    sync(layer) {
+        if (!layer) return
+        const structuralChanged = structuralSignature(layer) !== this._structuralSig
+        const maskChanged = layer.mask !== this._maskRef
+        const paramsChanged = layer.effectParams !== this._paramsRef
+
+        this._layer = layer
+        if (structuralChanged) {
+            // Defense in depth: the stack routes structural changes through a
+            // full re-render; if one ever reaches sync, re-render rather than
+            // leave stale controls behind.
+            this._render()
+            return
+        }
+
+        this._updateVisibilityButton(!!layer.visible)
+        this.classList.toggle('locked', !!layer.locked)
+
+        // Rename must not stomp an in-progress contenteditable edit.
+        const nameEl = this.querySelector('.layer-name')
+        if (nameEl && !nameEl.classList.contains('editing')
+            && nameEl.textContent !== layer.name) {
+            nameEl.textContent = layer.name
+        }
+
+        const blendSelect = this.querySelector('.layer-blend-mode')
+        if (blendSelect && !this._isChild) {
+            blendSelect.value = layer.blendMode || 'mix'
+        }
+
+        const opacitySlider = this.querySelector('.layer-opacity')
+        if (opacitySlider && !this._isChild) {
+            opacitySlider.value = layer.opacity
+        }
+
+        const maskThumb = this.querySelector('.layer-mask-thumbnail')
+        if (maskThumb) {
+            maskThumb.classList.toggle('mask-visible', !!layer.maskVisible)
+            maskThumb.classList.toggle('mask-disabled',
+                !this._isChild && layer.maskEnabled === false)
+        }
+
+        if (maskChanged) {
+            this._maskRef = layer.mask
+            this._renderMaskThumbnail()
+        }
+        if (paramsChanged) {
+            this._paramsRef = layer.effectParams
+            this._initEffectParams()
+        }
+    }
+
+    /**
+     * Update only the eye button's visual state, without touching anything
+     * else in the item.
+     * @param {boolean} visible
+     * @private
+     */
+    _updateVisibilityButton(visible) {
+        const visBtn = this.querySelector('.layer-visibility')
+        if (!visBtn) return
+        visBtn.classList.toggle('visible', visible)
+        const icon = visBtn.querySelector('.icon-material')
+        if (icon) icon.textContent = visible ? 'visibility' : 'visibility_off'
     }
 
     /**
@@ -398,6 +483,11 @@ class LayerItem extends HTMLElement {
     _toggleVisibility() {
         if (!this._layer) return
         const previousValue = this._layer.visible
+        // Optimistic: flip the eye icon before the async mutation commit runs,
+        // so feedback is immediate regardless of how long the render pipeline
+        // takes. A failed/rolled-back commit re-renders the stack, which
+        // restores the correct icon.
+        this._updateVisibilityButton(!previousValue)
         this._emitChange('visibility', !previousValue, previousValue)
     }
 
@@ -618,4 +708,22 @@ class LayerItem extends HTMLElement {
 
 customElements.define('layer-item', LayerItem)
 
-export { LayerItem }
+/**
+ * Signature of the layer's *structure*: the fields whose change requires
+ * re-rendering the item's inner HTML (different controls, thumbnails, or
+ * children). Everything else is patchable in place by sync().
+ * @param {object} layer
+ * @returns {string}
+ */
+function structuralSignature(layer) {
+    return [
+        layer.sourceType,
+        layer.effectId,
+        layer.mediaType,
+        layer.mask ? 'mask' : 'nomask',
+        (layer.children || []).length,
+        layer.locked ? 'locked' : 'unlocked'
+    ].join('|')
+}
+
+export { LayerItem, structuralSignature }
