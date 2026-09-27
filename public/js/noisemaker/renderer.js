@@ -1379,7 +1379,7 @@ export class LayersRenderer {
             try {
                 await new Promise((resolve, reject) => {
                     img.onload = resolve
-                    img.onerror = reject
+                    img.onerror = () => reject(new Error('Image decode failed'))
                     img.src = url
                 })
             } catch (err) {

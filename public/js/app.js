@@ -47,6 +47,7 @@ import { FillTool } from './tools/fill-tool.js'
 import { EyedropperTool } from './tools/eyedropper-tool.js'
 import { PanTool } from './tools/pan-tool.js'
 import { UndoManager } from './utils/undo-manager.js'
+import { describeMediaLoadError } from './utils/media-errors.js'
 import { invertMask, expandMask, contractMask, borderMask, featherMask, smoothMask, colorRange } from './selection/selection-modify.js'
 import { selectionParamDialog } from './ui/selection-param-dialog.js'
 import { Files } from './utils/files.js'
@@ -2440,7 +2441,7 @@ class LayersApp {
             } catch (err) {
                 if (candidateGeneration !== this._replacementGeneration) return 'cancelled'
                 console.error('[Layers] Failed to load media:', err)
-                toast.error('Failed to load media: ' + err.message)
+                toast.error(describeMediaLoadError(err, mediaType, file.name))
                 return 'failed'
             }
 
@@ -2563,7 +2564,21 @@ class LayersApp {
                 return { status: 'blocked-online' }
             }
 
-            const resource = await this._renderer.prepareMediaResource(file, mediaType)
+            let resource
+            try {
+                resource = await this._renderer.prepareMediaResource(file, mediaType)
+            } catch (err) {
+                // The human path previously failed silently here: the throw
+                // escaped past _runPointerMutation's FULL_RESOLUTION-only
+                // catch and never surfaced. Surface an actionable message and
+                // report failure to both callers; the agent path still maps
+                // {status:'failed'} to its RESOURCE_DECODE_FAILED command
+                // error.
+                console.error('[Layers] Failed to load media:', err)
+                const described = describeMediaLoadError(err, mediaType, file.name)
+                toast.error(described)
+                return { status: 'failed', error: new Error(described) }
+            }
             if (!resource) throw new Error('Unsupported media resource')
             if (this._onlineAdapter?.isOnline()) {
                 this._renderer.disposeMediaResource(resource)

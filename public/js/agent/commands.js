@@ -670,6 +670,11 @@ async function addMediaLayer({ source, mediaType, name }, app, mutationToken = n
         throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
             'Media layers are not supported while a Layers collaboration session is online', {})
     }
+    if (outcome?.status === 'failed') {
+        throw commandError('RESOURCE_DECODE_FAILED',
+            outcome.error?.message || 'Failed to decode media',
+            { mediaType })
+    }
     outcome = requireAddedLayerOutcome(outcome)
     if (!app._layers.some(candidate => candidate.id === outcome.layerId)) {
         throw commandError('RESOURCE_DECODE_FAILED', 'Media layer was not added', { mediaType })
