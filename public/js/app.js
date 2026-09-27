@@ -105,6 +105,8 @@ class LayersApp {
         this._zoomMode = 'fit' // 'fit', '50', '100', '200'
         this._wheelZoomAccumulator = 0
         this._pendingZoomAnchor = null
+        this._gesturePinchBase = 1
+        this._gesturePinchActive = false
         this._selectionManager = null
         this._copyOrigin = null
         this._colorRangePicking = false
@@ -1393,9 +1395,15 @@ class LayersApp {
             }
         })
 
-        // Ctrl/Cmd+wheel (trackpad pinch) zoom anchored to the pointer
+        // Ctrl/Cmd+wheel (trackpad pinch) zoom anchored to the pointer.
+        // Safari-only trackpad pinch is covered by the gesturestart /
+        // gesturechange / gestureend handlers below (Safari emits no
+        // ctrlKey-modified wheel events for pinch gestures).
         const canvasPanel = document.getElementById('canvas-panel')
         canvasPanel?.addEventListener('wheel', (e) => this._onWheelZoom(e), { passive: false })
+        canvasPanel?.addEventListener('gesturestart', (e) => this._onGestureStart(e))
+        canvasPanel?.addEventListener('gesturechange', (e) => this._onGestureChange(e), { passive: false })
+        canvasPanel?.addEventListener('gestureend', () => this._onGestureEnd())
 
         // Apply default zoom mode
         this._applyZoom()
@@ -4053,21 +4061,7 @@ class LayersApp {
      */
     _onWheelZoom(e) {
         if (!e.ctrlKey && !e.metaKey) return
-
-        // Ignore pinch gestures during active pointer mutations (same guard
-        // set as the spacebar pan toggle).
-        if (
-            this._brushTool?.isDrawing ||
-            this._eraserTool?.isErasing ||
-            this._moveTool?.isDragging ||
-            this._cloneTool?.isDragging ||
-            this._transformTool?.isTransforming ||
-            this._shapeTool?.isDrawing ||
-            this._selectionManager?.isDrawing ||
-            this._panTool?.isPanning
-        ) {
-            return
-        }
+        if (this._canvasGestureBlocked()) return
 
         e.preventDefault()
 
@@ -4085,6 +4079,83 @@ class LayersApp {
             this._pendingZoomAnchor = this._captureZoomAnchor(e)
             this._zoomOut()
         }
+    }
+
+    /**
+     * Shared guard for canvas zoom gestures (wheel pinch + Safari pinch):
+     * ignore gestures during active pointer mutations (same guard set as the
+     * spacebar pan toggle).
+     * @returns {boolean} True when a pointer mutation is in progress
+     * @private
+     */
+    _canvasGestureBlocked() {
+        return !!(
+            this._brushTool?.isDrawing ||
+            this._eraserTool?.isErasing ||
+            this._moveTool?.isDragging ||
+            this._cloneTool?.isDragging ||
+            this._transformTool?.isTransforming ||
+            this._shapeTool?.isDrawing ||
+            this._selectionManager?.isDrawing ||
+            this._panTool?.isPanning
+        )
+    }
+
+    /**
+     * Safari-only trackpad pinch: gesturestart begins a pinch gesture over
+     * the canvas panel (Safari emits no ctrlKey wheel events for pinch, so
+     * _onWheelZoom never sees it). Other engines never fire gesture events,
+     * so these listeners are inert there.
+     * @param {GestureEvent} e
+     * @private
+     */
+    _onGestureStart(e) {
+        // Track every pinch even if one is blocked below, so gesture state
+        // stays coherent when the stroke ends mid-pinch.
+        this._gesturePinchBase = 1
+        this._gesturePinchActive = true
+        // preventDefault stops Safari's native page zoom over the canvas.
+        e.preventDefault()
+    }
+
+    /**
+     * Safari-only trackpad pinch continuation: e.scale is the cumulative
+     * ratio since gesturestart. Each time it crosses a 1.1x factor from the
+     * last committed step, one discrete zoom step fires, anchored to the
+     * pointer — the same anchor machinery as the ctrl+wheel path.
+     * @param {GestureEvent} e
+     * @private
+     */
+    _onGestureChange(e) {
+        if (!this._gesturePinchActive) return
+        if (this._canvasGestureBlocked()) {
+            e.preventDefault()
+            return
+        }
+
+        e.preventDefault()
+
+        const base = this._gesturePinchBase || 1
+        const scale = typeof e.scale === 'number' ? e.scale : 1
+        const step = 1.1
+        if (scale >= base * step) {
+            this._gesturePinchBase = scale
+            this._pendingZoomAnchor = this._captureZoomAnchor(e)
+            this._zoomIn()
+        } else if (scale <= base / step) {
+            this._gesturePinchBase = scale
+            this._pendingZoomAnchor = this._captureZoomAnchor(e)
+            this._zoomOut()
+        }
+    }
+
+    /**
+     * Safari-only trackpad pinch end: reset the gesture tracking state.
+     * @private
+     */
+    _onGestureEnd() {
+        this._gesturePinchActive = false
+        this._gesturePinchBase = 1
     }
 
     /**
