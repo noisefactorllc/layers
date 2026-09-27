@@ -49,6 +49,39 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
             if (importantMatches) {
                 violations.push(`${file} contains ${importantMatches.length} !important declarations`)
             }
+
+            const transitionAllMatches = content.match(/transition\s*:\s*all\b/g)
+            if (transitionAllMatches) {
+                violations.push(`${file} contains ${transitionAllMatches.length} bare "transition: all" declarations`)
+            }
+        }
+
+        expect(violations).toEqual([])
+    })
+
+    test('JS-injected UI stylesheets contain zero hardcoded colors and transition: all', () => {
+        // UI chrome styled from JS-injected <style> blocks (light-DOM handfish surfaces).
+        // Functional canvas/DSL color literals elsewhere in public/js are intentionally out of scope.
+        const styledFiles = [
+            path.resolve(__dirname, '../public/js/ui/effect-picker.js'),
+            path.resolve(__dirname, '../public/js/layers/font-select.js'),
+        ]
+
+        const violations = []
+
+        for (const file of styledFiles) {
+            const content = fs.readFileSync(file, 'utf8')
+            const rel = path.relative(path.resolve(__dirname, '..'), file)
+
+            const colorMatches = content.match(/#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|oklch|oklab|lab|lch)\([^)]+\)|\b(white|black|red|green|blue|yellow|orange|purple|gray|grey)\b(?![\w-])/g)
+            if (colorMatches) {
+                violations.push(`${rel} contains hardcoded color literals: ${colorMatches.join(', ')}`)
+            }
+
+            const transitionAllMatches = content.match(/transition\s*:\s*all\b/g)
+            if (transitionAllMatches) {
+                violations.push(`${rel} contains ${transitionAllMatches.length} bare "transition: all" declarations`)
+            }
         }
 
         expect(violations).toEqual([])

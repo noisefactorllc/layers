@@ -79,12 +79,13 @@ if (!document.getElementById(FONT_SELECT_STYLES_ID)) {
         }
 
         font-select .font-dialog::backdrop {
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(4px);
+            background: var(--hf-backdrop);
+            backdrop-filter: var(--hf-glass-blur-sm);
+            -webkit-backdrop-filter: var(--hf-glass-blur-sm);
         }
 
         font-select .dialog-titlebar {
-            background: linear-gradient(180deg, rgba(255,255,255,0.02) 0%, transparent 100%);
+            background: linear-gradient(180deg, color-mix(in srgb, var(--hf-color-7) 2%, transparent) 0%, transparent 100%);
             border-bottom: 1px solid var(--hf-color-3);
             padding: 8px 12px;
             font-size: 0.7rem;

@@ -581,7 +581,7 @@ effect-params {
     border-radius: var(--hf-radius-sm);
     color: var(--hf-text-normal);
     cursor: pointer;
-    transition: all 0.12s ease-out;
+    transition: border-color var(--hf-transition), color var(--hf-transition), background var(--hf-transition);
     grid-column: 2 / -1;
     justify-self: start;
 }

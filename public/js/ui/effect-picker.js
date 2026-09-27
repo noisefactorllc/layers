@@ -338,7 +338,7 @@ const EFFECT_PICKER_STYLES = `
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    background: rgba(0, 0, 0, 0.3);
+    background: color-mix(in srgb, var(--hf-color-1) 30%, transparent);
     border: 1px solid var(--hf-color-3);
     border-radius: var(--hf-radius-sm);
     margin-bottom: 12px;
@@ -377,7 +377,7 @@ const EFFECT_PICKER_STYLES = `
     align-items: center;
     justify-content: center;
     border-radius: var(--hf-radius-sm);
-    transition: all 0.15s ease;
+    transition: color var(--hf-transition), background var(--hf-transition);
 }
 
 .effect-search-clear:hover {
@@ -400,7 +400,7 @@ const EFFECT_PICKER_STYLES = `
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--hf-accent-3);
-    background: rgba(0, 0, 0, 0.2);
+    background: color-mix(in srgb, var(--hf-color-1) 20%, transparent);
     border-bottom: 1px solid var(--hf-color-3);
 }
 
@@ -416,7 +416,7 @@ const EFFECT_PICKER_STYLES = `
 }
 
 .effect-item:hover {
-    background: rgba(210, 98, 0, 0.1);
+    background: color-mix(in srgb, var(--hf-accent-3) 10%, transparent);
 }
 
 .effect-item:last-child {
@@ -437,14 +437,14 @@ const EFFECT_PICKER_STYLES = `
 .effect-tag {
     font-size: 10px;
     padding: 2px 6px;
-    background: rgba(210, 98, 0, 0.15);
+    background: color-mix(in srgb, var(--hf-accent-3) 15%, transparent);
     color: var(--hf-accent-3);
     border-radius: var(--hf-radius-sm);
     cursor: pointer;
 }
 
 .effect-tag:hover {
-    background: rgba(210, 98, 0, 0.25);
+    background: color-mix(in srgb, var(--hf-accent-3) 25%, transparent);
 }
 
 .effect-description {
@@ -473,16 +473,16 @@ const EFFECT_PICKER_STYLES = `
 .effect-filter-chip {
     font-size: 12px;
     padding: 6px 12px;
-    background: rgba(0, 0, 0, 0.3);
+    background: color-mix(in srgb, var(--hf-color-1) 30%, transparent);
     border: 1px solid var(--hf-color-3);
     border-radius: var(--hf-radius-md);
     color: var(--hf-color-6);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: color var(--hf-transition), background var(--hf-transition), border-color var(--hf-transition);
 }
 
 .effect-filter-chip:hover {
-    background: rgba(210, 98, 0, 0.15);
+    background: color-mix(in srgb, var(--hf-accent-3) 15%, transparent);
     border-color: var(--hf-accent-3);
     color: var(--hf-accent-3);
 }
