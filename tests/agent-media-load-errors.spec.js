@@ -72,7 +72,10 @@ test('an undecodable video names the codec problem', async ({ page }) => {
 
     const toast = lastErrorToast(page)
     await expect(toast).toContainText('clip.mp4')
-    await expect(toast).toContainText('format or codec')
+    // Firefox classifies garbage MP4 data as MEDIA_ERR_ABORTED (Code 1), so
+    // the actionable message may name the codec or the corrupt file; both are
+    // friendly decodings of the failure, never a raw decoder string.
+    await expect(toast).toContainText(/format or codec|corrupt or use an unsupported format/)
 })
 
 test('adding an undecodable media layer surfaces a toast instead of failing silently', async ({ page }) => {
