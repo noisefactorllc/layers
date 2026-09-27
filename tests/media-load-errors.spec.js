@@ -86,7 +86,7 @@ test('adding an undecodable media layer surfaces a toast instead of failing sile
         return { status: outcome.status, message: outcome.error?.message }
     }, file)
 
-    expect(result.status).toBe('failed')
+    expect(result.status).toBe('decode-failed')
     expect(result.message).toContain('broken.png')
     expect(result.message).toContain("doesn’t support")
 

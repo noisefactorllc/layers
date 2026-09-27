@@ -2571,13 +2571,14 @@ class LayersApp {
                 // The human path previously failed silently here: the throw
                 // escaped past _runPointerMutation's FULL_RESOLUTION-only
                 // catch and never surfaced. Surface an actionable message and
-                // report failure to both callers; the agent path still maps
-                // {status:'failed'} to its RESOURCE_DECODE_FAILED command
-                // error.
+                // report a decode failure to both callers; a distinct
+                // 'decode-failed' status keeps the agent path's
+                // RESOURCE_DECODE_FAILED mapping separate from renderer
+                // commit/compile failures, which remain INTERNAL_ERROR.
                 console.error('[Layers] Failed to load media:', err)
                 const described = describeMediaLoadError(err, mediaType, file.name)
                 toast.error(described)
-                return { status: 'failed', error: new Error(described) }
+                return { status: 'decode-failed', error: new Error(described) }
             }
             if (!resource) throw new Error('Unsupported media resource')
             if (this._onlineAdapter?.isOnline()) {
