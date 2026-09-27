@@ -38,8 +38,8 @@ class LayerStack extends HTMLElement {
      * patched in place (or left untouched), so a property-only change such
      * as a visibility toggle does not tear down every control in the panel,
      * drop focus from the eye button, or re-create thumbnail canvases.
-     * Structural changes (add, remove, reorder, type change) still rebuild
-     * the affected items.
+     * Structural changes (add, remove, type change) rebuild the affected
+     * items; reorders are applied by repositioning items in place.
      *
      * @param {Array} layers - Array of layer objects (bottom to top order)
      */
@@ -184,12 +184,10 @@ class LayerStack extends HTMLElement {
             if (key) byKey.set(key, item)
         }
 
-        let structureChanged = items.length !== desired.length
         for (const entry of desired) {
             const key = this._entryKey(entry)
             const item = byKey.get(key)
             if (!item) {
-                structureChanged = true
                 const created = document.createElement('layer-item')
                 created.layer = entry.layer
                 if (entry.isBase) created.setAttribute('base', '')
@@ -222,23 +220,25 @@ class LayerStack extends HTMLElement {
         for (const [key, item] of byKey) {
             if (!desired.some(entry => this._entryKey(entry) === key)) {
                 item.remove()
-                structureChanged = true
             }
         }
 
-        // Re-append in display order only when the order actually changed, so
-        // a property-only toggle never moves (and therefore never blurs) a
-        // focused control.
-        const currentKeys = [...this.querySelectorAll('layer-item')]
-            .map(item => this._itemKey(item))
-        const desiredKeys = desired.map(entry => this._entryKey(entry))
-        if (structureChanged
-            || currentKeys.length !== desiredKeys.length
-            || currentKeys.some((key, i) => key !== desiredKeys[i])) {
-            for (const entry of desired) {
-                const item = byKey.get(this._entryKey(entry))
-                if (item) this.appendChild(item)
+        // Reorder with minimal moves: reparent only the items that are out
+        // of place. appendChild/insertBefore moves disconnect and reconnect
+        // the moved subtree, and layer items contain handfish dropdown and
+        // slider components whose connect/disconnect clobbers document-level
+        // bookkeeping — a full re-append pass after adding a top layer broke
+        // the menubar's focus restore (focus fell to body). A property-only
+        // toggle must move nothing at all.
+        let cursor = null
+        for (const entry of desired) {
+            const item = byKey.get(this._entryKey(entry))
+            if (!item) continue
+            const expected = cursor ? cursor.nextSibling : this.firstElementChild
+            if (expected !== item) {
+                this.insertBefore(item, cursor ? cursor.nextSibling : this.firstElementChild)
             }
+            cursor = item
         }
     }
 
