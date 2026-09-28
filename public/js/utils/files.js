@@ -78,6 +78,14 @@ export class Files {
         this.lastKeyFrame = null
         this.framesGenerated = 0
         this.ready = false
+        // Fatal error raised by the WebCodecs VideoEncoder, if any. Without
+        // this, encoder failures were console-only and the export still
+        // "succeeded" with a corrupt or empty MP4.
+        this._mp4EncoderError = null
+        // Per-run packet counters (a previous export must not leak failures
+        // into the next run's empty-output check).
+        this.videoPacketsAdded = 0
+        this.videoPacketsAddFailed = 0
         // captureOnly mode: when set by startRecordingMP4(), endRecordingMP4()
         // returns { blob, blobUrl, filename } instead of triggering download.
         this._mp4CaptureOnly = false
@@ -145,7 +153,12 @@ export class Files {
                         console.error('Failed to add video packet', error)
                     })
             },
-            error: e => console.error(e)
+            error: e => {
+                console.error('VideoEncoder fatal error', e)
+                // Record the failure so encodeVideoFrame / endRecordingMP4 can
+                // surface it instead of producing a corrupt "successful" file.
+                this._mp4EncoderError = this._mp4EncoderError || e
+            }
         })
         this.videoEncoder.configure({
             codec: 'avc1.4d0034',
@@ -162,6 +175,11 @@ export class Files {
     }
 
     encodeVideoFrame(canvas, settings) {
+        // A fatal encoder error stops the export here rather than spending
+        // the rest of the frame loop encoding frames that cannot finalize.
+        if (this._mp4EncoderError) {
+            throw this._mp4ExportFailedError(this._mp4EncoderError)
+        }
         const frameIndex = this.framesGenerated
         const timestampUs = Math.round(frameIndex * (1e6 / settings.framerate))
         const frame = new VideoFrame(canvas, {
@@ -177,49 +195,80 @@ export class Files {
         frame.close()
     }
 
+    _mp4ExportFailedError(cause) {
+        const reason = cause?.message || String(cause)
+        const error = new Error(
+            `MP4 encoding failed: ${reason}. Try a lower resolution or export PNG frames (ZIP) instead.`)
+        error.code = 'VIDEO_EXPORT_ENCODE_FAILED'
+        return error
+    }
+
+    _mp4EmptyExportError() {
+        const error = new Error(
+            'MP4 export produced no video data. Try a lower resolution or export PNG frames (ZIP) instead.')
+        error.code = 'VIDEO_EXPORT_EMPTY'
+        return error
+    }
+
     async endRecordingMP4() {
         this.recording = false
 
-        await this.videoEncoder?.flush()
-        this.videoEncoder?.close()
-
         try {
-            await this.pendingVideoPacketPromise
-        } catch (error) {
-            console.error('Failed to add video packet', error)
-        }
+            await this.videoEncoder?.flush()
+            this.videoEncoder?.close()
 
-        if (this.output) {
-            await this.output.finalize()
-        }
+            try {
+                await this.pendingVideoPacketPromise
+            } catch (error) {
+                console.error('Failed to add video packet', error)
+            }
 
-        // Snapshot captureOnly state before _resetMP4State() clears it.
-        const captureOnly = this._mp4CaptureOnly
-        const captureFilename = this._mp4CaptureFilename
+            if (this._mp4EncoderError) {
+                throw this._mp4ExportFailedError(this._mp4EncoderError)
+            }
 
-        const buffer = this.mp4Target?.buffer
-        let captureResult = null
-        if (buffer) {
-            const blob = new Blob([buffer], { type: 'video/mp4' })
-            const url = window.URL.createObjectURL(blob)
-            if (captureOnly) {
-                // Hand bytes back to the caller; no <a download> click.
-                // The object URL stays valid until the page unloads or the
-                // caller revokeObjectURLs it.
-                captureResult = {
-                    blob,
-                    blobUrl: url,
-                    filename: captureFilename || `layers-${Date.now()}.mp4`
+            // Packet-add failures are counted per packet; any lost packet
+            // corrupts the stream, so do not hand back a broken MP4.
+            if (this.videoPacketsAddFailed > 0) {
+                console.error(`${this.videoPacketsAddFailed} video packet(s) failed to add during export`)
+                throw this._mp4EmptyExportError()
+            }
+
+            if (this.output) {
+                await this.output.finalize()
+            }
+
+            // Snapshot captureOnly state before _resetMP4State() clears it.
+            const captureOnly = this._mp4CaptureOnly
+            const captureFilename = this._mp4CaptureFilename
+
+            const buffer = this.mp4Target?.buffer
+            let captureResult = null
+            if (buffer) {
+                const blob = new Blob([buffer], { type: 'video/mp4' })
+                const url = window.URL.createObjectURL(blob)
+                if (captureOnly) {
+                    // Hand bytes back to the caller; no <a download> click.
+                    // The object URL stays valid until the page unloads or the
+                    // caller revokeObjectURLs it.
+                    captureResult = {
+                        blob,
+                        blobUrl: url,
+                        filename: captureFilename || `layers-${Date.now()}.mp4`
+                    }
+                } else {
+                    this.downloadFile(url, 'mp4')
                 }
             } else {
-                this.downloadFile(url, 'mp4')
+                // Previously this path only logged and returned null, so the
+                // caller reported a successful export with no file at all.
+                throw this._mp4EmptyExportError()
             }
-        } else {
-            console.error('Unable to retrieve MP4 buffer from Mediabunny target')
-        }
 
-        this._resetMP4State()
-        return captureResult
+            return captureResult
+        } finally {
+            this._resetMP4State()
+        }
     }
 
     async cancelMP4() {
