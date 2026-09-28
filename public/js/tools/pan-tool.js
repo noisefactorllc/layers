@@ -12,7 +12,12 @@ const State = {
 }
 
 // Momentum glide tuning.
-const SAMPLE_WINDOW_MS = 100   // pointer history used for release velocity
+// The sample window is deliberately wide: in WebKit automation (and on
+// loaded CI runners) each synthetic pointer-move dispatch can land well
+// over 100 ms apart, so a narrow window would prune all but one sample
+// and no release velocity could be estimated. Real pointer input moves
+// every ~8-16 ms, so 250 ms still tracks only the final gesture segment.
+const SAMPLE_WINDOW_MS = 250
 const MIN_SAMPLE_DT_MS = 8     // ignore degenerate sample spans
 const GLIDE_START_SPEED = 0.25 // px/ms of scroll speed required to glide
 const GLIDE_STOP_SPEED = 0.02  // px/ms at which the glide ends
