@@ -151,8 +151,12 @@ export class PanTool {
         this._panel.scrollTop = this._scrollStartY - dy
 
         // Sample for release-velocity estimation (pruned window).
-        this._samples.push({ t: e.timeStamp, x: e.clientX, y: e.clientY })
-        const cutoff = e.timeStamp - SAMPLE_WINDOW_MS
+        // performance.now() rather than e.timeStamp: WebKit synthesizes
+        // CDP-driven pointer moves with identical event timestamps, which
+        // would collapse every sample window below the minimum span.
+        const t = performance.now()
+        this._samples.push({ t, x: e.clientX, y: e.clientY })
+        const cutoff = t - SAMPLE_WINDOW_MS
         while (this._samples.length > 2 && this._samples[0].t < cutoff) {
             this._samples.shift()
         }
