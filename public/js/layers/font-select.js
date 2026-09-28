@@ -69,7 +69,7 @@ if (!document.getElementById(FONT_SELECT_STYLES_ID)) {
         font-select .font-dialog {
             border: none;
             border-radius: var(--hf-radius-lg);
-            padding: 0 !important;
+            padding: 0;
             margin: auto;
             color: var(--hf-color-7);
             min-width: 280px;

@@ -170,6 +170,9 @@ export class ExportVideoDialog {
             this._savePreferences(settings)
             this._elements.dialogView.style.display = 'none'
             this._elements.progressView.style.display = 'block'
+            // Clear the error state left by a previous failed export so the
+            // bar starts this run with its default token gradient again.
+            this._elements.progressBar.style.background = ''
             this._updateProgress()
 
             this.state = 'exporting'
@@ -344,7 +347,7 @@ export class ExportVideoDialog {
 
     _handleExportError(err) {
         this._elements.progressText.textContent = `Error: ${err.message}`
-        this._elements.progressBar.style.background = 'var(--red, #e74c3c)'
+        this._elements.progressBar.style.background = 'var(--hf-red)'
         // Was a 3-second hold before close. Now: close after a short
         // confirmation pulse so the user sees the error but the UI doesn't
         // appear frozen. 800ms is enough to register the red bar but short

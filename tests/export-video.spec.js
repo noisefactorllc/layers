@@ -490,4 +490,73 @@ test.describe('Export Video Dialog', () => {
             lifecycleActive: false,
         })
     })
+
+    test('export error bar uses the design token, not a hardcoded color', async ({ page }) => {
+        await page.click('.hf-menubar-trigger:has-text("file")')
+        await page.click('#exportVideoMenuItem')
+        await expect(page.locator('#exportModal')).toBeVisible()
+
+        await page.evaluate(() =>
+            window.layersApp._exportVideoDialog._handleExportError(new Error('boom')))
+
+        const token = await page.evaluate(() => {
+            const probe = document.createElement('div')
+            probe.style.background = 'var(--hf-red)'
+            document.body.appendChild(probe)
+            const color = getComputedStyle(probe).backgroundColor
+            probe.remove()
+            return color
+        })
+        expect(token).not.toBe('none')
+        await expect(page.locator('#exportProgressBar')).toHaveCSS(
+            'background-color', token)
+        // The stale hardcoded fallback must be gone from the source path.
+        expect(page.locator('#exportProgressBar').evaluate(
+            el => el.style.background)).resolves.toContain('var(--hf-red)')
+    })
+
+    test('a new export after a failed one resets the progress bar to the default gradient', async ({ page }) => {
+        await page.click('.hf-menubar-trigger:has-text("file")')
+        await page.click('#exportVideoMenuItem')
+        // The error path schedules an 800 ms auto-close timer; swallow
+        // exactly that timer so slow runs can't close the dialog mid-test.
+        await page.evaluate(() => {
+            const dialog = window.layersApp._exportVideoDialog
+            const realSetTimeout = window.setTimeout
+            window.setTimeout = (fn, ms, ...rest) =>
+                ms === 800 ? 0 : realSetTimeout(fn, ms, ...rest)
+            dialog._handleExportError(new Error('boom'))
+            window.setTimeout = realSetTimeout
+            // Swallowing the auto-close timer leaves the modal open; close it
+            // like the timer would so the reopen below can click the menu.
+            dialog.close()
+        })
+
+        // Reopen and start a fresh export.
+        await page.click('.hf-menubar-trigger:has-text("file")')
+        await page.click('#exportVideoMenuItem')
+        await beginTinyZipExport(page)
+
+        const after = await page.evaluate(() => {
+            const bar = document.getElementById('exportProgressBar')
+            const probe = document.createElement('div')
+            probe.style.background = 'var(--hf-red)'
+            document.body.appendChild(probe)
+            const red = getComputedStyle(probe).backgroundColor
+            probe.remove()
+            return {
+                inline: bar.style.background,
+                computed: getComputedStyle(bar).backgroundColor,
+                image: getComputedStyle(bar).backgroundImage,
+                red,
+            }
+        })
+        // The failed run's red inline background is gone: the bar renders its
+        // default token gradient again.
+        expect(after.inline).toBe('')
+        expect(after.computed).not.toBe(after.red)
+        expect(after.image).toContain('linear-gradient')
+
+        await cancelExport(page)
+    })
 })
