@@ -87,6 +87,13 @@ class SelectionManager {
         /** @type {number} */
         this._dashOffset = 0
 
+        // Unquantized march phase (pixels along the dash period [0, 10)).
+        // Advanced by elapsed time, not per frame, so the ants crawl at the
+        // same speed on 60 Hz and 120 Hz displays; _dashOffset is its
+        // 0.5 px-quantized view, and only changes to it trigger a repaint.
+        /** @type {number} */
+        this._marchPhase = 0
+
         // Cached Path2D for the selection outline. Rebuilt only when
         // _selectionPath changes (it is always reassigned, never mutated in
         // place), so the marching-ants loop reuses the geometry instead of
@@ -1003,12 +1010,33 @@ class SelectionManager {
         }
         if (this._animationId) return
 
-        const animate = () => {
-            this._dashOffset = (this._dashOffset + 0.5) % 10
-            this._drawMarchingAnts()
+        // Time-based marching: advance the dash phase by elapsed milliseconds
+        // at a constant 30 px/s (the legacy 0.5 px/frame at 60 Hz), so the
+        // crawl speed is identical on 60 Hz and 120 Hz displays instead of
+        // doubling with refresh rate. Redraws are quantized to 0.5 px phase
+        // steps — the dash geometry only changes then — capping the repaint
+        // rate at ~20 frames/s regardless of display refresh, which halves
+        // (or quarters, on 120 Hz) the per-second overlay clear + double
+        // stroke cost for large selections at high zoom.
+        let last = null
+        const animate = (now) => {
+            if (last !== null) {
+                const dt = Math.min(Math.max(now - last, 0), 250)
+                this._marchPhase = (this._marchPhase + dt * 0.03) % 10
+            }
+            last = now
+            const prev = this._dashOffset
+            this._dashOffset = Math.floor(this._marchPhase * 2) * 0.5
+            if (this._dashOffset !== prev) {
+                this._drawMarchingAnts()
+            }
             this._animationId = requestAnimationFrame(animate)
         }
 
+        // Paint the initial ants frame immediately so a fresh selection is
+        // visible without waiting for the first quantized step.
+        this._dashOffset = Math.floor(this._marchPhase * 2) * 0.5
+        this._drawMarchingAnts()
         this._animationId = requestAnimationFrame(animate)
     }
 
