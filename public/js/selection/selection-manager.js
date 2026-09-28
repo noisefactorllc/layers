@@ -1015,9 +1015,9 @@ class SelectionManager {
         // crawl speed is identical on 60 Hz and 120 Hz displays instead of
         // doubling with refresh rate. Redraws are quantized to 0.5 px phase
         // steps — the dash geometry only changes then — capping the repaint
-        // rate at ~20 frames/s regardless of display refresh, which halves
-        // (or quarters, on 120 Hz) the per-second overlay clear + double
-        // stroke cost for large selections at high zoom.
+        // rate at ~60 redraws/s regardless of display refresh, which halves
+        // the per-second overlay clear + double stroke cost on 120 Hz
+        // displays for large selections at high zoom.
         let last = null
         const animate = (now) => {
             if (last !== null) {
