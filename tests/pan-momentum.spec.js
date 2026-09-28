@@ -7,6 +7,13 @@ import { pausePlayback } from './helpers/new-project.js'
  * velocity hands off to an exponentially decaying scroll glide; any new
  * interaction over the panel (pointerdown, wheel, pinch) stops it, and a
  * slow drag release never glides.
+ *
+ * The gesture is driven by explicit synthetic PointerEvents (dispatch from
+ * page.evaluate): automation input does not carry usable pointer-event
+ * payload in every engine (WebKit CI synthesized pointer moves without
+ * usable event data, so the glide never saw a valid sample window), while
+ * the dispatch path is engine-identical and exercises the same PanTool
+ * handlers the real input path uses.
  */
 test.describe('Pan Momentum Glide', () => {
     test.beforeEach(async ({ page }) => {
@@ -20,6 +27,8 @@ test.describe('Pan Momentum Glide', () => {
         await page.waitForTimeout(100)
     })
 
+    const POINTER_ID = 7
+
     async function centerScroll(page) {
         return page.evaluate(() => {
             const panel = document.getElementById('canvas-panel')
@@ -29,22 +38,38 @@ test.describe('Pan Momentum Glide', () => {
         })
     }
 
-    async function flickPan(page, dx, dy) {
-        const panel = page.locator('#canvas-panel')
-        const box = await panel.boundingBox()
-        const startX = box.x + box.width / 2
-        const startY = box.y + box.height / 2
+    async function dispatchPointer(page, type, x, y) {
+        await page.evaluate(({ type, x, y, pointerId }) => {
+            const panel = document.getElementById('canvas-panel')
+            const rect = panel.getBoundingClientRect()
+            panel.dispatchEvent(new PointerEvent(type, {
+                bubbles: true,
+                composed: true,
+                pointerId,
+                pointerType: 'mouse',
+                isPrimary: true,
+                button: type === 'pointermove' ? -1 : 0,
+                buttons: type === 'pointerup' ? 0 : 1,
+                clientX: rect.left + x,
+                clientY: rect.top + y,
+            }))
+        }, { type, x, y, pointerId: POINTER_ID })
+    }
 
-        await page.mouse.move(startX, startY)
-        await page.mouse.down()
-        // Fast flick: several quick moves with small waits so the sample
-        // window spans > 8ms with high pointer velocity.
+    async function flickPan(page, dx, dy) {
+        const box = await page.locator('#canvas-panel').boundingBox()
+        const startX = box.width / 2
+        const startY = box.height / 2
+
+        await dispatchPointer(page, 'pointerdown', startX, startY)
+        // Fast flick: several quick moves with small real waits so the
+        // velocity sample window spans > 8ms with high pointer speed.
         const steps = 6
         for (let i = 1; i <= steps; i++) {
-            await page.mouse.move(startX + (dx * i) / steps, startY + (dy * i) / steps)
+            await dispatchPointer(page, 'pointermove', startX + (dx * i) / steps, startY + (dy * i) / steps)
             await page.waitForTimeout(10)
         }
-        await page.mouse.up()
+        await dispatchPointer(page, 'pointerup', startX + dx, startY + dy)
     }
 
     test('a fast flick glide continues scrolling after pointer release and decays', async ({ page }) => {
@@ -76,11 +101,9 @@ test.describe('Pan Momentum Glide', () => {
         await expect.poll(async () => page.evaluate(() => window.layersApp._panTool.isGliding))
             .toBe(true)
 
-        const panel = page.locator('#canvas-panel')
-        const box = await panel.boundingBox()
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-        await page.mouse.down()
-        await page.mouse.up()
+        const box = await page.locator('#canvas-panel').boundingBox()
+        await dispatchPointer(page, 'pointerdown', box.width / 2, box.height / 2)
+        await dispatchPointer(page, 'pointerup', box.width / 2, box.height / 2)
 
         expect(await page.evaluate(() => window.layersApp._panTool.isGliding)).toBe(false)
     })
@@ -102,22 +125,14 @@ test.describe('Pan Momentum Glide', () => {
         await page.evaluate(() => window.layersApp._setToolMode('pan'))
         await centerScroll(page)
 
-        const panel = page.locator('#canvas-panel')
-        const box = await panel.boundingBox()
-        const startX = box.x + box.width / 2
-        const startY = box.y + box.height / 2
-
-        await page.mouse.move(startX, startY)
-        await page.mouse.down()
         // Slow drag: small moves spaced by real waits so the pointer speed
         // stays ~0.1 px/ms, below the glide threshold.
-        await page.mouse.move(startX - 15, startY)
-        await page.waitForTimeout(150)
-        await page.mouse.move(startX - 30, startY)
-        await page.waitForTimeout(150)
-        await page.mouse.move(startX - 45, startY)
-        await page.waitForTimeout(150)
-        await page.mouse.up()
+        await dispatchPointer(page, 'pointerdown', 400, 300)
+        for (let i = 1; i <= 3; i++) {
+            await dispatchPointer(page, 'pointermove', 400 - 15 * i, 300)
+            await page.waitForTimeout(150)
+        }
+        await dispatchPointer(page, 'pointerup', 355, 300)
 
         const s1 = await page.evaluate(() => document.getElementById('canvas-panel').scrollLeft)
         await page.waitForTimeout(150)
