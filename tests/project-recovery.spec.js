@@ -349,8 +349,8 @@ test('restoring a deferred copy adopts its slot, preserves it on failed save, an
     await page.getByRole('button', { name: 'Keep for later', exact: true }).click()
     await page.evaluate(() => window.layersApp._showRecoveryDialog())
     await page.getByRole('button', { name: 'Restore', exact: true }).click()
-    await expect.poll(() => page.evaluate(() => window.layersApp._layers.length)).toBe(1)
-    expect(await page.evaluate(() => window.layersApp._recovery._id)).toBe(original)
+    await expect.poll(() => page.evaluate(() => window.layersApp._recovery._id)).toBe(original)
+    expect(await page.evaluate(() => window.layersApp._layers.length)).toBe(1)
     const failed = await page.evaluate(async () => {
         const app = window.layersApp, capture = app._capturePersistableProject
         app._capturePersistableProject = async () => { throw new Error('injected durable save failure') }
