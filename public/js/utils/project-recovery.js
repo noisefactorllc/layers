@@ -1,5 +1,7 @@
 import { writeTransaction } from './idb.js'
 
+const MAX_RECOVERIES = 3
+
 let databasePromise
 function database() {
     if (!databasePromise) {
@@ -17,16 +19,27 @@ function database() {
     return databasePromise
 }
 
+function pruneRecoveries(db, snapshot) {
+    return writeTransaction(db, 'documents', tx => {
+        const store = tx.objectStore('documents')
+        const retained = []
+        if (snapshot) store.put(snapshot)
+        const request = store.getAll()
+        request.onsuccess = () => {
+            const records = request.result.sort((a, b) => b.modifiedAt - a.modifiedAt
+                || Number(b.id === snapshot?.id) - Number(a.id === snapshot?.id))
+            retained.push(...records.slice(0, MAX_RECOVERIES))
+            for (const record of records.slice(MAX_RECOVERIES)) store.delete(record.id)
+        }
+        return retained
+    })
+}
+
 export async function listRecoveries({ ownedId } = {}) {
     if (ownedId === undefined) {
         try { ownedId = sessionStorage.getItem('layers-recovery-id') } catch {}
     }
-    const db = await database()
-    const records = await new Promise((resolve, reject) => {
-        const request = db.transaction('documents').objectStore('documents').getAll()
-        request.onsuccess = () => resolve(request.result.sort((a, b) => b.modifiedAt - a.modifiedAt))
-        request.onerror = () => reject(request.error)
-    })
+    const records = await pruneRecoveries(await database())
     if (!navigator.locks?.query) return records
     const { held } = await navigator.locks.query()
     const live = new Set(held.map(lock => lock.name))
@@ -139,9 +152,7 @@ export class ProjectRecovery {
             const id = await this._id
             const db = await database()
             if (generation !== this._generation) return
-            await writeTransaction(db, 'documents', tx => {
-                tx.objectStore('documents').put({ ...snapshot, id, modifiedAt: Date.now() })
-            })
+            await pruneRecoveries(db, { ...snapshot, id, modifiedAt: Date.now() })
             this._warned = false
         })
         this._tail = operation.catch(error => this._report(error))

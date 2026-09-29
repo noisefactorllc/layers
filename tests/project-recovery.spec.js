@@ -242,6 +242,75 @@ async function recoveryHarness(page) {
     await page.goto('/__recovery_test__')
 }
 
+async function storedRecoveryNames(page) {
+    return page.evaluate(async () => {
+        const request = indexedDB.open('layers-recovery')
+        const db = await new Promise(resolve => { request.onsuccess = () => resolve(request.result) })
+        try {
+            return await new Promise(resolve => {
+                const rows = db.transaction('documents').objectStore('documents').getAll()
+                rows.onsuccess = () => resolve(rows.result
+                    .sort((a, b) => b.modifiedAt - a.modifiedAt).map(row => row.name))
+            })
+        } finally { db.close() }
+    })
+}
+
+test('listing existing recovery copies permanently keeps only the three most recently modified', async ({ page }) => {
+    await recoveryHarness(page)
+    const names = await page.evaluate(async () => {
+        const { listRecoveries } = await import('/js/utils/project-recovery.js')
+        await listRecoveries()
+        const request = indexedDB.open('layers-recovery')
+        const db = await new Promise(resolve => { request.onsuccess = () => resolve(request.result) })
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction('documents', 'readwrite')
+            for (const [id, modifiedAt] of [['a', 20], ['b', 50], ['c', 10], ['d', 40], ['e', 30]]) {
+                tx.objectStore('documents').put({ id, name: id, modifiedAt, layers: [] })
+            }
+            tx.oncomplete = resolve
+            tx.onabort = () => reject(tx.error)
+        })
+        db.close()
+        return (await listRecoveries()).map(row => row.name)
+    })
+    expect(names).toEqual(['b', 'd', 'e'])
+    expect(await storedRecoveryNames(page)).toEqual(['b', 'd', 'e'])
+})
+
+test('checkpoint writes evict older compositions and editing a copy refreshes its recency', async ({ page }) => {
+    await recoveryHarness(page)
+    await page.evaluate(async () => {
+        const { ProjectRecovery } = await import('/js/utils/project-recovery.js')
+        const now = Date.now
+        let time = now()
+        Date.now = () => ++time
+        try {
+            let dirty = true, name = 'first'
+            const journal = new ProjectRecovery({ capture: async () => ({ name, layers: [] }),
+                isDirty: () => dirty, onError: error => { throw error } })
+            const ids = []
+            for (name of ['first', 'second', 'third']) {
+                await journal.flush()
+                ids.push(await journal._id)
+                dirty = false
+                await journal.retain()
+                dirty = true
+            }
+            await journal.restore(ids[0], async () => true)
+            name = 'first edited'
+            await journal.flush()
+            dirty = false
+            await journal.retain()
+            dirty = true
+            name = 'fourth'
+            await journal.flush()
+            dirty = false
+        } finally { Date.now = now }
+    })
+    expect(await storedRecoveryNames(page)).toEqual(['fourth', 'first edited', 'third'])
+})
+
 test('Keep for later releases its old ownership only after pending work settles', async ({ page, context }) => {
     await recoveryHarness(page)
     const original = await page.evaluate(async () => {
