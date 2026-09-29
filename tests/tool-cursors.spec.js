@@ -34,4 +34,18 @@ test.describe('Per-tool canvas cursor', () => {
                 `tool ${tool}`).toBe(cursor)
         }
     })
+
+    test('transform tool applies its cursor class over the canvas', async ({ page }) => {
+        const overlay = page.locator('#selectionOverlay')
+
+        // Transform needs a media or drawing layer (app.js warns and refuses
+        // otherwise); the clean boot canvas has none, so add a drawing layer.
+        await page.evaluate(() => window.LayersAgent.addLayer({ kind: 'drawing' }))
+        await page.keyboard.press('t')
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('transform')
+        await expect(overlay).toHaveClass(/transform-tool/)
+        // The class rule is the resting cursor; TransformTool only overrides
+        // it with a dynamic style.cursor while the pointer moves over handles.
+        expect(await overlay.evaluate(el => window.getComputedStyle(el).cursor)).toBe('default')
+    })
 })
