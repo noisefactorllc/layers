@@ -32,6 +32,7 @@ export class ExportVideoDialog {
         this.startTime = 0
         this._projectGeneration = 0
         this._pausedForExport = false
+        this._errorCloseTimer = null
 
         this._dialog = null
         this._elements = {}
@@ -98,6 +99,12 @@ export class ExportVideoDialog {
         if (!this._dialog) return
         this._removeEventListeners()
         this._dialog.close()
+        // A stale error auto-close timer must never close a dialog opened
+        // after the failed export, nor fire onCancel against a new export.
+        if (this._errorCloseTimer) {
+            clearTimeout(this._errorCloseTimer)
+            this._errorCloseTimer = null
+        }
 
         this.state = 'idle'
     }
@@ -352,7 +359,13 @@ export class ExportVideoDialog {
         // confirmation pulse so the user sees the error but the UI doesn't
         // appear frozen. 800ms is enough to register the red bar but short
         // enough to feel responsive.
-        setTimeout(() => {
+        this._errorCloseTimer = setTimeout(() => {
+            this._errorCloseTimer = null
+            // Only close the dialog that is still showing this failed run's
+            // progress view: if the dialog moved on (reopened — progress view
+            // hidden), a stale auto-close must not close it or cancel a new
+            // export.
+            if (this._elements.progressView?.style.display !== 'block') return
             this.close()
             this.onCancel()
         }, 800)

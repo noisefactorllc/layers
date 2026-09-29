@@ -559,4 +559,37 @@ test.describe('Export Video Dialog', () => {
 
         await cancelExport(page)
     })
+
+    test('the error auto-close timer fires and closes the failed run dialog', async ({ page }) => {
+        await page.click('.hf-menubar-trigger:has-text("file")')
+        await page.click('#exportVideoMenuItem')
+        await expect(page.locator('#exportModal')).toBeVisible()
+
+        await page.evaluate(() => {
+            const dialog = window.layersApp._exportVideoDialog
+            // Mimic the failed-run state: the progress view is showing.
+            dialog._elements.progressView.style.display = 'block'
+            dialog._handleExportError(new Error('boom'))
+        })
+
+        await expect(page.locator('#exportModal')).not.toBeVisible({ timeout: 3000 })
+    })
+
+    test('the error auto-close timer cannot close a dialog that left the failed run', async ({ page }) => {
+        await page.click('.hf-menubar-trigger:has-text("file")')
+        await page.click('#exportVideoMenuItem')
+        await expect(page.locator('#exportModal')).toBeVisible()
+
+        await page.evaluate(() => {
+            const dialog = window.layersApp._exportVideoDialog
+            dialog._handleExportError(new Error('boom'))
+            // Simulate the dialog having moved on to a new session while the
+            // 800 ms auto-close timer from the failed run is still pending:
+            // a reopened dialog hides the progress view.
+            dialog._elements.progressView.style.display = 'none'
+        })
+
+        await page.waitForTimeout(1000)
+        await expect(page.locator('#exportModal')).toBeVisible()
+    })
 })
