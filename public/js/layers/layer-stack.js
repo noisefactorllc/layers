@@ -19,12 +19,20 @@ class LayerStack extends HTMLElement {
         this._layers = []
         this._selectedLayerIds = new Set()
         this._lastClickedLayerId = null  // For shift-click range
+        this._edgeScrollFrame = null     // rAF id while auto-scrolling
+        this._edgeScrollDir = 0          // -1 toward the top edge, 1 toward the bottom
+        this._edgeScrollY = 0            // last dragover pointer Y
     }
 
     connectedCallback() {
         this._render()
         this._setupEventListeners()
     }
+
+    disconnectedCallback() {
+        this._stopEdgeAutoScroll()
+    }
+
 
     _firstSelectedId() {
         return this._selectedLayerIds.values().next().value ?? null
@@ -310,6 +318,84 @@ class LayerStack extends HTMLElement {
 
             this._updateSelection()
         })
+
+        // Edge auto-scroll during a layer drag: a long stack cannot show all
+        // rows at once, and a native drag near the panel's top/bottom edge
+        // would otherwise be unable to reach off-screen rows.
+        this.addEventListener('dragover', (e) => this._handleEdgeAutoScroll(e))
+        this.addEventListener('dragend', () => this._stopEdgeAutoScroll())
+        this.addEventListener('drop', () => this._stopEdgeAutoScroll())
+        this.addEventListener('dragleave', (e) => {
+            if (!this.contains(e.relatedTarget)) this._stopEdgeAutoScroll()
+        })
+    }
+
+    /**
+     * Scroll the layers list while a drag pointer hovers near its top or
+     * bottom edge, so off-screen rows become reachable drop targets.
+     * @param {DragEvent} e
+     * @private
+     */
+    _handleEdgeAutoScroll(e) {
+        const list = this.closest('.layers-list')
+        if (!list) return
+        this._edgeScrollY = e.clientY
+
+        const rect = list.getBoundingClientRect()
+        const edge = 36
+        let dir = 0
+        if (e.clientY < rect.top + edge) dir = -1
+        else if (e.clientY > rect.bottom - edge) dir = 1
+
+        if (dir === 0) {
+            this._stopEdgeAutoScroll()
+            return
+        }
+
+        if (this._edgeScrollDir === dir && this._edgeScrollFrame !== null) return
+        this._edgeScrollDir = dir
+        this._startEdgeScrollLoop(list)
+    }
+
+    /**
+     * rAF loop: scroll a step toward the hovered edge, then continue while
+     * the pointer stays in the edge zone.
+     * @param {HTMLElement} list - the scrollable layers list
+     * @private
+     */
+    _startEdgeScrollLoop(list) {
+        if (this._edgeScrollFrame !== null) return
+        const step = () => {
+            this._edgeScrollFrame = null
+            const rect = list.getBoundingClientRect()
+            const edge = 36
+            const y = this._edgeScrollY
+            let dir = 0
+            if (y < rect.top + edge) dir = -1
+            else if (y > rect.bottom - edge) dir = 1
+
+            if (dir === 0 || this._edgeScrollDir === 0) {
+                this._edgeScrollDir = 0
+                return
+            }
+            // Speed ramps with how deep the pointer sits in the edge zone.
+            const depth = dir > 0
+                ? y - (rect.bottom - edge)
+                : (rect.top + edge) - y
+            const speed = 4 + 10 * Math.min(1, Math.max(0, depth / edge))
+            list.scrollTop += dir * speed
+            this._edgeScrollFrame = requestAnimationFrame(step)
+        }
+        this._edgeScrollFrame = requestAnimationFrame(step)
+    }
+
+    /** Stop the edge auto-scroll loop (drag ended, left the panel, or moved off the edges). */
+    _stopEdgeAutoScroll() {
+        this._edgeScrollDir = 0
+        if (this._edgeScrollFrame !== null) {
+            cancelAnimationFrame(this._edgeScrollFrame)
+            this._edgeScrollFrame = null
+        }
     }
 
     /**
