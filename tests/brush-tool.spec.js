@@ -7,6 +7,10 @@ async function createTransparentProject(page) {
     await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    // 512 canvas: same semantics, 4x fewer pixels per composited frame
+    // (shard-cost trim; stroke coordinates stay relative to the overlay box).
+    await page.fill('#canvas-width', '512')
+    await page.fill('#canvas-height', '512')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await appReady(page)

@@ -9,6 +9,9 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 // the original regression report: mousing over a layer's param controls must
 // not trigger DSL rebuilds.
 
+// `size` defaults the caller's canvas choice; 512 (instead of the 1024
+// default) quarters the composited frame cost — the overlay's show/hide
+// behavior is size-independent, and one case already runs at 128.
 async function loadWithSolidBase(page, size) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
@@ -50,7 +53,7 @@ function readOverlayWatch(page) {
 }
 
 test('overlay exists and is hidden at rest', async ({ page }) => {
-    await loadWithSolidBase(page)
+    await loadWithSolidBase(page, 512)
     const overlay = page.locator('#compile-overlay')
     await expect(overlay).toHaveCount(1)
     await expect(overlay).not.toHaveClass(/visible/)
@@ -58,7 +61,7 @@ test('overlay exists and is hidden at rest', async ({ page }) => {
 })
 
 test('overlay shows during a real compile and hides after', async ({ page }) => {
-    await loadWithSolidBase(page)
+    await loadWithSolidBase(page, 512)
 
     // Hold the engine compile open behind a gate so the in-flight state is
     // deterministic, then force a rebuild.
@@ -91,7 +94,7 @@ test('uniform-only param changes update without compiling or showing the overlay
     page.on('console', msg => {
         if (msg.text().includes('[LayersRenderer] Built DSL:')) dslCompiles.push(msg.text())
     })
-    await loadWithSolidBase(page)
+    await loadWithSolidBase(page, 512)
 
     const setup = await page.evaluate(async () => {
         const app = window.layersApp
