@@ -3513,6 +3513,9 @@ class LayersApp {
     _reorderLayer(layerId, toIndex) {
         const fromIndex = this._layers.findIndex(layer => layer.id === layerId)
         if (fromIndex <= 0 || toIndex <= 0) return
+        // Reordering a layer to its own index is a no-op: committing it
+        // would only force a rebuild and mark the project dirty.
+        if (fromIndex === toIndex) return { status: 'committed' }
         return this._commitModelMutation(() => {
             const [moved] = this._layers.splice(fromIndex, 1)
             this._layers.splice(toIndex, 0, moved)
@@ -3524,6 +3527,7 @@ class LayersApp {
         const parent = this._layers.find(layer => layer.id === parentLayerId)
         const fromIndex = parent?.children?.findIndex(child => child.id === childId) ?? -1
         if (fromIndex < 0) return
+        if (fromIndex === toIndex) return { status: 'committed' }
         return this._commitModelMutation(() => {
             const [moved] = parent.children.splice(fromIndex, 1)
             parent.children.splice(toIndex, 0, moved)
@@ -3700,6 +3704,21 @@ class LayersApp {
                 this._reorderSnapshot = null
                 this._reorderSource = null
                 return
+            }
+
+            // A drop that reproduces the current order (a drag released over
+            // the slot the layer already occupies) is a no-op: recompiling
+            // the DSL, forcing a rebuild and marking the project dirty for
+            // an unchanged model would churn the recovery save and the
+            // unsaved-changes state for nothing.
+            const unchanged = newLayers.length === this._layers.length
+                && newLayers.every((layer, index) => layer === this._layers[index])
+            if (unchanged) {
+                this._reorderState = 'IDLE'
+                this._reorderSnapshot = null
+                this._reorderSource = null
+                console.debug('[Layers] FSM: PROCESSING → IDLE (no-op drop)')
+                return { status: 'committed' }
             }
 
             // Generate and validate new DSL

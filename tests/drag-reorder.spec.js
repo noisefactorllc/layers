@@ -95,3 +95,117 @@ test.describe('Layer drag reorder', () => {
         expect(visibility).toBe('hidden')
     })
 })
+
+test.describe('Layer drag no-op drop', () => {
+    test('dropping a layer back into its current slot is a state no-op', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+        await addEffectLayer(page, 'blur')
+        await addEffectLayer(page, 'warp')
+
+        const readState = () => page.evaluate(() => {
+            const app = window.layersApp
+            return {
+                order: app._layers.map(l => l.id),
+                revision: app._projectMutationRevision,
+                dirty: app._isDirty,
+                undoStackLength: app._undoManager._stack.length,
+                undoIndex: app._undoManager._index,
+            }
+        })
+        const before = await readState()
+
+        // Dropping blur (index 1) 'below' warp (index 2) removes blur and
+        // re-inserts it at its own index — the exact same order. This is the
+        // real-user gesture of releasing a small drag over the slot the
+        // layer already occupies.
+        const drop = await page.evaluate(async () => {
+            const app = window.layersApp
+            const sourceId = app._layers[1].id
+            const targetId = app._layers[2].id
+            app._startDrag(sourceId)
+            const outcome = await app._processDrop(targetId, 'below')
+            return { outcome, state: app._reorderState }
+        })
+        expect(drop.outcome?.status).toBe('committed')
+        expect(drop.state).toBe('IDLE')
+
+        const after = await readState()
+        expect(after.order).toEqual(before.order)
+        expect(after.revision).toBe(before.revision)
+        expect(after.dirty).toBe(before.dirty)
+        expect(after.undoStackLength).toBe(before.undoStackLength)
+        expect(after.undoIndex).toBe(before.undoIndex)
+    })
+
+    test('a real reorder after a no-op drop still commits state', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+        await addEffectLayer(page, 'blur')
+        await addEffectLayer(page, 'warp')
+
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            const revisionAt = () => app._projectMutationRevision
+            const order = () => app._layers.map(l => l.id)
+            const beforeOrder = order()
+            const beforeRevision = revisionAt()
+
+            // No-op drop first (blur 'below' warp reproduces the order).
+            app._startDrag(app._layers[1].id)
+            await app._processDrop(app._layers[2].id, 'below')
+            const afterNoOpRevision = revisionAt()
+            const afterNoOpOrder = order()
+
+            // Then a real reorder: dropping blur 'above' warp swaps them.
+            app._startDrag(app._layers[1].id)
+            await app._processDrop(app._layers[2].id, 'above')
+            const afterRealRevision = revisionAt()
+            const afterRealOrder = order()
+            return {
+                beforeOrder, beforeRevision,
+                afterNoOpRevision, afterNoOpOrder,
+                afterRealRevision, afterRealOrder,
+                state: app._reorderState,
+            }
+        })
+        expect(result.afterNoOpRevision).toBe(result.beforeRevision)
+        expect(result.afterNoOpOrder).toEqual(result.beforeOrder)
+        expect(result.afterRealRevision).toBeGreaterThan(result.afterNoOpRevision)
+        expect(result.afterRealOrder).toEqual([
+            result.beforeOrder[0], result.beforeOrder[2], result.beforeOrder[1],
+        ])
+        expect(result.state).toBe('IDLE')
+    })
+
+    test('agent reorderLayer to its own index is a state no-op', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await createTransparentProject(page)
+        await addEffectLayer(page, 'blur')
+        await addEffectLayer(page, 'warp')
+
+        const readState = () => page.evaluate(() => {
+            const app = window.layersApp
+            return {
+                order: app._layers.map(l => l.id),
+                revision: app._projectMutationRevision,
+                dirty: app._isDirty,
+                undoStackLength: app._undoManager._stack.length,
+            }
+        })
+        const before = await readState()
+
+        const env = await page.evaluate((id) =>
+            window.LayersAgent.reorderLayer({ layerId: id, toIndex: 1 }), before.order[1])
+        expect(env.ok).toBe(true)
+
+        const after = await readState()
+        expect(after.order).toEqual(before.order)
+        expect(after.revision).toBe(before.revision)
+        expect(after.dirty).toBe(before.dirty)
+        expect(after.undoStackLength).toBe(before.undoStackLength)
+    })
+})
