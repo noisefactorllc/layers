@@ -7,10 +7,12 @@ test.describe('Export Image Dialog', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
-        // Create a solid base layer
+        // Create a solid base layer, small: a 512-preset canvas cuts
+        // compositing cost 4x; the dialog-dims test asserts the created size.
         await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+        await page.click('.size-preset[data-width="512"]')
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
         await appReady(page)
@@ -25,11 +27,11 @@ test.describe('Export Image Dialog', () => {
         const dialog = page.locator('#exportImageModal')
         await expect(dialog).toBeVisible()
 
-        // Width/height should match canvas (1024x1024 default)
+        // Width/height should match canvas (512x512 created size)
         const width = await page.locator('#exportImageWidth').inputValue()
         const height = await page.locator('#exportImageHeight').inputValue()
-        expect(width).toBe('1024')
-        expect(height).toBe('1024')
+        expect(width).toBe('512')
+        expect(height).toBe('512')
     })
 
     test('closes on cancel button', async ({ page }) => {
@@ -102,7 +104,7 @@ test.describe('Export Image Dialog', () => {
         expect(result).toEqual({
             acquisitions: 0,
             state: 'dialog',
-            size: [1024, 1024],
+            size: [512, 512],
             lifecycleActive: false,
         })
     })
@@ -164,8 +166,8 @@ test.describe('Export Image Dialog', () => {
         expect(result).toEqual({
             error: null,
             state: 'dialog',
-            width: 1024,
-            height: 1024,
+            width: 512,
+            height: 512,
             lifecycleActive: false,
         })
     })
@@ -191,7 +193,7 @@ test.describe('Export Image Dialog', () => {
         })
 
         expect(result).toEqual({
-            savedSize: [1024, 1024],
+            savedSize: [512, 512],
             finalSize: [800, 600],
             lifecycleActive: false,
         })
@@ -321,7 +323,7 @@ test.describe('Export Image Dialog', () => {
 
         expect(result).toEqual({
             savedSize: [65, 67],
-            finalSize: [1024, 1024],
+            finalSize: [512, 512],
             lifecycleActive: false,
         })
     })

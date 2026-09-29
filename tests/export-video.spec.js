@@ -23,10 +23,14 @@ test.describe('Export Video Dialog', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
-        // Create a solid base layer
+        // Create a solid base layer, small: a 512-preset canvas cuts the
+        // per-frame compositing these real-encode tests pay by 4x, and every
+        // dimension-sensitive assertion below reads the live canvas or asserts
+        // the created size.
         await reopenNewProjectDialog(page)
         await page.click('.media-option[data-type="solid"]')
         await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+        await page.click('.size-preset[data-width="512"]')
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
         await appReady(page)
@@ -41,8 +45,8 @@ test.describe('Export Video Dialog', () => {
 
         const width = await page.locator('#exportWidth').inputValue()
         const height = await page.locator('#exportHeight').inputValue()
-        expect(width).toBe('1024')
-        expect(height).toBe('1024')
+        expect(width).toBe('512')
+        expect(height).toBe('512')
     })
 
     test('shows settings view initially, not progress', async ({ page }) => {

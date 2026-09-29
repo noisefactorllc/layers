@@ -39,9 +39,14 @@ async function waitForPixelChange(page, x, yTop, before, timeout = 20000) {
 async function bootSolidProject(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+
+    // Small solid project: the tests read pixels relative to the live canvas
+    // size, so a 512-preset canvas (4x fewer pixels per frame) keeps every
+    // assertion's fact while cutting compositing cost.
     await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    await page.click('.size-preset[data-width="512"]')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     // The dialog hides the moment it is dismissed; the project it asked for is
