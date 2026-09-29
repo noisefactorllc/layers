@@ -35,9 +35,10 @@
     cursor: crosshair;
 }
 
-/* Eraser tool cursor */
+/* Eraser cursor — crosshair like every other paint tool (Photoshop parity;
+   the hand pointer implies a clickable UI, not a paint surface) */
 #selectionOverlay.eraser-tool {
-    cursor: pointer;
+    cursor: crosshair;
 }
 
 /* Shape tool cursor */
