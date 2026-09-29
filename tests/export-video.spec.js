@@ -562,11 +562,25 @@ test.describe('Export Video Dialog error chrome (no project needed)', () => {
             return color
         })
         expect(token).not.toBe('none')
-        await expect(page.locator('#exportProgressBar')).toHaveCSS(
-            'background-color', token)
-        // The stale hardcoded fallback must be gone from the source path.
-        expect(page.locator('#exportProgressBar').evaluate(
-            el => el.style.background)).resolves.toContain('var(--hf-red)')
+        // One-shot evaluate: read the bar's inline and computed colors plus a
+        // fresh token probe in the same pass. WebKit's persistent test context
+        // dies under Playwright's polling assertion machinery here (trace:
+        // toHaveCSS completes, then the page dies before the next evaluate).
+        const barColors = await page.evaluate(() => {
+            const bar = document.getElementById('exportProgressBar')
+            const probe = document.createElement('div')
+            probe.style.background = 'var(--hf-red)'
+            document.body.appendChild(probe)
+            const probeColor = getComputedStyle(probe).backgroundColor
+            probe.remove()
+            return {
+                inline: bar.style.background,
+                computed: getComputedStyle(bar).backgroundColor,
+                probeColor,
+            }
+        })
+        expect(barColors.inline).toContain('var(--hf-red)')
+        expect(barColors.computed).toBe(barColors.probeColor)
     })
 
     test('the error auto-close timer fires and closes the failed run dialog', async ({ page }) => {
