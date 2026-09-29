@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js'
-import { appReady, framePainted } from './waits.js'
+import { appReady, framePainted, layerCount } from './waits.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 function collectWebGLErrors(page) {
@@ -92,6 +92,10 @@ test.describe('WebGL error handling', () => {
         const firstEffect = page.locator('.effect-option').first()
         if (await firstEffect.isVisible()) {
             await firstEffect.click()
+            // Picking an effect commits the layer and closes the dialog: the
+            // panel gains a second layer and the add-layer dialog goes away.
+            await layerCount(page, 2)
+            await page.waitForSelector('.add-layer-dialog', { state: 'hidden' })
         }
 
         await framePainted(page)

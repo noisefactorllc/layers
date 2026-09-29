@@ -15,14 +15,13 @@ async function createTransparentProject(page) {
 }
 
 async function addEffectLayer(page, searchTerm) {
-    await page.click('#addLayerBtn')
-    await page.waitForSelector('dialog[open]')
-    await page.click('.media-option[data-mode="effect"]')
-    await page.waitForSelector('.effect-search-input')
-    await page.fill('.effect-search-input', searchTerm)
-    await page.waitForSelector('.effect-item')
-    await page.click('.effect-item')
-    await page.waitForSelector('dialog[open]', { state: 'hidden' })
+    // The agent path skips the add-layer dialog round-trip; reorder semantics
+    // are structural and identical for any effect layer, and the dialog flow
+    // is covered by other specs.
+    await page.evaluate(async (term) => {
+        const env = await window.LayersAgent.addLayer({ kind: 'effect', effectId: `filter/${term}` })
+        if (!env.ok) throw new Error(`addLayer failed: ${JSON.stringify(env.error)}`)
+    }, searchTerm)
     // The picker closes before shader compilation commits the new layer.
     await page.evaluate(async () => { await window.layersApp._projectLifecycleTail })
 }

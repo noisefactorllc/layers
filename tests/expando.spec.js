@@ -12,17 +12,13 @@ async function createTransparentProject(page) {
 }
 
 async function addEffectLayer(page, searchTerm) {
-    await page.click('#addLayerBtn')
-    await page.waitForSelector('dialog[open]')
-    await page.click('.media-option[data-mode="effect"]')
-    await page.waitForSelector('.effect-search-input')
-    await page.fill('.effect-search-input', searchTerm)
-    // The picker filters and re-renders on the input event itself, and the
-    // unfiltered view renders no .effect-item at all, so the first one to
-    // appear belongs to this search. The selector wait below is the condition.
-    await page.waitForSelector('.effect-item')
-    await page.click('.effect-item')
-    await page.waitForSelector('dialog[open]', { state: 'hidden' })
+    // The agent path skips the add-layer dialog round-trip; the dialog flow is
+    // covered by other specs and the expando assertions only need an effect
+    // layer with rendered params on the panel row.
+    await page.evaluate(async (term) => {
+        const env = await window.LayersAgent.addLayer({ kind: 'effect', effectId: `filter/${term}` })
+        if (!env.ok) throw new Error(`addLayer failed: ${JSON.stringify(env.error)}`)
+    }, searchTerm)
 }
 
 test.describe('Layer params expando', () => {
@@ -60,7 +56,7 @@ test.describe('Layer params expando', () => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
-        await addEffectLayer(page, 'warp')
+        await addEffectLayer(page, 'blur')
 
         const layerItem = page.locator('layer-item.effect-layer:not(.base-layer)')
         await expect(layerItem).toBeVisible()
