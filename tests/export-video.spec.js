@@ -491,30 +491,6 @@ test.describe('Export Video Dialog', () => {
         })
     })
 
-    test('export error bar uses the design token, not a hardcoded color', async ({ page }) => {
-        await page.click('.hf-menubar-trigger:has-text("file")')
-        await page.click('#exportVideoMenuItem')
-        await expect(page.locator('#exportModal')).toBeVisible()
-
-        await page.evaluate(() =>
-            window.layersApp._exportVideoDialog._handleExportError(new Error('boom')))
-
-        const token = await page.evaluate(() => {
-            const probe = document.createElement('div')
-            probe.style.background = 'var(--hf-red)'
-            document.body.appendChild(probe)
-            const color = getComputedStyle(probe).backgroundColor
-            probe.remove()
-            return color
-        })
-        expect(token).not.toBe('none')
-        await expect(page.locator('#exportProgressBar')).toHaveCSS(
-            'background-color', token)
-        // The stale hardcoded fallback must be gone from the source path.
-        expect(page.locator('#exportProgressBar').evaluate(
-            el => el.style.background)).resolves.toContain('var(--hf-red)')
-    })
-
     test('a new export after a failed one resets the progress bar to the default gradient', async ({ page }) => {
         await page.click('.hf-menubar-trigger:has-text("file")')
         await page.click('#exportVideoMenuItem')
@@ -558,6 +534,39 @@ test.describe('Export Video Dialog', () => {
         expect(after.image).toContain('linear-gradient')
 
         await cancelExport(page)
+    })
+
+})
+
+test.describe('Export Video Dialog error chrome (no project needed)', () => {
+    test.beforeEach(async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await appReady(page)
+    })
+
+    test('export error bar uses the design token, not a hardcoded color', async ({ page }) => {
+        await page.click('.hf-menubar-trigger:has-text("file")')
+        await page.click('#exportVideoMenuItem')
+        await expect(page.locator('#exportModal')).toBeVisible()
+
+        await page.evaluate(() =>
+            window.layersApp._exportVideoDialog._handleExportError(new Error('boom')))
+
+        const token = await page.evaluate(() => {
+            const probe = document.createElement('div')
+            probe.style.background = 'var(--hf-red)'
+            document.body.appendChild(probe)
+            const color = getComputedStyle(probe).backgroundColor
+            probe.remove()
+            return color
+        })
+        expect(token).not.toBe('none')
+        await expect(page.locator('#exportProgressBar')).toHaveCSS(
+            'background-color', token)
+        // The stale hardcoded fallback must be gone from the source path.
+        expect(page.locator('#exportProgressBar').evaluate(
+            el => el.style.background)).resolves.toContain('var(--hf-red)')
     })
 
     test('the error auto-close timer fires and closes the failed run dialog', async ({ page }) => {
