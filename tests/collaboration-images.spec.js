@@ -1,11 +1,21 @@
 import { test, expect } from './fixtures.js'
 import { defaultProjectReady } from './waits.js'
-import { SEANCE_SDK_URL, hasLocalSeanceHarness, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
+import { SEANCE_SDK_URL, hasLocalSeanceHarness, localSdkSupportsImages, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
 
 let seance
 test.skip(!hasLocalSeanceHarness(), 'requires a local Seance checkout and Python')
+// Reopen when the CI harness pin advances to seance aaec82b or later: the
+// image feature needs an SDK with prepareImage, which the pinned pre-image
+// harness lacks.
+test.skip(!localSdkSupportsImages(),
+    'requires a Seance SDK with prepareImage (harness pin >= seance aaec82b)')
 test.beforeEach(async ({ baseURL }, testInfo) => {
-    testInfo.setTimeout(180000)
+    // The creator-leave leg runs a 6000x4000 import, full-resolution render,
+    // project save and reload in one evaluate. Measured 246s serial under
+    // software rendering (chromium, workers=1, image-capable harness) — the
+    // old 180s budget killed the test before it finished and its two CI
+    // retries pushed whole shards over the 20-minute globalTimeout.
+    testInfo.setTimeout(480000)
     seance = await startSeanceServer({ origin: baseURL })
 })
 test.afterEach(async () => { await seance?.stop() })

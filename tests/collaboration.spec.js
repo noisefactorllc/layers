@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState, framePainted, quietWindow } from './waits.js'
-import { SEANCE_SDK_URL, hasLocalSeanceHarness, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
+import { SEANCE_SDK_URL, hasLocalSeanceHarness, localSdkSupportsImages, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 let seance
@@ -524,6 +524,11 @@ test('transform sync: a layer transform (move/scale) converges to the joined pag
 })
 
 test('flattening while online shares the resulting image with the peer', async ({ page, context }) => {
+    // Reopen when the CI harness pin advances to seance aaec82b or later:
+    // the shared flatten result rides the SDK's prepareImage, which the
+    // pinned pre-image harness lacks.
+    test.skip(!localSdkSupportsImages(),
+        'requires a Seance SDK with prepareImage (harness pin >= seance aaec82b)')
     const pageB = await context.newPage()
     await preparePage(page)
     await preparePage(pageB)

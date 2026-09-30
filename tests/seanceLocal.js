@@ -31,6 +31,17 @@ export function hasLocalSeanceHarness(paths = harnessPaths, exists = existsSync)
         exists(paths.app)
 }
 
+// The Seance image-preservation feature (and the specs that exercise it)
+// need an SDK that exposes prepareImage; harness checkouts pinned before
+// seance aaec82b predate it. Tests gate on this so a stale pin skips the
+// image specs (with the reason naming the required pin) instead of failing
+// every shard that contains them.
+export function localSdkSupportsImages(paths = harnessPaths, exists = existsSync, read = readFileSync) {
+    const entry = resolve(paths.distDir, 'index.js')
+    if (!exists(entry)) return false
+    return read(entry, 'utf8').includes('prepareImage')
+}
+
 export async function routeSeanceSdkLocal(page) {
     await page.route('https://seance.noisefactor.io/sdk/0/**', async (route) => {
         const rel = new URL(route.request().url()).pathname.replace(/^\/sdk\/0\//, '')
