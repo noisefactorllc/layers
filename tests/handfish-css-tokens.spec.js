@@ -502,5 +502,115 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
 
         await page.evaluate(() => document.documentElement.removeAttribute('data-theme'))
     })
+
+    test('persistent small-text surfaces meet WCAG AA contrast across all themes', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await defaultProjectReady(page)
+        await page.locator('.layer-item').first().waitFor({ state: 'visible', timeout: 10000 })
+
+        // Open the real settings dialog so the .dialog-close measurement uses
+        // the production dialog-panel surface instead of a synthetic one.
+        await page.evaluate(() => window.LayersAgent.ready)
+        await page.locator('#menu #logoMenu').click()
+        await page.locator('#menu #settingsMenuItem').waitFor({ state: 'visible' })
+        await page.locator('#menu #settingsMenuItem').click()
+        const dialogCloseLoc = page.locator('.settings-dialog .dialog-close').locator('visible=true')
+        await dialogCloseLoc.waitFor({ state: 'visible', timeout: 5000 })
+
+        const results = await page.evaluate(async () => {
+            function toSrgb(colorStr) {
+                const canvas = document.createElement('canvas')
+                canvas.width = 1
+                canvas.height = 1
+                const ctx = canvas.getContext('2d', { willReadFrequently: true })
+                ctx.fillStyle = '#000000'
+                ctx.fillStyle = colorStr
+                ctx.fillRect(0, 0, 1, 1)
+                const data = ctx.getImageData(0, 0, 1, 1).data
+                return [data[0] / 255, data[1] / 255, data[2] / 255]
+            }
+
+            function luminance([r, g, b]) {
+                const a = [r, g, b].map(v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
+                return a[0] * 0.2126 + a[1] * 0.7152 + a[2] * 0.0722
+            }
+
+            function contrastRatio(fg, bg) {
+                const l1 = luminance(toSrgb(fg))
+                const l2 = luminance(toSrgb(bg))
+                return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+            }
+
+            function alphaOf(bg) {
+                const slash = bg.match(/\/\s*([\d.]+)\s*\)/)
+                if (slash) return parseFloat(slash[1])
+                const m = bg.match(/rgba?\(([^)]+)\)/)
+                if (m && m[1].split(',').length === 4) return parseFloat(m[1].split(',')[3])
+                return 1
+            }
+
+            function effectiveBg(el) {
+                // Compositing walk: blend each translucent layer over the next
+                // background down the ancestor chain (dialogs use 0.92-alpha
+                // panels over the themed body), then over the body background.
+                let composite = null
+                for (let node = el; node; node = node.parentElement) {
+                    const bg = window.getComputedStyle(node).backgroundColor
+                    if (!bg || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') continue
+                    const rgb = toSrgb(bg)
+                    const alpha = alphaOf(bg)
+                    composite = composite === null
+                        ? { rgb, alpha }
+                        : { rgb: rgb.map((v, i) => v * alpha + composite.rgb[i] * (1 - alpha)), alpha }
+                    if (composite.alpha >= 0.999) {
+                        return `rgb(${composite.rgb.map(v => Math.round(v * 255)).join(',')})`
+                    }
+                }
+                const bodyBg = toSrgb(window.getComputedStyle(document.body).backgroundColor)
+                if (composite === null) return window.getComputedStyle(document.body).backgroundColor
+                const fin = composite.rgb.map((v, i) => v * composite.alpha + bodyBg[i] * (1 - composite.alpha))
+                return `rgb(${fin.map(v => Math.round(v * 255)).join(',')})`
+            }
+
+            const fixture = document.createElement('div')
+            fixture.innerHTML = `
+                <div class="layer-item"><div class="layer-type effect">Effect</div></div>
+                <div class="effect-params"><span class="effect-params-title">Parameters</span></div>
+            `
+            document.body.appendChild(fixture)
+            const layerType = fixture.querySelector('.layer-type')
+            const paramsTitle = fixture.querySelector('.effect-params-title')
+            const dialogCloses = [...document.querySelectorAll('.settings-dialog .dialog-close')]
+            const dialogClose = (dialogCloses.find(el => el.offsetParent !== null) || dialogCloses[0])
+                // the visible glyph is the icon span; measure the painted color
+                const dialogCloseGlyph = dialogClose.querySelector('.icon-material') || dialogClose
+
+            const themes = ['dark', 'light', 'gray-dark', 'gray-light', 'neutral-dark', 'neutral-light',
+                'corporate', 'cyberpunk', 'earthy', 'organic', 'terminal']
+            const report = {}
+            for (const theme of themes) {
+                document.documentElement.dataset.theme = theme
+                // .dialog-close carries a color transition; settle past it so
+                // computed colors reflect the theme's steady state.
+                await new Promise(r => setTimeout(r, 600))
+                const fgC = window.getComputedStyle(dialogCloseGlyph).color
+                const bgC = effectiveBg(dialogClose)
+                report[theme] = {
+                    dialogClose: contrastRatio(window.getComputedStyle(dialogCloseGlyph).color, effectiveBg(dialogClose)),
+                    layerType: contrastRatio(window.getComputedStyle(layerType).color, effectiveBg(layerType)),
+                    paramsTitle: contrastRatio(window.getComputedStyle(paramsTitle).color, effectiveBg(paramsTitle))
+                }
+            }
+            fixture.remove()
+            document.documentElement.removeAttribute('data-theme')
+            return report
+        })
+
+        for (const [theme, m] of Object.entries(results)) {
+            expect(m.dialogClose, `${theme} dialog-close contrast ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(4.5)
+            expect(m.layerType, `${theme} layer-type contrast ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(4.5)
+            expect(m.paramsTitle, `${theme} effect-params-title contrast ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(4.5)
+        }
+    })
 })
 

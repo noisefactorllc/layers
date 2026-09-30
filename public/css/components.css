@@ -307,7 +307,7 @@ dialog[open] {
 .dialog-close {
     background: none;
     border: none;
-    color: var(--hf-color-5);
+    color: var(--hf-color-7);
     font-size: var(--hf-size-xl);
     cursor: pointer;
     padding: 0;

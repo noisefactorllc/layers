@@ -285,15 +285,15 @@
 
 .layer-type {
     font-size: 10px;
-    color: var(--hf-text-normal);
+    color: var(--hf-color-7);
 }
 
 .layer-type.media {
-    color: var(--hf-accent-3);
+    color: var(--hf-color-7);
 }
 
 .layer-type.effect {
-    color: var(--hf-accent-3);
+    color: var(--hf-color-7);
 }
 
 /* Layer Delete Button */
@@ -503,7 +503,7 @@ effect-params {
 
 .effect-params-title {
     font-size: 10px;
-    color: var(--hf-text-normal);
+    color: var(--hf-color-7);
     font-weight: 600;
 }
 
