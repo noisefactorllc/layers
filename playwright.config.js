@@ -39,7 +39,17 @@ export default defineConfig({
         screenshot: 'only-on-failure',
     },
     projects: [
-        { name: 'chromium', use: { browserName: 'chromium' } },
+        {
+            name: 'chromium',
+            use: {
+                browserName: 'chromium',
+                // Two-page collaboration tests under two workers exhaust a
+                // 64MB /dev/shm and the renderer dies at page.goto ("Page
+                // crashed"). This is the standard Playwright hardening for
+                // that; it moves chromium's shared memory onto /tmp instead.
+                launchOptions: { args: ['--disable-dev-shm-usage'] },
+            },
+        },
         { name: 'firefox', use: { browserName: 'firefox' } },
         { name: 'webkit', use: { browserName: 'webkit' } },
     ],
