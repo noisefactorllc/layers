@@ -42,7 +42,7 @@ test.describe('Fill tool', () => {
         expect(result.newLayerType).toBe('media')
     })
 
-    test('an online fill commits a shareable image layer instead of being blocked', async ({ page }) => {
+    test('online fill creates an undoable image layer and schedules publication', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
@@ -50,47 +50,87 @@ test.describe('Fill tool', () => {
         await page.click('.media-option[data-type="solid"]')
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
+        await appReady(page)
 
-        // Since images are preserved across Seance sessions, a fill while
-        // online is a shareable image layer (like flatten/duplicate/rasterize
-        // in agent-layer-crud), not a blocked mutation.
-        await page.evaluate(() => {
+        const before = await page.evaluate(() => {
             const app = window.layersApp
             app._markClean()
-            window.__fillPublishCalls = []
+            window.__fillPublishes = 0
             app._onlineAdapter = {
                 isOnline: () => true,
-                schedulePublish: () => window.__fillPublishCalls.push(1),
+                schedulePublish: () => { window.__fillPublishes++ },
+            }
+            app._fillTool.color = '#e33b7a'
+            app._undoDebounceTimer = setTimeout(() => app._pushUndoState(), 60_000)
+            return {
+                layerIds: app._layers.map(layer => layer.id),
+                dirty: app._isDirty,
+                mutationRevision: app._projectMutationRevision,
+                undoStackLength: app._undoManager._stack.length,
+                undoIndex: app._undoManager._index,
+                pendingUndo: Boolean(app._undoDebounceTimer),
             }
         })
-
-        const countBefore = await page.evaluate(() => window.layersApp._layers.length)
 
         await page.click('#fillToolBtn')
         const overlay = await page.$('#selectionOverlay')
         const box = await overlay.boundingBox()
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-        await appState(page, (initial) => window.layersApp._layers.length > initial, countBefore)
+        await appState(page, initial => window.layersApp._layers.length === initial + 1
+            && !window.layersApp._projectLifecycleOwner, before.layerIds.length)
 
         const after = await page.evaluate(() => {
             const app = window.layersApp
-            const added = app._layers[app._layers.length - 1]
+            const layer = app._layers.at(-1)
+            const media = app._renderer.getMediaInfo(layer.id)
             return {
-                count: app._layers.length,
-                sourceType: added?.sourceType,
-                mediaType: added?.mediaType,
-                hasResource: app._renderer._mediaTextures.has(added?.id),
+                layerIds: app._layers.map(layer => layer.id),
+                dirty: app._isDirty,
+                mutationRevision: app._projectMutationRevision,
+                undoStackLength: app._undoManager._stack.length,
+                undoIndex: app._undoManager._index,
+                pendingUndo: Boolean(app._undoDebounceTimer),
+                sourceType: layer.sourceType,
+                mediaType: layer.mediaType,
+                resourceType: media.type,
+                hasResource: app._renderer._mediaTextures.has(layer.id),
                 warningToast: Boolean(document.querySelector('.toast.toast-warning')),
-                publishes: window.__fillPublishCalls.length,
+                pixel: [...media.element.getContext('2d').getImageData(0, 0, 1, 1).data],
+                publishes: window.__fillPublishes,
             }
         })
 
-        expect(after.count).toBeGreaterThan(1)
+        expect(before.dirty).toBe(false)
+        expect(before.pendingUndo).toBe(true)
+        expect(after.layerIds.slice(0, -1)).toEqual(before.layerIds)
+        expect(after.dirty).toBe(true)
+        expect(after.mutationRevision).toBeGreaterThan(before.mutationRevision)
+        expect(after.undoStackLength).toBe(before.undoStackLength + 1)
+        expect(after.undoIndex).toBe(before.undoIndex + 1)
+        expect(after.pendingUndo).toBe(false)
         expect(after.sourceType).toBe('media')
         expect(after.mediaType).toBe('image')
+        expect(after.resourceType).toBe('image')
         expect(after.hasResource).toBe(true)
         expect(after.warningToast).toBe(false)
+        expect(after.pixel).toEqual([227, 59, 122, 255])
         expect(after.publishes).toBeGreaterThan(0)
+
+        const restored = await page.evaluate(async () => {
+            const app = window.layersApp
+            await app._undo()
+            const undoLayerIds = app._layers.map(layer => layer.id)
+            await app._redo()
+            const media = app._renderer.getMediaInfo(app._layers.at(-1).id)
+            return {
+                undoLayerIds,
+                redoLayerIds: app._layers.map(layer => layer.id),
+                pixel: [...media.element.getContext('2d').getImageData(0, 0, 1, 1).data],
+            }
+        })
+        expect(restored.undoLayerIds).toEqual(before.layerIds)
+        expect(restored.redoLayerIds).toEqual(after.layerIds)
+        expect(restored.pixel).toEqual(after.pixel)
     })
 
     test('reports a failed fill-layer commit outcome', async ({ page }) => {
