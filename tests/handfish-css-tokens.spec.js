@@ -593,8 +593,6 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
                 // .dialog-close carries a color transition; settle past it so
                 // computed colors reflect the theme's steady state.
                 await new Promise(r => setTimeout(r, 600))
-                const fgC = window.getComputedStyle(dialogCloseGlyph).color
-                const bgC = effectiveBg(dialogClose)
                 report[theme] = {
                     dialogClose: contrastRatio(window.getComputedStyle(dialogCloseGlyph).color, effectiveBg(dialogClose)),
                     layerType: contrastRatio(window.getComputedStyle(layerType).color, effectiveBg(layerType)),
