@@ -25,12 +25,13 @@ import {
     isLayersSession,
     overlayPendingWrites,
     rememberMaskWire,
-    fnv1a
+    fnv1a,
+    rememberImageWire
 } from './docModel.js'
 
 export const DEFAULT_SEANCE_URL = 'https://seance.noisefactor.io'
-// Bypass SDK 0.2.0 cached before the rolling alias acquired a bounded cache policy.
-export const DEFAULT_SEANCE_SDK_URL = 'https://seance.noisefactor.io/sdk/0/index.js?v=0.2.2'
+// Require the rolling SDK build that includes persisted image attachments.
+export const DEFAULT_SEANCE_SDK_URL = 'https://seance.noisefactor.io/sdk/0/index.js?v=images-20260929'
 
 const DIALECT = 'layers'
 const PUBLISH_DEBOUNCE_MS = 150
@@ -105,6 +106,10 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     const expectedSeedSnapshots = new Map() // candidate layer -> exact locally seeded node model
     const pendingSeedSnapshotApplies = new Set()
     let publishTimer = null
+    let publishTask = null
+    let imageDraftHeld = false
+    const preparedImages = new WeakMap()
+    const sessionImages = new WeakMap()
     let deferredApplyRequest = null
     let deferredPollTimer = null
     // Writes handed to the SDK but not yet observed in its node set: the
@@ -259,6 +264,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     function clearScheduledSessionWork() {
         clearTimeout(publishTimer)
         publishTimer = null
+        publishTask = null
+        imageDraftHeld = false
         clearTimeout(applyDebounceTimer)
         applyDebounceTimer = null
         if (deferredPollTimer) {
@@ -356,10 +363,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             online,
             lastPublished,
             readOnlyDraftHeld,
+            imageDraftHeld,
             rejectedNodeHashes: new Map(rejectedNodeHashes),
             pendingLocalWrites: new Map(pendingLocalWrites),
             pendingDeleteRejections: new Map(pendingDeleteRejections),
-            publishPending: publishTimer !== null,
+            publishPending: publishTimer !== null || publishTask !== null,
             applyPending: applyDebounceTimer !== null || deferredApplyRequest !== null
                 || applyRerunRequested !== null || applyTaskRunning,
         }
@@ -376,6 +384,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         armPendingDeleteExpiryTimer()
         lastPublished = state.lastPublished
         readOnlyDraftHeld = state.readOnlyDraftHeld
+        imageDraftHeld = state.imageDraftHeld
         if (state.publishPending) schedulePublish()
         if (state.applyPending) scheduleApply(currentSessionRequest())
     }
@@ -425,11 +434,12 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     }
 
     function isPublishPending() {
-        return publishTimer !== null
+        return publishTimer !== null || publishTask !== null
     }
 
     function shouldDeferApply() {
         return app._projectInstallActive || app._projectReplacementActive
+            || (!applyingJoinedSession && imageDraftHeld)
             || (!applyingJoinedSession && getStatus() === 'readonly' && readOnlyDraftHeld)
             || (!applyingJoinedSession && app._projectLifecycleWaiters > 0)
             || (app._projectLifecycleActive
@@ -581,7 +591,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 scheduleApply(rerunRequest)
             }
         }
-        if (needsRerun) {
+        if (needsRerun || !isCurrentSession(request)) {
             return {
                 success: false,
                 error: new Error('Joined project changed before it could be applied'),
@@ -657,7 +667,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             return false
         }
 
-        const { layers, canvas, mediaPlaceholderLayerIds } =
+        const { layers, canvas } =
             applyNodesToComposition(effectiveNodes, app._layers)
         // decodeMasks() replaces each base64 PNG with an ImageData; pair the
         // two first so republishing a mask reuses the bytes it arrived as
@@ -750,10 +760,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         }
 
         try {
-            // Raster and mask resources are prepared into detached maps. A
-            // remote media layer has no transferable bytes, so its staged
-            // placeholder is a transparent pixel rather than a missing strict
-            // texture that would reject the otherwise-valid composition.
+            // Decode every image into detached resources before replacing the
+            // live composition. A missing asset rejects the whole candidate.
             for (const layer of layers) {
                 if (layer.sourceType === 'drawing') {
                     const drawingCanvas = await app._createDrawingLayerCanvas(
@@ -764,11 +772,19 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                             app._renderer.prepareCanvasMediaResource(drawingCanvas))
                     }
                 } else if (layer.sourceType === 'media') {
-                    const placeholder = document.createElement('canvas')
-                    placeholder.width = 1
-                    placeholder.height = 1
-                    candidate.mediaTextures.set(
-                        layer.id, app._renderer.prepareCanvasMediaResource(placeholder))
+                    const file = await loadSessionImage(request.layer, layer)
+                    if (!isCurrentSession(request)) {
+                        disposeCandidate()
+                        candidateOwned = false
+                        return false
+                    }
+                    const resource = await app._renderer.prepareMediaResource(file, 'image')
+                    if (resource) candidate.mediaTextures.set(layer.id, resource)
+                    if (!resource || resource.width !== layer.imageWidth
+                        || resource.height !== layer.imageHeight) {
+                        throw new Error('Shared image dimensions do not match its source')
+                    }
+                    layer.mediaFile = file
                 }
                 if (layer.mask) {
                     candidate.maskTextures.set(
@@ -917,13 +933,6 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 }
             }
 
-            if (mediaPlaceholderLayerIds.length > 0) {
-                try {
-                    toast.warning('This session includes a media layer, which can’t be shown here yet.')
-                } catch (err) {
-                    console.error('[Layers] Failed to show remote media warning:', err)
-                }
-            }
             return false
         } catch (err) {
             if (committed) throw err
@@ -1097,19 +1106,19 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 schedulePublish()
                 return
             }
-            publishComposition(request)
+            void publishComposition(request)
         }, PUBLISH_DEBOUNCE_MS)
     }
 
-    function publishComposition(request = currentSessionRequest()) {
+    async function publishComposition(request = currentSessionRequest()) {
         if (!isCurrentSession(request) || !isOnline()) return
-        if (applyingRemote) {
+        if (applyingRemote || publishTask !== null) {
             schedulePublish()
             return
         }
-        const nextModel = buildNodeModel(app._layers, canvasDims())
-        const { upserts, deletes } = diffNodeModels(lastPublished, nextModel)
         if (getStatus() === 'readonly') {
+            const { upserts, deletes } = diffNodeModels(
+                lastPublished, buildNodeModel(app._layers, canvasDims()))
             // Keep both the draft and its retry baseline. SDK queues refuse
             // read-only writes, so incoming peer state must wait on this client.
             if (upserts.length || deletes.length) {
@@ -1118,46 +1127,180 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             }
             return
         }
-        // The versions these writes are being sent against. A pending write is
-        // retired once the server's copy of its node moves past this, which is
-        // what stops an already-published edit from being re-asserted over a
-        // peer's later change (see docModel.overlayPendingWrites).
-        const sentVersions = new Map(
-            request.layer.getNodes().map(node => [node.id, node.version]))
-        for (const node of upserts) {
-            if (pendingDeleteRejections.delete(node.id)) armPendingDeleteExpiryTimer()
-            const rejectedHash = rejectedNodeHashes.get(node.id)
-            if (rejectedHash !== undefined) {
-                if (rejectedHash === fnv1a(node.text)) continue // still the rejected content — wait for it to change
-                rejectedNodeHashes.delete(node.id) // content changed since the reject — retry normally
+        const task = {}
+        publishTask = task
+        try {
+            const sources = captureImageSources()
+            const entries = await prepareImageSources(sources)
+            const current = () => isCurrentSession(request) && isOnline()
+                && publishTask === task
+            if (!current()) return
+            const files = imagesForSession(request.layer)
+            for (const entry of entries) {
+                if (files.has(entry.asset.id)) continue
+                const id = await request.layer.uploadImage(entry.file)
+                if (!current()) return
+                if (id !== entry.asset.id) throw new Error('Uploaded image identity does not match its bytes')
+                files.set(id, entry.file)
             }
-            request.layer.upsertNode(
-                node.id, { kind: node.kind, text: node.text, parentId: node.parentId })
-            rememberPendingLocalWrite(node.id, {
-                op: 'upsert', kind: node.kind, text: node.text, parentId: node.parentId,
-                baseVersion: sentVersions.get(node.id) ?? null })
+            if (!current()) return
+            if (pendingSessionTransitionGeneration !== null || applyingRemote
+                || app._publishTransactionDepth > 0 || !imageSourcesUnchanged(sources)
+                || getStatus() === 'readonly') {
+                schedulePublish()
+                return
+            }
+            installImageSources(entries)
+            const nextModel = buildNodeModel(app._layers, canvasDims())
+            assertRemoteCompositionWithinBounds(nextModel)
+            const { upserts, deletes } = diffNodeModels(lastPublished, nextModel)
+            // The versions these writes are being sent against. A pending write is
+            // retired once the server's copy of its node moves past this, which is
+            // what stops an already-published edit from being re-asserted over a
+            // peer's later change (see docModel.overlayPendingWrites).
+            const sentVersions = new Map(
+                request.layer.getNodes().map(node => [node.id, node.version]))
+            for (const node of upserts) {
+                if (pendingDeleteRejections.delete(node.id)) armPendingDeleteExpiryTimer()
+                const rejectedHash = rejectedNodeHashes.get(node.id)
+                if (rejectedHash !== undefined) {
+                    if (rejectedHash === fnv1a(node.text)) continue // still the rejected content — wait for it to change
+                    rejectedNodeHashes.delete(node.id) // content changed since the reject — retry normally
+                }
+                request.layer.upsertNode(
+                    node.id, { kind: node.kind, text: node.text, parentId: node.parentId })
+                rememberPendingLocalWrite(node.id, {
+                    op: 'upsert', kind: node.kind, text: node.text, parentId: node.parentId,
+                    baseVersion: sentVersions.get(node.id) ?? null })
+            }
+            for (const id of deletes) {
+                rememberPendingDeleteRejection(id)
+                rejectedNodeHashes.delete(id)
+                request.layer.deleteNode(id)
+                rememberPendingLocalWrite(id, {
+                    op: 'delete', baseVersion: sentVersions.get(id) ?? null })
+            }
+            lastPublished = nextModel
+            readOnlyDraftHeld = false
+            imageDraftHeld = false
+        } catch (error) {
+            if (isCurrentSession(request) && publishTask === task) {
+                imageDraftHeld = true
+                console.error('[Layers] Failed to publish composition:', error)
+                bestEffortSessionEffect('Failed to show image sharing error',
+                    () => toast.error(`Could not share composition: ${error.message}`))
+            }
+        } finally {
+            if (publishTask === task) publishTask = null
         }
-        for (const id of deletes) {
-            rememberPendingDeleteRejection(id)
-            rejectedNodeHashes.delete(id)
-            request.layer.deleteNode(id)
-            rememberPendingLocalWrite(id, {
-                op: 'delete', baseVersion: sentVersions.get(id) ?? null })
-        }
-        lastPublished = nextModel
-        readOnlyDraftHeld = false
     }
 
-    // -- media gating -------------------------------------------------
+    // -- image attachments ----------------------------------------------
 
-    function hasMediaLayer() {
-        return (app._layers || []).some(l => l.sourceType === 'media')
+    function imagesForSession(layer) {
+        const sessionId = layer.getSessionId()
+        let cached = sessionImages.get(layer)
+        if (!cached || cached.sessionId !== sessionId) {
+            cached = { sessionId, files: new Map() }
+            sessionImages.set(layer, cached)
+        }
+        return cached.files
+    }
+
+    function captureImageSources() {
+        return (app._layers || []).filter(layer => layer.sourceType === 'media').map(layer => {
+            if (layer.mediaType !== 'image') throw new Error('Video layers cannot be shared')
+            const media = app._renderer.getMediaInfo?.(layer.id)
+            return { layer, file: layer.mediaFile,
+                source: layer.mediaFile || media?.sourceFile || media?.element }
+        })
+    }
+
+    function imageSourcesUnchanged(sources) {
+        const current = captureImageSources()
+        return current.length === sources.length && current.every((item, index) =>
+            item.layer === sources[index].layer && item.file === sources[index].file
+                && item.source === sources[index].source)
+    }
+
+    async function prepareSourceFile({ layer, source }) {
+        if (source instanceof Blob) return source
+        if (typeof source?.toBlob !== 'function') {
+            throw new Error(`Image source is missing for layer "${layer.name}"`)
+        }
+        return new Promise((resolve, reject) => source.toBlob(blob => {
+            if (!blob) reject(new Error('Could not encode layer pixels'))
+            else resolve(new File([blob], `${layer.name || 'layer'}.png`, { type: 'image/png' }))
+        }, 'image/png'))
+    }
+
+    async function prepareImageFile(file) {
+        let pending = preparedImages.get(file)
+        if (!pending) {
+            pending = (async () => {
+                const sdk = await sdkPromise
+                if (typeof sdk?.prepareImage !== 'function') {
+                    throw new Error('The collaboration SDK does not support images; reload the application')
+                }
+                const asset = await sdk.prepareImage(file)
+                rememberImageWire(file, {
+                    imageId: asset.id, imageWidth: asset.width, imageHeight: asset.height,
+                })
+                return asset
+            })().catch(error => { preparedImages.delete(file); throw error })
+            preparedImages.set(file, pending)
+        }
+        return pending
+    }
+
+    async function prepareImageSources(sources) {
+        const entries = []
+        const distinct = new Map()
+        for (const source of sources) {
+            const file = await prepareSourceFile(source)
+            const asset = await prepareImageFile(file)
+            distinct.set(asset.id, file.size)
+            if (distinct.size > 32 || [...distinct.values()].reduce((sum, size) => sum + size, 0) > 32 * 1024 * 1024) {
+                throw new Error('Shared images exceed the 32 image or 32 MiB session limit')
+            }
+            entries.push({ ...source, file, asset })
+        }
+        return entries
+    }
+
+    function installImageSources(entries) {
+        for (const { layer, file, asset } of entries) {
+            layer.mediaFile = file
+            layer.imageId = asset.id
+            layer.imageWidth = asset.width
+            layer.imageHeight = asset.height
+        }
+    }
+
+    async function loadSessionImage(session, layer) {
+        const files = imagesForSession(session)
+        let file = files.get(layer.imageId)
+        if (!file) {
+            const blob = await session.getImage(layer.imageId)
+            file = new File([blob], `${layer.name || 'image'}`, { type: blob.type })
+        }
+        const asset = await prepareImageFile(file)
+        if (asset.id !== layer.imageId || asset.width !== layer.imageWidth
+            || asset.height !== layer.imageHeight) {
+            throw new Error('Shared image reference does not match its bytes or dimensions')
+        }
+        files.set(layer.imageId, file)
+        return file
+    }
+
+    function hasVideoLayer() {
+        return (app._layers || []).some(l => l.sourceType === 'media' && l.mediaType !== 'image')
     }
 
     // Child-effect masks aren't in the wire schema, so publishing would strip
     // them for peers while the host keeps rendering them — divergent frames,
     // and the host's own mask is dropped after the first remote apply. Gate
-    // going online the same way media layers are gated.
+    // going online until those masks can be transferred.
     function hasMaskedChildEffect() {
         return (app._layers || []).some(l =>
             (l.children || []).some(child => child.mask))
@@ -1168,7 +1311,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             () => dialog?.hide?.())
         try {
             await infoDialog.show({
-                message: 'This composition has a media layer. Media layers aren’t supported in shared sessions yet — remove it before going online.'
+                message: 'This composition has a video layer. Video layers aren’t supported in shared sessions — remove it before going online.'
             })
         } catch (err) {
             console.error('[Layers] Failed to show collaboration media warning:', err)
@@ -1207,7 +1350,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     }
 
     async function takeOnlineForIntent(intentGeneration) {
-        if (hasMediaLayer()) {
+        if (hasVideoLayer()) {
             await showUnsupportedMediaMessage()
             return null
         }
@@ -1230,7 +1373,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             // A mutation that was ahead of this lifecycle request may have
             // added media after the optimistic preflight above. The leased
             // composition is the one that must satisfy the session gate.
-            if (hasMediaLayer()) {
+            if (hasVideoLayer()) {
                 abandonSessionTransition(transition.layer)
                 await showUnsupportedMediaMessage()
                 return null
@@ -1243,9 +1386,21 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             const { layer, previous } = transition
             const transitionIntent = captureSessionTransitionIntent(intentGeneration)
             let nodes
+            let imageEntries
             let committedSessionId
             try {
-                nodes = buildNodeModel(app._layers, canvasDims())
+                const sources = captureImageSources()
+                imageEntries = await prepareImageSources(sources)
+                if (intentGeneration !== transitionIntentGeneration) {
+                    abandonSessionTransition(layer)
+                    return null
+                }
+                if (!imageSourcesUnchanged(sources)) throw new Error('Image sources changed before sharing')
+                const seededLayers = app._layers.map(item => {
+                    const entry = imageEntries.find(candidate => candidate.layer === item)
+                    return entry ? { ...item, mediaFile: entry.file } : item
+                })
+                nodes = buildNodeModel(seededLayers, canvasDims())
                 // The host must meet the same allocation limits as its peers;
                 // otherwise creation succeeds but nobody can adopt the room.
                 try {
@@ -1254,7 +1409,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                     throw new Error(`This composition cannot be shared: ${error.message.replace(/^Remote composition rejected: /, '')}`)
                 }
                 expectedSeedSnapshots.set(layer, nodes)
-                await layer.takeOnline({ poly: { programText: '', nodes } })
+                const images = [...new Map(imageEntries.map(entry => [entry.asset.id, entry.asset])).values()]
+                await layer.takeOnline({ poly: { programText: '', nodes }, images })
                 if (!isCurrentSessionTransitionIntent(transitionIntent)) {
                     abandonSessionTransition(layer)
                     return null
@@ -1271,6 +1427,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                     () => refreshStatus(previous ? getStatus() : 'offline'))
                 throw err
             }
+            installImageSources(imageEntries)
+            for (const entry of imageEntries) imagesForSession(layer).set(entry.asset.id, entry.file)
             activateSessionTransition(layer, nodes)
             finishSessionTransition(previous)
             bestEffortSessionEffect('Failed to remember collaboration session',
@@ -1403,6 +1561,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             const applyResult = await applyJoinedSession(
                 currentSessionRequest(layer), lifecycleToken)
             if (!applyResult.success) {
+                if (intentGeneration !== transitionIntentGeneration) {
+                    abandonSessionTransition(layer)
+                    finishSessionTransition(previous)
+                    return null
+                }
                 restoreSessionState(previousSessionState)
                 await handleJoinFailure(applyResult.error, layer)
                 return null

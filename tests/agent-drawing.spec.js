@@ -568,7 +568,7 @@ test.describe('fillRegion', () => {
         expect(result.rightPixel).toEqual([0, 0, 0, 0])
     })
 
-    test('blocked online fill returns conflict without mutating layers, dirty state, or undo history', async ({ page }) => {
+    test('online fill creates an image layer with dirty state and undo history', async ({ page }) => {
         await bootApp(page)
         const result = await page.evaluate(async () => {
             const app = window.layersApp
@@ -595,10 +595,11 @@ test.describe('fillRegion', () => {
             return { before, after: state(), envelope }
         })
 
-        expect(result.envelope.ok).toBe(false)
-        expect(result.envelope.error.code).toBe('CONFLICT_MEDIA_BLOCKED_ONLINE')
+        expect(result.envelope.ok).toBe(true)
         expect(result.before.dirty).toBe(false)
-        expect(result.after).toEqual(result.before)
+        expect(result.after.dirty).toBe(true)
+        expect(result.after.layerIds).toEqual([...result.before.layerIds, result.envelope.result.layerId])
+        expect(result.after.undoStackLength).toBeGreaterThan(result.before.undoStackLength)
     })
 
     test('rejects out-of-canvas point', async ({ page }) => {

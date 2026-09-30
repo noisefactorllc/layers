@@ -204,7 +204,7 @@ test.describe('LayersAgent.addLayer — media kind', () => {
         expect(result.afterIds).toEqual(result.beforeIds)
     })
 
-    test('an online transition during source fetch blocks media without false success', async ({ page }) => {
+    test('an online transition during source fetch still allows an image layer', async ({ page }) => {
         await bootApp(page)
         const result = await page.evaluate(async () => {
             const app = window.layersApp
@@ -243,9 +243,25 @@ test.describe('LayersAgent.addLayer — media kind', () => {
             }
         })
 
+        expect(result.envelope.ok).toBe(true)
+        expect(result.afterIds).toEqual([...result.beforeIds, result.envelope.result.layerId])
+    })
+
+    test('online video additions are rejected by both agent and file input paths before decode', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const app = window.layersApp
+            app._onlineAdapter = { isOnline: () => true, schedulePublish() {} }
+            const before = app._layers.length
+            const envelope = await window.LayersAgent.addLayer({ kind: 'media', mediaType: 'video',
+                source: { kind: 'base64', data: 'dmlkZW8=', mimeType: 'video/mp4' } })
+            const outcome = await app._handleAddMediaLayer(new File(['video'], 'movie.mp4', { type: 'video/mp4' }), 'video')
+            return { envelope, outcome, before, after: app._layers.length }
+        })
         expect(result.envelope.ok).toBe(false)
         expect(result.envelope.error.code).toBe('CONFLICT_MEDIA_BLOCKED_ONLINE')
-        expect(result.afterIds).toEqual(result.beforeIds)
+        expect(result.outcome.status).toBe('blocked-online')
+        expect(result.after).toBe(result.before)
     })
 
     test('addLayer media rejects missing source', async ({ page }) => {

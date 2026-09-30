@@ -2541,22 +2541,6 @@ class LayersApp {
     }
 
     /**
-     * Gate an operation that would create (or morph a layer into) a media
-     * layer while a Seance session is online — media layers can't ride the
-     * shared node doc (see collab/docModel.js §5 in the design doc: their
-     * bytes only exist in local storage). Same toast wording family as the
-     * pre-existing gates below and in _handlePaste()/agent addMediaLayer.
-     * @param {string} what - gerund/noun phrase describing the blocked action
-     * @returns {boolean} true if blocked (caller must bail without mutating)
-     * @private
-     */
-    _blockedMediaOnline(what) {
-        if (!this._onlineAdapter?.isOnline()) return false
-        toast.warning(`${what} isn’t supported while a Layers session is online`)
-        return true
-    }
-
-    /**
      * Handle adding a media layer
      * @param {File} file - Media file
      * @param {string} mediaType - 'image' or 'video'
@@ -2567,8 +2551,8 @@ class LayersApp {
         name = null,
     } = {}) {
         return this._runProjectLifecycle(mutationToken, async () => {
-            if (this._onlineAdapter?.isOnline()) {
-                toast.warning('Media layers aren’t supported while a Layers session is online')
+            if (mediaType !== 'image' && this._onlineAdapter?.isOnline()) {
+                toast.warning('Video layers aren’t supported while a Layers session is online')
                 return { status: 'blocked-online' }
             }
 
@@ -2589,9 +2573,9 @@ class LayersApp {
                 return { status: 'decode-failed', error: new Error(described) }
             }
             if (!resource) throw new Error('Unsupported media resource')
-            if (this._onlineAdapter?.isOnline()) {
+            if (mediaType !== 'image' && this._onlineAdapter?.isOnline()) {
                 this._renderer.disposeMediaResource(resource)
-                toast.warning('Media layers aren’t supported while a Layers session is online')
+                toast.warning('Video layers aren’t supported while a Layers session is online')
                 return { status: 'blocked-online' }
             }
 
@@ -3935,13 +3919,10 @@ class LayersApp {
      * Used by fill tool and other tools that generate raster content.
      * @param {HTMLCanvasElement} canvas - Source canvas with content
      * @param {string} [name] - Layer name
-     * @returns {Promise<{status: 'added', layerId: string}|{status: 'blocked-online'}|{status:'failed',error:Error}>}
+     * @returns {Promise<{status: 'added', layerId: string}|{status:'failed',error:Error}>}
      * @private
      */
     async _addMediaLayerFromCanvas(canvas, name) {
-        if (this._blockedMediaOnline('Adding this layer')) {
-            return { status: 'blocked-online' }
-        }
         const layer = createMediaLayer(null, 'image', name || 'Fill')
         layer.mediaFile = null
         const resource = this._renderer.prepareCanvasMediaResource(canvas)
@@ -5066,7 +5047,6 @@ class LayersApp {
      * @private
      */
     async _flattenImage() {
-        if (this._blockedMediaOnline('Flattening')) return { status: 'failed' }
         if (this._layers.length === 0) return { status: 'committed' }
 
         // Capture current canvas (all visible layers composited)
@@ -5108,7 +5088,6 @@ class LayersApp {
      * @private
      */
     async _rasterizeLayer(layerId) {
-        if (this._blockedMediaOnline('Rasterizing')) return { status: 'failed' }
         const layer = this._layers.find(l => l.id === layerId)
         if (!layer || layer.sourceType === 'media') return { status: 'committed' }
         const composite = await this._renderLayerComposite([layerId], {
@@ -5161,7 +5140,6 @@ class LayersApp {
      * @private
      */
     async _flattenLayers(layerIds) {
-        if (this._blockedMediaOnline('Flattening')) return { status: 'failed' }
         if (layerIds.length < 2) return { status: 'committed' }
 
         // Find the layers and their indices
@@ -5717,16 +5695,9 @@ class LayersApp {
             // model clone so the copy's text stays editable — their content
             // lives in effectParams, not in the pixels below. Assumes the
             // effect's external texture is fully reconstructible from
-            // effectParams (true for filter/text). Effect layers ride the
-            // shared collab doc, so no online media gate here.
+            // effectParams (true for filter/text).
             newLayer = cloneLayer(layer, newName)
         } else {
-            // Gated unconditionally (not just for an already-media active
-            // layer): this rasterizes the active layer's composite into a
-            // NEW media layer, regardless of the source layer's own
-            // sourceType — a filter or drawing layer duplicate is media too.
-            if (this._blockedMediaOnline('Duplicating')) return false
-
             // Render the layer to get its pixels
             const compositeImg = await this._renderLayerComposite([layer.id])
             if (!compositeImg) return false
@@ -6124,7 +6095,6 @@ class LayersApp {
      * @private
      */
     async _extractFromSingleLayer(layer, punchHole, shouldCancel = null) {
-        if (this._blockedMediaOnline('Extracting the selection')) return false
         const selectionPath = this._selectionManager.selectionPath
         const canvasWidth = this._canvas.width
         const canvasHeight = this._canvas.height
@@ -6237,7 +6207,6 @@ class LayersApp {
      * @private
      */
     async _extractFromMultipleLayers(layerIds, punchHole, shouldCancel = null) {
-        if (this._blockedMediaOnline('Extracting the selection')) return false
         const selectionPath = this._selectionManager.selectionPath
         const canvasWidth = this._canvas.width
         const canvasHeight = this._canvas.height
@@ -6867,10 +6836,6 @@ class LayersApp {
      * @private
      */
     async _handlePaste() {
-        if (this._onlineAdapter?.isOnline()) {
-            toast.warning('Media layers aren’t supported while a Layers session is online')
-            return { status: 'failed' }
-        }
         const result = await pasteFromClipboard()
         if (!result) {
             return { status: 'failed' } // No image in clipboard, silent fail

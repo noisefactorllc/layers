@@ -609,12 +609,6 @@ function requireCommittedMutationOutcome(outcome, message = 'Failed to render mu
         { phase: 'render' })
 }
 
-function rejectMediaMutationOnline(app) {
-    if (!app?._onlineAdapter?.isOnline()) return
-    throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
-        'Media layers are not supported while a Layers collaboration session is online', {})
-}
-
 async function addEffectLayer({ effectId, params, name }, app) {
     if (!effectId) {
         throw commandError('INVALID_ARGS_REQUIRED', 'effectId is required for kind=effect',
@@ -649,12 +643,9 @@ async function addMediaLayer({ source, mediaType, name }, app, mutationToken = n
         throw commandError('INVALID_ARGS_REQUIRED', 'mediaType is required for kind=media',
             { field: 'mediaType' })
     }
-    // Media layers can't ride the Seance node doc (bytes are local-only);
-    // _handleAddMediaLayer also no-ops with a toast for the human path, but
-    // the agent needs a real error rather than a fabricated success.
-    if (app._onlineAdapter?.isOnline()) {
+    if (mediaType !== 'image' && app._onlineAdapter?.isOnline()) {
         throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
-            'Media layers are not supported while a Layers collaboration session is online', {})
+            'Video layers are not supported while a Layers collaboration session is online', {})
     }
     const file = await sourceToFile(source, name || 'media')
     let outcome
@@ -668,7 +659,7 @@ async function addMediaLayer({ source, mediaType, name }, app, mutationToken = n
     }
     if (outcome?.status === 'blocked-online') {
         throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
-            'Media layers are not supported while a Layers collaboration session is online', {})
+            'Video layers are not supported while a Layers collaboration session is online', {})
     }
     if (outcome?.status === 'decode-failed') {
         throw commandError('RESOURCE_DECODE_FAILED',
@@ -766,18 +757,11 @@ export async function deleteLayer({ layerId }, app) {
  * @param {{layerId: string}} args
  * @returns {Promise<{result: {layerId: string}}>}
  * @throws NOT_FOUND_LAYER — when the source layer doesn't exist.
- * @throws CONFLICT_MEDIA_BLOCKED_ONLINE — when the duplicate would produce a
- *         media layer while a collaboration session is online. Overlay-content
- *         layers (filter/text) duplicate as effect-layer clones, which ride
- *         the shared doc, so they are exempt.
  * @throws CONFLICT_DUPLICATE_FAILED — when the app rejects the duplicate
  *         (e.g. unsupported layer type).
  */
 export async function duplicateLayer({ layerId }, app) {
     const layer = requireLayer(layerId, app)
-    if (!(layer.effectId && app._isOverlayContentEffect(layer.effectId))) {
-        rejectMediaMutationOnline(app)
-    }
     const ok = await app._duplicateActiveLayer(layer)
     if (!ok) {
         throw commandError('CONFLICT_DUPLICATE_FAILED',
@@ -855,7 +839,6 @@ export async function selectLayers({ layerIds }, app) {
  * @returns {Promise<{result: {ok: true}}>}
  */
 export async function flattenImage(_args, app) {
-    rejectMediaMutationOnline(app)
     requireCommittedMutationOutcome(
         await app._flattenImage(), 'Failed to flatten image')
     return { result: { ok: true } }
@@ -883,7 +866,6 @@ export async function flattenLayers({ layerIds }, app) {
                 min: 2,
             })
     }
-    rejectMediaMutationOnline(app)
     requireCommittedMutationOutcome(
         await app._flattenLayers(layerIds), 'Failed to flatten layers')
     return { result: { ok: true } }
@@ -900,7 +882,6 @@ export async function flattenLayers({ layerIds }, app) {
  */
 export async function rasterizeLayer({ layerId }, app) {
     requireLayer(layerId, app)
-    rejectMediaMutationOnline(app)
     requireCommittedMutationOutcome(
         await app._rasterizeLayer(layerId), 'Failed to rasterize layer')
     return { result: { layerId } }
@@ -2165,10 +2146,6 @@ export async function fillRegion({ x, y, color, tolerance }, app) {
     ctx.putImageData(fillData, 0, 0)
 
     const outcome = await app._addMediaLayerFromCanvas(fillCanvas, 'Fill')
-    if (outcome.status === 'blocked-online') {
-        throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
-            'Media layers are not supported while a Layers collaboration session is online', {})
-    }
     const added = requireAddedLayerOutcome(outcome)
     return { result: { layerId: added.layerId } }
 }

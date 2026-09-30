@@ -26,6 +26,9 @@
  */
 
 export const NODE_VERSION = 1
+// Older readers reject this version before substituting a transparent media
+// placeholder and republishing a layer without its image reference.
+const IMAGE_NODE_VERSION = 2
 export const META_NODE_ID = 'meta'
 
 // Chunk payload budget: keep chunk text comfortably under the protocol's
@@ -59,6 +62,14 @@ const LAYER_PROP_KEYS = [
     'sourceType', 'mediaType', 'effectId', 'effectParams',
     'maskEnabled', 'maskVisible'
 ]
+
+// Files are immutable. Keying wire identity by the File keeps crop/resize and
+// undo from accidentally reusing a reference copied from another source.
+const imageWireCache = new WeakMap()
+
+export function rememberImageWire(file, { imageId, imageWidth, imageHeight }) {
+    imageWireCache.set(file, { imageId, imageWidth, imageHeight })
+}
 
 // ---------------------------------------------------------------------
 // id helpers — layer/child ids must not contain '.' (the dotted-id
@@ -369,12 +380,19 @@ export function buildNodeModel(layers, canvas) {
 
         const props = {}
         for (const key of LAYER_PROP_KEYS) props[key] = layer[key] ?? null
+        if (layer.sourceType === 'media' && layer.mediaType === 'image') {
+            const image = layer.mediaFile ? imageWireCache.get(layer.mediaFile) : layer
+            props.imageId = image?.imageId ?? null
+            props.imageWidth = image?.imageWidth ?? null
+            props.imageHeight = image?.imageHeight ?? null
+        }
 
         nodes.push({
             id: lid,
             kind: 'layers-layer',
             text: JSON.stringify({
-                v: NODE_VERSION,
+                v: layer.sourceType === 'media' && layer.mediaType === 'image'
+                    ? IMAGE_NODE_VERSION : NODE_VERSION,
                 ...props,
                 childOrder: (layer.children || []).map(c => childNodeId(layer.id, c.id)),
                 strokesMeta,
@@ -558,8 +576,13 @@ function optionalFiniteNumber(value, field, { min = -Number.MAX_SAFE_INTEGER,
     }
 }
 
+function isSupportedLayerVersion(parsed) {
+    return parsed?.v === NODE_VERSION || (parsed?.v === IMAGE_NODE_VERSION
+        && parsed.sourceType === 'media' && parsed.mediaType === 'image')
+}
+
 function assertRemoteLayerFields(parsed) {
-    if (!isPlainObject(parsed) || parsed.v !== NODE_VERSION) {
+    if (!isPlainObject(parsed) || !isSupportedLayerVersion(parsed)) {
         throw remoteBoundsError('layer node text is invalid')
     }
     const sourceType = parsed.sourceType ?? 'effect'
@@ -824,7 +847,20 @@ export function assertRemoteNodeModelWithinBounds(nodes, options = {}) {
         const hasDrawingRaster = sourceType === 'drawing'
             && (parsed.strokesMeta || strokeParentsWithContent.has(node.id))
         if (sourceType === 'media') {
-            addRasterPixels(1)
+            if (parsed.mediaType !== 'image') {
+                throw remoteBoundsError('only image media can be shared; video is not supported')
+            }
+            if (typeof parsed.imageId !== 'string' || !/^[a-f0-9]{64}$/.test(parsed.imageId)) {
+                throw remoteBoundsError('image reference is invalid or missing')
+            }
+            if (!Number.isSafeInteger(parsed.imageWidth) || parsed.imageWidth < 1
+                || parsed.imageWidth > MAX_REMOTE_CANVAS_DIMENSION
+                || !Number.isSafeInteger(parsed.imageHeight) || parsed.imageHeight < 1
+                || parsed.imageHeight > MAX_REMOTE_CANVAS_DIMENSION
+                || parsed.imageWidth * parsed.imageHeight > 64000000) {
+                throw remoteBoundsError('image dimensions exceed the supported raster bounds')
+            }
+            addRasterPixels(parsed.imageWidth * parsed.imageHeight)
         }
         if (hasDrawingRaster) {
             addRasterPixels(canvasPixels)
@@ -832,8 +868,8 @@ export function assertRemoteNodeModelWithinBounds(nodes, options = {}) {
         const hasRasterSource = sourceType === 'media' || hasDrawingRaster
         const needsCpuTransform = scaleX !== 1 || scaleY !== 1 || flipH || flipV
         if (parsed.visible !== false && hasRasterSource && needsCpuTransform) {
-            const sourceWidth = sourceType === 'media' ? 1 : canvasWidth
-            const sourceHeight = sourceType === 'media' ? 1 : canvasHeight
+            const sourceWidth = sourceType === 'media' ? parsed.imageWidth : canvasWidth
+            const sourceHeight = sourceType === 'media' ? parsed.imageHeight : canvasHeight
             const width = Math.ceil(sourceWidth * Math.abs(scaleX))
             const height = Math.ceil(sourceHeight * Math.abs(scaleY))
             if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)
@@ -1146,7 +1182,8 @@ function reassembleMaskChunks(nodes, parentNodeId, maskMeta) {
  * `previousLayers` (or an empty value if there is none); a media-typed
  * layer becomes a placeholder-safe layer object flagged via
  * `remoteMediaPlaceholder` (its id is also collected in
- * `mediaPlaceholderLayerIds`) since media bytes never ride the wire.
+ * `mediaPlaceholderLayerIds`) if a legacy node has no image reference.
+ * Valid image references are hydrated separately by the online adapter.
  *
  * `mask`, when present, is the same base64 PNG data-url STRING shape
  * `layers/layer-model.js`'s serializeLayers()/decodeMasks() round-trip —
@@ -1178,7 +1215,7 @@ export function applyNodesToComposition(nodes, previousLayers = []) {
         const node = byId.get(nodeId)
         if (!node) continue
         const parsed = safeParse(node.text)
-        if (!parsed || parsed.v !== NODE_VERSION) continue
+        if (!isSupportedLayerVersion(parsed)) continue
 
         const layerId = layerIdFromNodeId(nodeId)
         const prevLayer = prevById.get(layerId)
@@ -1243,8 +1280,14 @@ export function applyNodesToComposition(nodes, previousLayers = []) {
         }
 
         if (layer.sourceType === 'media') {
-            layer.remoteMediaPlaceholder = true
-            mediaPlaceholderLayerIds.push(layer.id)
+            if (parsed.imageId) {
+                layer.imageId = parsed.imageId
+                layer.imageWidth = parsed.imageWidth
+                layer.imageHeight = parsed.imageHeight
+            } else {
+                layer.remoteMediaPlaceholder = true
+                mediaPlaceholderLayerIds.push(layer.id)
+            }
         }
 
         layers.push(layer)

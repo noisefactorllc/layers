@@ -139,27 +139,6 @@ async function layersState(page) {
     })))
 }
 
-// Adds a media layer and waits for it to land. The online gate is the one
-// caller that expects the add to be refused, and passing `refused` there keeps
-// the barrier honest: waiting for a layer the app is supposed to reject would
-// spend the whole test budget proving the app behaved correctly. That caller
-// waits for the toast instead, which is the observable result of a refusal.
-async function addMediaLayer(page, color, { refused = false } = {}) {
-    await page.evaluate(async (fillColor) => {
-        const canvas = document.createElement('canvas')
-        canvas.width = 50
-        canvas.height = 50
-        const ctx = canvas.getContext('2d')
-        ctx.fillStyle = fillColor
-        ctx.fillRect(0, 0, 50, 50)
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
-        const file = new File([blob], 'test.png', { type: 'image/png' })
-        await window.layersApp._handleAddMediaLayer(file, 'image')
-    }, color)
-    if (refused) return
-    await appState(page, () => window.layersApp._layers.some(l => l.sourceType === 'media'))
-}
-
 // ---------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------
@@ -392,36 +371,29 @@ test('?seance= boot join applies the shared composition directly, with no confir
     expect(await pageC.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('online')
 })
 
-test('media gating: an existing media layer blocks take-online, and adding media is blocked while online', async ({ page }) => {
+test('video gating: existing video blocks take-online and adding video is blocked online', async ({ page }) => {
     await preparePage(page)
     await gotoApp(page)
     await createProject(page)
-
-    // Part 1: a media layer already in the composition blocks take-online.
-    await addMediaLayer(page, '#00ff00')
+    await page.evaluate(async () => {
+        const { createMediaLayer } = await import('/js/layers/layer-model.js')
+        window.layersApp._layers.push(createMediaLayer(null, 'video', 'Video'))
+    })
     await openSeanceDialog(page)
     await page.locator('#seanceDialog [data-action="take-online"]').click()
-    await expect(page.locator('.info-dialog-backdrop.visible')).toBeVisible()
-    await expect(page.locator('.info-dialog .info-message')).toContainText('media layer')
+    await expect(page.locator('.info-dialog .info-message')).toContainText('video layer')
     await page.click('.info-dialog #info-ok')
-    await expect(page.locator('.info-dialog-backdrop.visible')).toHaveCount(0)
-    expect(await page.evaluate(() => window.layersApp._onlineAdapter?.getStatus())).toBe('offline')
-
-    // Remove the media layer, then take online successfully.
-    await page.evaluate(async () => {
-        const app = window.layersApp
-        const media = app._layers.find(l => l.sourceType === 'media')
-        await app._handleDeleteLayer(media.id)
-    })
-    await appState(page, () => !window.layersApp._layers.some(l => l.sourceType === 'media'))
+    expect(await page.evaluate(() => window.layersApp._onlineAdapter.isOnline())).toBe(false)
+    await page.evaluate(() => { window.layersApp._layers.pop() })
     await takeOnline(page)
-
-    // Part 2: adding a media layer while online is blocked with a toast, and
-    // no layer is actually added.
-    const countBefore = (await layersState(page)).length
-    await addMediaLayer(page, '#0000ff', { refused: true })
-    await expect(page.locator('.toast-warning')).toBeVisible()
-    expect((await layersState(page)).length).toBe(countBefore)
+    const result = await page.evaluate(async () => {
+        const app = window.layersApp
+        const before = app._layers.length
+        const outcome = await app._handleAddMediaLayer(new File(['video'], 'movie.mp4', { type: 'video/mp4' }), 'video')
+        return { before, after: app._layers.length, status: outcome.status }
+    })
+    expect(result.status).toBe('blocked-online')
+    expect(result.after).toBe(result.before)
 })
 
 test('effect-mask gating: a masked child effect blocks take-online until its mask is deleted', async ({ page }) => {
@@ -519,8 +491,7 @@ test('transform sync: a layer transform (move/scale) converges to the joined pag
 
     // Transforms only apply to media/drawing layers — the 0.11 mutation
     // hardening makes _applyLayerTransform reject effect layers, matching the
-    // transform tool's own gating — and media layers can't go online. So the
-    // transformable kind a live session supports is a drawing layer.
+    // transform tool's own gating. Exercise a shared drawing layer here.
     const drawingId = await pageA.evaluate(async () => {
         const app = window.layersApp
         const res = await app._handleAddDrawingLayer()
@@ -552,43 +523,26 @@ test('transform sync: a layer transform (move/scale) converges to the joined pag
     expect(await transformOf(pageB)).toEqual({ offsetX: 37, offsetY: -21, scaleX: 1.4 })
 })
 
-test('flatten gate: flattening while online shows a toast and leaves both pages unaffected', async ({ page, context }) => {
-    const pageA = page
+test('flattening while online shares the resulting image with the peer', async ({ page, context }) => {
     const pageB = await context.newPage()
-    await preparePage(pageA)
+    await preparePage(page)
     await preparePage(pageB)
-
-    await gotoApp(pageA)
-    await createProject(pageA, 'solid', 128)
-    await pageA.evaluate(async () => { await window.layersApp._handleAddEffectLayer('filter/blur') })
-    const sessionId = await takeOnline(pageA)
-    await closeSeanceDialog(pageA)
-
-    await gotoApp(pageB)
-    await createProject(pageB, 'solid', 128)
-    await joinById(pageB, sessionId)
+    await gotoApp(page)
+    await createProject(page, 'solid', 128)
+    await page.evaluate(async () => { await window.layersApp._handleAddEffectLayer('filter/blur') })
+    const sessionId = await takeOnline(page)
+    await closeSeanceDialog(page)
+    await gotoApp(pageB, { seance: sessionId })
     await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(2)
-
-    const countBefore = (await layersState(pageA)).length
-
-    await pageA.evaluate(async () => { await window.layersApp._flattenImage() })
-    await expect(pageA.locator('.toast-warning')).toBeVisible()
-
-    // No media layer was created, and the layer count didn't change.
-    const stateA = await layersState(pageA)
-    expect(stateA.length).toBe(countBefore)
-    expect(stateA.some(l => l.sourceType === 'media')).toBe(false)
-
-    // Nothing was published to corrupt page B either. Rather than watch an
-    // empty window, send a change that MUST propagate and wait for it to land
-    // on B: once it has, the channel has run, so anything the blocked flatten
-    // might have published would already be here too.
-    const baseId = (await layersState(pageA))[0].id
-    await setOpacity(pageA, baseId, 42)
-    await expect.poll(() => opacityOf(pageB, baseId), { timeout: 60000 }).toBe(42)
-    const stateB = await layersState(pageB)
-    expect(stateB.length).toBe(countBefore)
-    expect(stateB.some(l => l.sourceType === 'media')).toBe(false)
+    expect(await page.evaluate(async () => (await window.LayersAgent.flattenImage()).ok)).toBe(true)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
+    const shared = await pageB.evaluate(() => {
+        const layer = window.layersApp._layers[0]
+        return { type: layer.mediaType, file: layer.mediaFile instanceof File, id: layer.imageId }
+    })
+    expect(shared.type).toBe('image')
+    expect(shared.file).toBe(true)
+    expect(shared.id).toMatch(/^[a-f0-9]{64}$/)
 })
 
 test('agent newProject while online takes the session offline first, without wiping the peer', async ({ page, context }) => {

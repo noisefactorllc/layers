@@ -543,40 +543,32 @@ test.describe('selectLayer / selectLayers', () => {
 })
 
 test.describe('flatten/rasterize/flip', () => {
-    test('online raster-producing commands report the media collaboration conflict', async ({ page }) => {
-        await bootApp(page)
-        const result = await page.evaluate(async () => {
-            const app = window.layersApp
-            await window.LayersAgent.addLayer({
-                kind: 'effect', effectId: 'synth/gradient', name: 'Second',
-            })
-            const ids = app._layers.map(layer => layer.id)
-            const before = JSON.stringify(app._layers)
-            const dslBefore = app._renderer.currentDsl
-            const resourcesBefore = [...app._renderer._mediaTextures.keys()]
-            app._onlineAdapter = { isOnline: () => true }
-            const envelopes = await Promise.all([
-                window.LayersAgent.duplicateLayer({ layerId: ids[1] }),
-                window.LayersAgent.flattenImage({}),
-                window.LayersAgent.flattenLayers({ layerIds: ids }),
-                window.LayersAgent.rasterizeLayer({ layerId: ids[0] }),
-            ])
-            return {
-                codes: envelopes.map(envelope => envelope.error?.code),
-                before,
-                after: JSON.stringify(app._layers),
-                dslBefore,
-                dslAfter: app._renderer.currentDsl,
-                resourcesBefore,
-                resourcesAfter: [...app._renderer._mediaTextures.keys()],
-            }
-        })
+    for (const command of ['duplicateLayer', 'flattenImage', 'flattenLayers', 'rasterizeLayer']) {
+        test(`online ${command} produces a shareable image`, async ({ page }) => {
+            await bootApp(page)
+            const result = await page.evaluate(async command => {
+                const app = window.layersApp
+                await window.LayersAgent.addLayer({
+                    kind: 'effect', effectId: 'synth/gradient', name: 'Second',
+                })
+                const ids = app._layers.map(layer => layer.id)
+                app._onlineAdapter = { isOnline: () => true, schedulePublish() {} }
+                const envelope = await window.LayersAgent[command]({ layerId: ids[1], layerIds: ids })
+                const selected = app._layers.find(layer => layer.id === app._layerStack.selectedLayerId)
+                return {
+                    envelope,
+                    mediaType: selected?.mediaType,
+                    hasOriginal: selected?.mediaFile instanceof File,
+                    hasResource: app._renderer._mediaTextures.has(selected?.id),
+                }
+            }, command)
 
-        expect(result.codes).toEqual(Array(4).fill('CONFLICT_MEDIA_BLOCKED_ONLINE'))
-        expect(result.after).toBe(result.before)
-        expect(result.dslAfter).toBe(result.dslBefore)
-        expect(result.resourcesAfter).toEqual(result.resourcesBefore)
-    })
+            expect(result.envelope.ok).toBe(true)
+            expect(result.mediaType).toBe('image')
+            expect(result.hasOriginal).toBe(true)
+            expect(result.hasResource).toBe(true)
+        })
+    }
 
     test('flattenImage collapses to one media layer', async ({ page }) => {
         await bootApp(page)

@@ -2172,7 +2172,7 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
     expect(result.commitCalls).toBe(0)
 })
 
-test('post-commit renderer restart and media warning failures do not reject the committed remote project', async ({ page }) => {
+test('post-commit renderer restart failure does not reject the committed remote project', async ({ page }) => {
     const pageErrors = []
     page.on('pageerror', error => pageErrors.push(error.message))
     await bootSolid(page)
@@ -2220,11 +2220,11 @@ test('post-commit renderer restart and media warning failures do not reject the 
             rotation: 0,
             flipH: false,
             flipV: false,
-            sourceType: 'media',
+            sourceType: 'effect',
             mediaFile: null,
-            mediaType: 'image',
-            effectId: null,
-            effectParams: {},
+            mediaType: null,
+            effectId: 'synth/gradient',
+            effectParams: { type: 2 },
             children: [],
             mask: null,
             maskEnabled: true,
@@ -2270,8 +2270,6 @@ test('post-commit renderer restart and media warning failures do not reject the 
     expect(result.generation).toBe(result.initialGeneration + 1)
     expect(result.applyingRemote).toBe(false)
     expect(result.startAttempts).toBe(1)
-    expect(result.warningMessages).toEqual([
-        'This session includes a media layer, which can’t be shown here yet.',
-    ])
+    expect(result.warningMessages).toEqual([])
     expect(pageErrors).toEqual([])
 })

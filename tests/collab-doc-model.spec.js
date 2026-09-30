@@ -417,6 +417,7 @@ test('remote bounds reject invalid or oversized layer scales while allowing frac
             id: 'Lmedia', kind: 'layers-layer', parentId: null,
             text: JSON.stringify({
                 v: 1, sourceType: 'media', visible: true,
+                mediaType: 'image', imageId: 'a'.repeat(64), imageWidth: 1, imageHeight: 1,
                 scaleX, scaleY: 1, flipH: false, flipV: false,
                 childOrder: [], maskMeta: null, ...extra,
             }),
@@ -441,6 +442,7 @@ test('remote bounds reject invalid or oversized layer scales while allowing frac
                 offsetX: 0, offsetY: 0, scaleX: -0.5, scaleY: 0.75,
                 rotation: 0, flipH: false, flipV: true,
                 sourceType: 'media', mediaType: 'image', effectId: null,
+                imageId: 'a'.repeat(64), imageWidth: 1, imageHeight: 1,
                 effectParams: {}, children: [], mask: null,
                 maskEnabled: true, maskVisible: false,
             }], { width: 100, height: 100 }))

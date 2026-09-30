@@ -1637,7 +1637,7 @@ test('candidate render failure preserves the active session despite cleanup fail
     })
 })
 
-test('take-online rechecks the media gate after acquiring the lifecycle lease', async ({ page }) => {
+test('take-online rechecks the video gate after acquiring the lifecycle lease', async ({ page }) => {
     await bootSolid(page)
 
     const result = await page.evaluate(async () => {
@@ -1667,7 +1667,7 @@ test('take-online rechecks the media gate after acquiring the lifecycle lease', 
         const blocker = await app._acquireProjectLifecycle()
         const takePromise = adapter.takeOnline()
         await new Promise(resolve => setTimeout(resolve, 0))
-        app._layers.push(createMediaLayer(null, 'image', 'Queued media'))
+        app._layers.push(createMediaLayer(null, 'video', 'Queued video'))
         app._markDirty()
         blocker.release()
         let escapedError = null
