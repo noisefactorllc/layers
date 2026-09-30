@@ -1404,7 +1404,7 @@ git commit -m "feat: wire up new selection tools in app"
 **Step 1: Start dev server**
 
 ```bash
-cd /Users/aayars/source/layers/.worktrees/marquee-selection
+cd .worktrees/marquee-selection
 npx http-server public -p 3002
 ```
 

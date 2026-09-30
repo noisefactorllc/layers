@@ -8,7 +8,7 @@
 
 **Tech Stack:** Handfish 0.9.0 (CDN), vanilla JS web components, CSS custom properties
 
-**Reference:** Noisedeck port at `/Users/aayars/source/noisedeck/` — particularly `app/css/theme.css`, `app/js/ui/controlFactory.js`, `app/js/ui/controlGroupBuilder.js`, and `app/index.html`.
+**Reference:** Noisedeck port at `../noisedeck/` — particularly `app/css/theme.css`, `app/js/ui/controlFactory.js`, `app/js/ui/controlGroupBuilder.js`, and `app/index.html`.
 
 ---
 
@@ -84,7 +84,7 @@ feat: add Handfish CDN imports and importmap
 
 **Step 1: Create theme.css**
 
-This file bridges Handfish primitive tokens to app-level aliases used throughout Layers. Reference: `/Users/aayars/source/noisedeck/app/css/theme.css`.
+This file bridges Handfish primitive tokens to app-level aliases used throughout Layers. Reference: `../noisedeck/app/css/theme.css`.
 
 ```css
 /* Layers theme — computed variables built on Handfish primitives */
@@ -119,7 +119,7 @@ This file bridges Handfish primitive tokens to app-level aliases used throughout
 
 **Step 2: Delete colors.css**
 
-Remove `/Users/aayars/source/layers/public/css/colors.css`.
+Remove `public/css/colors.css`.
 
 **Step 3: Commit**
 
@@ -395,7 +395,7 @@ feat: migrate loading.css to Handfish tokens
 **Files:**
 - Modify: `public/js/layers/effect-params.js`
 
-This is the core control migration. Reference: `/Users/aayars/source/noisedeck/app/js/ui/controlGroupBuilder.js` lines 356-440.
+This is the core control migration. Reference: `../noisedeck/app/js/ui/controlGroupBuilder.js` lines 356-440.
 
 **Step 1: Add Handfish import**
 

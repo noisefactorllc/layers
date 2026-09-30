@@ -27,20 +27,20 @@
 ## Task 1: Repo scaffold
 
 **Files:**
-- Create: `/Users/aayars/platform/layers-mcp/` (whole directory)
-- Create: `/Users/aayars/platform/layers-mcp/package.json`
-- Create: `/Users/aayars/platform/layers-mcp/tsconfig.json`
-- Create: `/Users/aayars/platform/layers-mcp/tsup.config.ts`
-- Create: `/Users/aayars/platform/layers-mcp/.gitignore`
-- Create: `/Users/aayars/platform/layers-mcp/README.md`
-- Create: `/Users/aayars/platform/layers-mcp/src/index.ts` (stub, no commands wired yet)
-- Create: `/Users/aayars/platform/layers-mcp/src/config.ts`
+- Create: `../layers-mcp/` (whole directory)
+- Create: `../layers-mcp/package.json`
+- Create: `../layers-mcp/tsconfig.json`
+- Create: `../layers-mcp/tsup.config.ts`
+- Create: `../layers-mcp/.gitignore`
+- Create: `../layers-mcp/README.md`
+- Create: `../layers-mcp/src/index.ts` (stub, no commands wired yet)
+- Create: `../layers-mcp/src/config.ts`
 
 - [ ] **Step 1: Create the directory and initialize git**
 
 ```bash
-mkdir -p /Users/aayars/platform/layers-mcp/src
-cd /Users/aayars/platform/layers-mcp
+mkdir -p ../layers-mcp/src
+cd ../layers-mcp
 git init -b main
 ```
 
@@ -84,15 +84,15 @@ git init -b main
 - [ ] **Step 3: Create `tsconfig.json`** (mirror shade-mcp's settings — read its tsconfig and copy verbatim, adjusting `outDir`/`rootDir` to be relative to this repo).
 
 ```bash
-cat /Users/aayars/platform/shade-mcp/tsconfig.json
+cat ../shade-mcp/tsconfig.json
 ```
 
-Then write the same content to `/Users/aayars/platform/layers-mcp/tsconfig.json`.
+Then write the same content to `../layers-mcp/tsconfig.json`.
 
 - [ ] **Step 4: Create `tsup.config.ts`** (mirror shade-mcp's).
 
 ```bash
-cat /Users/aayars/platform/shade-mcp/tsup.config.ts
+cat ../shade-mcp/tsup.config.ts
 ```
 
 Write the same content. Adjust the `entry` array to just `['src/index.ts']` (no extra sub-modules in v1).
@@ -192,7 +192,7 @@ Detailed documentation in Task 8.
 - [ ] **Step 9: Install dependencies and verify build**
 
 ```bash
-cd /Users/aayars/platform/layers-mcp
+cd ../layers-mcp
 npm install
 npm run setup       # downloads Playwright Chromium
 npm run build
@@ -222,8 +222,8 @@ git commit -m "feat(layers-mcp): repo scaffold + stub MCP server"
 ## Task 2: Browser harness
 
 **Files:**
-- Create: `/Users/aayars/platform/layers-mcp/src/harness/browser-session.ts`
-- Create: `/Users/aayars/platform/layers-mcp/tests/browser-session.test.ts`
+- Create: `../layers-mcp/src/harness/browser-session.ts`
+- Create: `../layers-mcp/tests/browser-session.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -263,7 +263,7 @@ describe('BrowserSession (real Playwright, real prod)', () => {
 - [ ] **Step 2: Run the test to confirm RED**
 
 ```bash
-cd /Users/aayars/platform/layers-mcp
+cd ../layers-mcp
 npx vitest run tests/browser-session.test.ts
 ```
 
@@ -350,9 +350,9 @@ git commit -m "feat(layers-mcp): browser harness (Playwright persistent context)
 ## Task 3: Schema-driven tool registry
 
 **Files:**
-- Create: `/Users/aayars/platform/layers-mcp/src/tools/registry.ts`
-- Create: `/Users/aayars/platform/layers-mcp/src/tools/index.ts`
-- Create: `/Users/aayars/platform/layers-mcp/tests/registry.test.ts`
+- Create: `../layers-mcp/src/tools/registry.ts`
+- Create: `../layers-mcp/src/tools/index.ts`
+- Create: `../layers-mcp/tests/registry.test.ts`
 
 The registry fetches the live `SCHEMAS` map + command list from the page and produces an array of MCP tool definitions (name, description, inputSchema, handler).
 
@@ -493,8 +493,8 @@ git commit -m "feat(layers-mcp): schema-driven tool registry"
 ## Task 4: Wire registry into the MCP server
 
 **Files:**
-- Modify: `/Users/aayars/platform/layers-mcp/src/index.ts`
-- Create: `/Users/aayars/platform/layers-mcp/tests/index.test.ts`
+- Modify: `../layers-mcp/src/index.ts`
+- Create: `../layers-mcp/tests/index.test.ts`
 
 - [ ] **Step 1: Write a failing integration test**
 
@@ -676,11 +676,11 @@ git commit -m "feat(layers-mcp): wire harness + tool registry into MCP server"
 ## Task 5: Download interception for exports
 
 **Files:**
-- Modify: `/Users/aayars/platform/layers-mcp/src/harness/browser-session.ts`
-- Create: `/Users/aayars/platform/layers-mcp/src/tools/exports.ts`
-- Modify: `/Users/aayars/platform/layers-mcp/src/tools/registry.ts`
-- Modify: `/Users/aayars/platform/layers-mcp/src/index.ts` (only for wiring `config.outputDir`)
-- Create: `/Users/aayars/platform/layers-mcp/tests/exports.test.ts`
+- Modify: `../layers-mcp/src/harness/browser-session.ts`
+- Create: `../layers-mcp/src/tools/exports.ts`
+- Modify: `../layers-mcp/src/tools/registry.ts`
+- Modify: `../layers-mcp/src/index.ts` (only for wiring `config.outputDir`)
+- Create: `../layers-mcp/tests/exports.test.ts`
 
 `exportImage` and `exportVideo` trigger browser downloads. Playwright's `page.on('download')` fires for each one. We capture them, save to `LAYERS_MCP_OUTPUT_DIR`, then enrich the LayersAgent envelope with `result.filePath`.
 
@@ -878,8 +878,8 @@ git commit -m "feat(layers-mcp): intercept export downloads and surface filePath
 ## Task 6: Long-running job awaitable wrapper
 
 **Files:**
-- Modify: `/Users/aayars/platform/layers-mcp/src/tools/exports.ts` (extend the same export wrapper)
-- Create: `/Users/aayars/platform/layers-mcp/tests/jobs-integration.test.ts`
+- Modify: `../layers-mcp/src/tools/exports.ts` (extend the same export wrapper)
+- Create: `../layers-mcp/tests/jobs-integration.test.ts`
 
 Phase 6 made `exportVideo` job-modeled — the LayersAgent command returns `{jobId}` immediately and the actual export runs in the background. The browser download fires only when the job finishes. The existing `withDownloadCapture` waits for the download to fire (timeout 120s), which works as long as the export finishes inside that window. But the MCP envelope returned to the caller is `{ok:true, result:{jobId:...}}` from the FIRST command call — it doesn't include the job's actual result.
 
@@ -998,7 +998,7 @@ git commit -m "feat(layers-mcp): exportVideo synchronously waits for job + downl
 - [ ] **Step 1: Run the full vitest suite**
 
 ```bash
-cd /Users/aayars/platform/layers-mcp
+cd ../layers-mcp
 npm test
 ```
 
@@ -1052,8 +1052,8 @@ git commit -m "docs(layers-mcp): example MCP client config"
 ## Task 8: README + final polish
 
 **Files:**
-- Modify: `/Users/aayars/platform/layers-mcp/README.md`
-- Create: `/Users/aayars/platform/layers-mcp/CLAUDE.md` (project instructions for future Claude sessions)
+- Modify: `../layers-mcp/README.md`
+- Create: `../layers-mcp/CLAUDE.md` (project instructions for future Claude sessions)
 
 - [ ] **Step 1: Write the full README**
 

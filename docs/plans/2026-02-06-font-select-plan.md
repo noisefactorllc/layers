@@ -17,7 +17,7 @@
 
 **Step 1: Create the fontaine-loader module**
 
-Port from `/Users/aayars/source/noisedeck/app/js/ui/components/fontaineLoader.js` with these adaptations:
+Port from `../noisedeck/app/js/ui/components/fontaineLoader.js` with these adaptations:
 - Keep the same `FONTAINE_BUNDLE_URL` (`https://fonts.noisefactor.io/bundle`)
 - Keep all IndexedDB logic (meta/fonts/files stores)
 - Keep `install()`, `loadFromCache()`, `isInstalled()`, `clearCache()`
@@ -65,7 +65,7 @@ git commit -m "feat: port fontaine-loader module from noisedeck"
 
 **Step 1: Create the font-select component**
 
-Port from `/Users/aayars/source/noisedeck/app/js/ui/components/fontSelect.js` with these adaptations:
+Port from `../noisedeck/app/js/ui/components/fontSelect.js` with these adaptations:
 
 **CSS variable mapping** — The noisedeck component uses noisedeck-specific CSS variables. Remap to Layers variables:
 - `var(--accent3)` → `var(--color-accent)`

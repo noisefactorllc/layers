@@ -15,13 +15,13 @@
 Add a `maskMode` int uniform to the upstream alphaMask effect. When `maskMode == 1`, the shader multiplies the input's alpha by the mask texture's luminance instead of doing an alpha blend.
 
 **Files:**
-- Modify: `/Users/aayars/source/noisemaker/shaders/effects/mixer/alphaMask/definition.js`
-- Modify: `/Users/aayars/source/noisemaker/shaders/effects/mixer/alphaMask/glsl/alphaMask.glsl`
-- Modify: `/Users/aayars/source/noisemaker/shaders/effects/mixer/alphaMask/wgsl/alphaMask.wgsl`
+- Modify: `../noisemaker/shaders/effects/mixer/alphaMask/definition.js`
+- Modify: `../noisemaker/shaders/effects/mixer/alphaMask/glsl/alphaMask.glsl`
+- Modify: `../noisemaker/shaders/effects/mixer/alphaMask/wgsl/alphaMask.wgsl`
 
 **Step 1: Add `maskMode` param to definition.js**
 
-Open `/Users/aayars/source/noisemaker/shaders/effects/mixer/alphaMask/definition.js`. Add a new `maskMode` global after the `mix` global, and add it to the pass uniforms:
+Open `../noisemaker/shaders/effects/mixer/alphaMask/definition.js`. Add a new `maskMode` global after the `mix` global, and add it to the pass uniforms:
 
 ```javascript
 import { Effect } from '../../../src/runtime/effect.js'
@@ -71,7 +71,7 @@ export default new Effect({
 
 **Step 2: Update the GLSL shader**
 
-Replace `/Users/aayars/source/noisemaker/shaders/effects/mixer/alphaMask/glsl/alphaMask.glsl` with:
+Replace `../noisemaker/shaders/effects/mixer/alphaMask/glsl/alphaMask.glsl` with:
 
 ```glsl
 #version 300 es
@@ -121,7 +121,7 @@ void main() {
 
 **Step 3: Update the WGSL shader**
 
-Replace `/Users/aayars/source/noisemaker/shaders/effects/mixer/alphaMask/wgsl/alphaMask.wgsl` with:
+Replace `../noisemaker/shaders/effects/mixer/alphaMask/wgsl/alphaMask.wgsl` with:
 
 ```wgsl
 @group(0) @binding(0) var samp : sampler;
@@ -170,12 +170,12 @@ fn main(@builtin(position) position : vec4<f32>) -> @location(0) vec4<f32> {
 
 Run from the noisemaker repo root:
 ```bash
-cd /Users/aayars/source/noisemaker && npm run build
+cd ../noisemaker && npm run build
 ```
 
 Then copy the updated vendor bundle into Layers:
 ```bash
-cp -r /Users/aayars/source/noisemaker/dist/effects/mixer/alphaMask.js /Users/aayars/source/layers/public/js/noisemaker/vendor/effects/mixer/alphaMask.js
+cp -r ../noisemaker/dist/effects/mixer/alphaMask.js public/js/noisemaker/vendor/effects/mixer/alphaMask.js
 ```
 
 (Or however the vendor bundle is updated — check if `pull-noisemaker` script exists.)
@@ -197,7 +197,7 @@ git add -A && git commit -m "feat: add maskMode param to alphaMask shader for gr
 Add `mask`, `maskEnabled`, and `maskVisible` properties to the layer model. Update `cloneLayer()` and serialization.
 
 **Files:**
-- Modify: `/Users/aayars/source/layers/public/js/layers/layer-model.js`
+- Modify: `public/js/layers/layer-model.js`
 
 **Step 1: Add mask properties to `createLayer()`**
 
@@ -327,7 +327,7 @@ git add public/js/layers/layer-model.js && git commit -m "feat: add mask propert
 Add `_maskTextures` map to the renderer, mask texture upload, and inject `alphaMask(maskMode: 1)` into the DSL for masked layers.
 
 **Files:**
-- Modify: `/Users/aayars/source/layers/public/js/noisemaker/renderer.js`
+- Modify: `public/js/noisemaker/renderer.js`
 
 **Step 1: Add `_maskTextures` map**
 
@@ -488,7 +488,7 @@ git add public/js/noisemaker/renderer.js && git commit -m "feat: renderer mask t
 Add mask creation, deletion, inversion, and selection-to-mask conversion methods to `LayersApp`.
 
 **Files:**
-- Modify: `/Users/aayars/source/layers/public/js/app.js`
+- Modify: `public/js/app.js`
 
 **Step 1: Add mask state variables to constructor**
 
@@ -704,9 +704,9 @@ git add public/js/app.js && git commit -m "feat: mask management methods (add, d
 Add mask editing mode: enter/exit, rubylith canvas overlay, and brush/eraser painting on the mask.
 
 **Files:**
-- Modify: `/Users/aayars/source/layers/public/index.html` (add mask overlay canvas)
-- Modify: `/Users/aayars/source/layers/public/css/menu.css` (or a new CSS file for mask overlay)
-- Modify: `/Users/aayars/source/layers/public/js/app.js`
+- Modify: `public/index.html` (add mask overlay canvas)
+- Modify: `public/css/menu.css` (or a new CSS file for mask overlay)
+- Modify: `public/js/app.js`
 
 **Step 1: Add mask overlay canvas to HTML**
 
@@ -892,8 +892,8 @@ git add public/index.html public/css/menu.css public/js/app.js && git commit -m 
 Add mask thumbnail, click-to-edit, shift-click-for-overlay, and context menu to layer-item.
 
 **Files:**
-- Modify: `/Users/aayars/source/layers/public/js/layers/layer-item.js`
-- Modify: `/Users/aayars/source/layers/public/css/layers.css` (mask thumbnail styles)
+- Modify: `public/js/layers/layer-item.js`
+- Modify: `public/css/layers.css` (mask thumbnail styles)
 
 **Step 1: Add mask thumbnail to `_render()` template**
 
@@ -1037,8 +1037,8 @@ git add public/js/layers/layer-item.js public/css/layers.css && git commit -m "f
 Connect the layer-item mask events to the app's mask management methods. Build a lightweight context menu for mask operations.
 
 **Files:**
-- Modify: `/Users/aayars/source/layers/public/js/app.js`
-- Modify: `/Users/aayars/source/layers/public/index.html` (add mask context menu)
+- Modify: `public/js/app.js`
+- Modify: `public/index.html` (add mask context menu)
 
 **Step 1: Add mask context menu HTML**
 
@@ -1226,7 +1226,7 @@ git add public/js/app.js public/js/layers/layer-item.js public/index.html public
 Write Playwright tests covering mask creation, mask editing, mask visibility, and undo/redo.
 
 **Files:**
-- Create: `/Users/aayars/source/layers/tests/layer-masks.spec.js`
+- Create: `tests/layer-masks.spec.js`
 
 **Step 1: Write the test file**
 

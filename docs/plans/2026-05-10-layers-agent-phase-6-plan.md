@@ -128,7 +128,6 @@ test.describe('agent: jobs registry', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /Users/aayars/platform/layers
 npx playwright test tests/agent-jobs-registry.spec.js --reporter=list
 ```
 Expected: FAIL — `window.__layersJobs` undefined.
@@ -1282,7 +1281,6 @@ via job, records into recentExports.
 - [ ] **Step 1: Run the full agent suite**
 
 ```bash
-cd /Users/aayars/platform/layers
 npx playwright test tests/agent-*.spec.js --reporter=list
 ```
 Expected: all PASS — at least 215 (204 baseline + Phase 6 additions).
