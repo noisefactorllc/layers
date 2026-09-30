@@ -42,7 +42,7 @@ test.describe('Fill tool', () => {
         expect(result.newLayerType).toBe('media')
     })
 
-    test('blocked online fill leaves layers, dirty state, and undo history unchanged', async ({ page }) => {
+    test('an online fill commits a shareable image layer instead of being blocked', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
 
@@ -51,48 +51,46 @@ test.describe('Fill tool', () => {
         await page.click('.canvas-size-dialog .action-btn.primary')
         await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
 
-        const before = await page.evaluate(() => {
+        // Since images are preserved across Seance sessions, a fill while
+        // online is a shareable image layer (like flatten/duplicate/rasterize
+        // in agent-layer-crud), not a blocked mutation.
+        await page.evaluate(() => {
             const app = window.layersApp
             app._markClean()
+            window.__fillPublishCalls = []
             app._onlineAdapter = {
                 isOnline: () => true,
-                schedulePublish: () => {},
-            }
-            app._undoDebounceTimer = setTimeout(() => app._pushUndoState(), 60_000)
-            return {
-                layerIds: app._layers.map(layer => layer.id),
-                dirty: app._isDirty,
-                mutationRevision: app._projectMutationRevision,
-                undoStackLength: app._undoManager._stack.length,
-                undoIndex: app._undoManager._index,
-                pendingUndo: Boolean(app._undoDebounceTimer),
+                schedulePublish: () => window.__fillPublishCalls.push(1),
             }
         })
+
+        const countBefore = await page.evaluate(() => window.layersApp._layers.length)
 
         await page.click('#fillToolBtn')
         const overlay = await page.$('#selectionOverlay')
         const box = await overlay.boundingBox()
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-        // The blocked path ends in a warning toast and releases the gesture's
-        // lifecycle lease just behind it. Nothing else is observable, because
-        // the whole point of the test is that nothing else changed.
-        await page.locator('.toast.toast-warning').waitFor({ state: 'visible' })
-        await appState(page, () => !window.layersApp._projectLifecycleOwner)
+        await appState(page, (initial) => window.layersApp._layers.length > initial, countBefore)
 
         const after = await page.evaluate(() => {
             const app = window.layersApp
+            const added = app._layers[app._layers.length - 1]
             return {
-                layerIds: app._layers.map(layer => layer.id),
-                dirty: app._isDirty,
-                mutationRevision: app._projectMutationRevision,
-                undoStackLength: app._undoManager._stack.length,
-                undoIndex: app._undoManager._index,
-                pendingUndo: Boolean(app._undoDebounceTimer),
+                count: app._layers.length,
+                sourceType: added?.sourceType,
+                mediaType: added?.mediaType,
+                hasResource: app._renderer._mediaTextures.has(added?.id),
+                warningToast: Boolean(document.querySelector('.toast.toast-warning')),
+                publishes: window.__fillPublishCalls.length,
             }
         })
 
-        expect(before.dirty).toBe(false)
-        expect(after).toEqual(before)
+        expect(after.count).toBeGreaterThan(1)
+        expect(after.sourceType).toBe('media')
+        expect(after.mediaType).toBe('image')
+        expect(after.hasResource).toBe(true)
+        expect(after.warningToast).toBe(false)
+        expect(after.publishes).toBeGreaterThan(0)
     })
 
     test('reports a failed fill-layer commit outcome', async ({ page }) => {

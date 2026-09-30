@@ -249,6 +249,66 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         }
     })
 
+    test('mask-edit banner text meets WCAG AA contrast on its red surface across all themes', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+
+        const results = await page.evaluate(async () => {
+            function toSrgb(colorStr) {
+                const canvas = document.createElement('canvas')
+                canvas.width = 1
+                canvas.height = 1
+                const ctx = canvas.getContext('2d', { willReadFrequently: true })
+                ctx.clearRect(0, 0, 1, 1)
+                ctx.fillStyle = '#000000'
+                ctx.fillStyle = colorStr
+                ctx.fillRect(0, 0, 1, 1)
+                const data = ctx.getImageData(0, 0, 1, 1).data
+                return [data[0] / 255, data[1] / 255, data[2] / 255]
+            }
+
+            function luminance([r, g, b]) {
+                const a = [r, g, b].map(v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
+                return a[0] * 0.2126 + a[1] * 0.7152 + a[2] * 0.0722
+            }
+
+            function contrastRatio(fg, bg) {
+                const l1 = luminance(fg)
+                const l2 = luminance(bg)
+                return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+            }
+
+            const banner = document.getElementById('maskEditBanner')
+            if (!banner) throw new Error('Missing #maskEditBanner')
+            banner.classList.remove('hidden')
+
+            const themes = ['dark', 'light', 'gray-dark', 'gray-light', 'neutral-dark', 'neutral-light',
+                'corporate', 'cyberpunk', 'earthy', 'organic', 'terminal']
+            const report = {}
+
+            for (const theme of themes) {
+                document.documentElement.dataset.theme = theme
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+                const cs = window.getComputedStyle(banner)
+                const fg = toSrgb(cs.color)
+                const bg = toSrgb(cs.backgroundColor)
+                report[theme] = {
+                    contrast: contrastRatio(fg, bg),
+                    fg: cs.color,
+                    bg: cs.backgroundColor
+                }
+            }
+
+            banner.classList.add('hidden')
+            document.documentElement.removeAttribute('data-theme')
+            return report
+        })
+
+        for (const [theme, metrics] of Object.entries(results)) {
+            expect(metrics.contrast, `${theme} mask-edit banner contrast (fg ${metrics.fg} on bg ${metrics.bg})`).toBeGreaterThanOrEqual(4.5)
+        }
+    })
+
     test('toolbar icon buttons have consistent 32x32 sizing, states, and Handfish tooltips', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await defaultProjectReady(page)

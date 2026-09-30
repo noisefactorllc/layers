@@ -1361,10 +1361,10 @@ dialog[open] {
 .mask-edit-banner {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 14px;
-    background: color-mix(in srgb, var(--hf-red) 90%, transparent);
-    color: var(--hf-color-7);
+    gap: var(--hf-space-2);
+    padding: var(--hf-space-2) var(--hf-space-3);
+    background: color-mix(in srgb, var(--hf-red) 75%, var(--hf-color-7) 25%);
+    color: var(--hf-color-1);
     font-size: 12px;
     font-weight: 500;
     z-index: 2001;
@@ -1372,7 +1372,7 @@ dialog[open] {
     bottom: 0;
     left: 50%;
     transform: translateX(-50%);
-    border-radius: 6px 6px 0 0;
+    border-radius: var(--hf-radius-md) var(--hf-radius-md) 0 0;
 }
 
 .mask-edit-banner .icon-material {
@@ -1380,8 +1380,7 @@ dialog[open] {
 }
 
 .mask-edit-banner .mask-edit-hint {
-    opacity: 0.8;
-    margin-left: 8px;
+    margin-left: var(--hf-space-2);
     font-size: 11px;
 }
 
