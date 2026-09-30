@@ -51,8 +51,12 @@ test('a new viewer retains native image bytes and export detail after the creato
     })
     expect(original.sessionId).toBeTruthy()
     expect(original.nodeChars).toBeLessThan(65536)
-    await page.close()
+    // WebKit runs in a persistent context (fixtures.js), and closing its last
+    // page tears down the web context: the next newPage aborts MiniBrowser. So
+    // the viewer's blank page exists first, and joins only after the creator
+    // has left.
     const viewer = await context.newPage()
+    await page.close()
     await open(viewer, original.sessionId)
     const restored = await viewer.evaluate(async () => {
         const app = window.layersApp
