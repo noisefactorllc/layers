@@ -63,6 +63,170 @@ test.describe('Selection add/subtract', () => {
         expect(result.coversSecond).toBe(true)
     })
 
+    test('sub-minimum drag in add mode keeps the prior selection', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(() => {
+            const app = window.layersApp
+            const sm = app._selectionManager
+            sm._enabled = true
+            sm._currentTool = 'rectangle'
+
+            const overlay = sm._overlay || document.getElementById('selectionOverlay')
+            const rect = overlay.getBoundingClientRect()
+            const sx = rect.width / overlay.width
+            const sy = rect.height / overlay.height
+            const fire = (type, cx, cy, mods = {}) => overlay.dispatchEvent(new MouseEvent(type, {
+                clientX: rect.left + cx * sx,
+                clientY: rect.top + cy * sy,
+                bubbles: true, button: 0, ...mods
+            }))
+
+            // Existing selection: rect (100,100)-(200,200), no modifier.
+            fire('mousedown', 100, 100)
+            fire('mousemove', 200, 200)
+            fire('mouseup', 200, 200)
+            const firstHas = sm.hasSelection()
+
+            // Sub-minimum drag (2x2 px) with SHIFT (add): must add nothing but
+            // keep the prior selection, not wipe it.
+            fire('mousedown', 300, 300, { shiftKey: true })
+            fire('mousemove', 302, 302, { shiftKey: true })
+            fire('mouseup', 302, 302, { shiftKey: true })
+
+            return {
+                firstHas,
+                keptAfterTinyAdd: sm.hasSelection() && sm._isPointInSelection(150, 150),
+                antsRunning: sm._animationId !== null
+            }
+        })
+
+        expect(result.firstHas).toBe(true)
+        expect(result.keptAfterTinyAdd).toBe(true)
+        expect(result.antsRunning).toBe(true)
+    })
+
+    test('sub-minimum drag in subtract mode keeps the prior selection', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(() => {
+            const app = window.layersApp
+            const sm = app._selectionManager
+            sm._enabled = true
+            sm._currentTool = 'rectangle'
+
+            const overlay = sm._overlay || document.getElementById('selectionOverlay')
+            const rect = overlay.getBoundingClientRect()
+            const sx = rect.width / overlay.width
+            const sy = rect.height / overlay.height
+            const fire = (type, cx, cy, mods = {}) => overlay.dispatchEvent(new MouseEvent(type, {
+                clientX: rect.left + cx * sx,
+                clientY: rect.top + cy * sy,
+                bubbles: true, button: 0, ...mods
+            }))
+
+            fire('mousedown', 100, 100)
+            fire('mousemove', 200, 200)
+            fire('mouseup', 200, 200)
+
+            // Sub-minimum drag with ALT (subtract): removes nothing, keeps prior.
+            fire('mousedown', 120, 120, { altKey: true })
+            fire('mousemove', 120.5, 120.5, { altKey: true })
+            fire('mouseup', 120.5, 120.5, { altKey: true })
+
+            return {
+                keptAfterTinySubtract: sm.hasSelection() && sm._isPointInSelection(150, 150),
+                antsRunning: sm._animationId !== null
+            }
+        })
+
+        expect(result.keptAfterTinySubtract).toBe(true)
+        expect(result.antsRunning).toBe(true)
+    })
+
+    test('sub-minimum drag in replace mode still clears the selection', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(() => {
+            const app = window.layersApp
+            const sm = app._selectionManager
+            sm._enabled = true
+            sm._currentTool = 'rectangle'
+
+            const overlay = sm._overlay || document.getElementById('selectionOverlay')
+            const rect = overlay.getBoundingClientRect()
+            const sx = rect.width / overlay.width
+            const sy = rect.height / overlay.height
+            const fire = (type, cx, cy, mods = {}) => overlay.dispatchEvent(new MouseEvent(type, {
+                clientX: rect.left + cx * sx,
+                clientY: rect.top + cy * sy,
+                bubbles: true, button: 0, ...mods
+            }))
+
+            fire('mousedown', 100, 100)
+            fire('mousemove', 200, 200)
+            fire('mouseup', 200, 200)
+            const firstHas = sm.hasSelection()
+
+            // Replace-mode click on empty canvas deselects (unchanged behavior).
+            fire('mousedown', 300, 300)
+            fire('mousemove', 302, 302)
+            fire('mouseup', 302, 302)
+
+            return {
+                firstHas,
+                clearedAfterTinyReplace: !sm.hasSelection(),
+                antsStopped: sm._animationId === null
+            }
+        })
+
+        expect(result.firstHas).toBe(true)
+        expect(result.clearedAfterTinyReplace).toBe(true)
+        expect(result.antsStopped).toBe(true)
+    })
+
+    test('zero-movement lasso click in add mode keeps the prior selection', async ({ page }) => {
+        await bootSolid(page)
+
+        const result = await page.evaluate(() => {
+            const app = window.layersApp
+            const sm = app._selectionManager
+            sm._enabled = true
+            sm._currentTool = 'rectangle'
+
+            const overlay = sm._overlay || document.getElementById('selectionOverlay')
+            const rect = overlay.getBoundingClientRect()
+            const sx = rect.width / overlay.width
+            const sy = rect.height / overlay.height
+            const fire = (type, cx, cy, mods = {}) => overlay.dispatchEvent(new MouseEvent(type, {
+                clientX: rect.left + cx * sx,
+                clientY: rect.top + cy * sy,
+                bubbles: true, button: 0, ...mods
+            }))
+
+            fire('mousedown', 100, 100)
+            fire('mousemove', 200, 200)
+            fire('mouseup', 200, 200)
+            const firstHas = sm.hasSelection()
+
+            // Zero-movement lasso click in add mode: no path is ever drawn, so
+            // nothing is added — the prior selection must survive with ants running.
+            sm._currentTool = 'lasso'
+            fire('mousedown', 150, 150, { shiftKey: true })
+            fire('mouseup', 150, 150, { shiftKey: true })
+
+            return {
+                firstHas,
+                keptAfterLassoClick: sm.hasSelection() && sm._isPointInSelection(150, 150),
+                antsRunning: sm._animationId !== null
+            }
+        })
+
+        expect(result.firstHas).toBe(true)
+        expect(result.keptAfterLassoClick).toBe(true)
+        expect(result.antsRunning).toBe(true)
+    })
+
     test('emptying a selection via subtract does not leave a running animation', async ({ page }) => {
         await bootSolid(page)
 

@@ -529,7 +529,12 @@ class SelectionManager {
             this._updateSelectionPath(this._drawStart, this._lastCoords, e.shiftKey, e.altKey)
         }
 
-        if (this._selectionPath) {
+        if (!this._selectionPath && this._selectionMode !== 'replace' && this._previousSelection) {
+            // Zero-movement click in add/subtract mode (e.g. a lasso click that
+            // never drew a path): it adds or removes nothing, so the prior
+            // selection survives and its marching-ants frame is restored.
+            this._restorePreviousSelection()
+        } else if (this._selectionPath) {
             const path = this._selectionPath
             let hasSize = true
             if (path.type === 'rect') {
@@ -548,6 +553,11 @@ class SelectionManager {
                     this._startAnimation()
                     this.onSelectionChange?.()
                 }
+            } else if (this._selectionMode !== 'replace' && this._previousSelection) {
+                // Add/subtract mode: a sub-minimum drag adds or removes nothing,
+                // so the prior selection survives (Photoshop parity) instead of
+                // being wiped by the below-minimum clear.
+                this._restorePreviousSelection()
             } else {
                 this.clearSelection()
             }
@@ -555,6 +565,18 @@ class SelectionManager {
 
         this._drawStart = null
         this._lastCoords = null
+    }
+
+    /**
+     * Restore the captured previous selection after a no-op add/subtract
+     * gesture, restarting the marching ants and refreshing menus.
+     * @private
+     */
+    _restorePreviousSelection() {
+        this._selectionPath = this._previousSelection
+        this._previousSelection = null
+        this._startAnimation()
+        this.onSelectionChange?.()
     }
 
     /**
