@@ -162,6 +162,10 @@ for (const toolName of ['brush', 'shape']) {
         const backdrop = page.locator('.open-dialog-backdrop.visible')
         await reopenNewProjectDialog(page)
         await page.locator('.media-option[data-type="solid"]').click()
+        // 512 preset: quarters the composited frame cost on software-rendered
+        // webkit shards (same capacity trim as compile-overlay); the strokes
+        // below live in a 200x200 overlay-box region.
+        await page.locator('.size-preset[data-width="512"]').click()
         await page.locator('.canvas-size-dialog .action-btn.primary').click()
         await backdrop.waitFor({ state: 'hidden' })
 
