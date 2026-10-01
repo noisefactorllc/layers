@@ -10,14 +10,17 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 // slider-drag undo coalescing (.control-label is in app.js CONTROL_SELECTOR)
 // commits the whole drag as one undo entry.
 
-// Transparent base keeps the boot cheap and makes the effect layer the only
-// rendered row.
+// Transparent 512 canvas keeps the boot cheap and makes the effect layer the
+// only rendered row (same shard-cost trim as other dialog-booting suites; no
+// assertion here reads pixels).
 async function boot(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    await page.fill('#canvas-width', '512')
+    await page.fill('#canvas-height', '512')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await appReady(page)
@@ -68,11 +71,10 @@ async function dragLabel(page, group, dx) {
     expect(box).toBeTruthy()
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
     await page.mouse.down()
-    // Several steps so the drag emits progressive pointermove events.
-    const steps = 8
-    for (let i = 1; i <= steps; i++) {
-        await page.mouse.move(box.x + box.width / 2 + (dx * i) / steps, box.y + box.height / 2)
-    }
+    // Two intermediate moves: each committed scrub value drives a full DSL
+    // recompile on software GL, so extra steps only burn the 90s test budget.
+    await page.mouse.move(box.x + box.width / 2 + dx / 2, box.y + box.height / 2)
+    await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height / 2)
 }
 
 test.describe('Scrubby effect-param labels', () => {
