@@ -14,6 +14,31 @@ const STORE_MEDIA = 'media'
 
 let db = null
 
+// Requested at most once per session; a repeat call is a no-op.
+let persistRequested = false
+
+/**
+ * Best-effort request for persistent storage.
+ *
+ * Without a persist grant the browser may evict the layers-projects
+ * IndexedDB under disk pressure, silently deleting saved projects and
+ * their media blobs. Chrome grants based on engagement heuristics and
+ * Firefox never prompts, so this is a silent best-effort call at boot.
+ * Resolves with the grant boolean, or null when the API is unavailable,
+ * a request was already made, or the call failed.
+ * @returns {Promise<boolean|null>}
+ */
+export async function requestPersistentStorage() {
+    if (persistRequested) return null
+    persistRequested = true
+    try {
+        return await navigator.storage?.persist() ?? null
+    } catch (err) {
+        console.warn('[ProjectStorage] Persistent-storage request failed:', err)
+        return null
+    }
+}
+
 /**
  * Initialize the database
  * @returns {Promise<IDBDatabase>}
@@ -278,3 +303,5 @@ export async function checkProjectName(name, excludeId = null) {
 initDB().catch(err => {
     console.error('[ProjectStorage] Failed to initialize database:', err)
 })
+
+requestPersistentStorage().catch(() => {})

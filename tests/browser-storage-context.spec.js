@@ -29,3 +29,51 @@ test('normal storage profiles retain native files across reload and isolate inde
     })
     expect(projects).toEqual([])
 })
+
+test('boot requests persistent storage exactly once and repeat calls are no-ops', async ({ page }) => {
+    await page.addInitScript(() => {
+        window.__persistCalls = 0
+        const storage = navigator.storage
+        const original = storage.persist.bind(storage)
+        storage.persist = () => {
+            window.__persistCalls++
+            return original()
+        }
+    })
+    await page.goto('/js/utils/project-storage.js')
+    const result = await page.evaluate(async () => {
+        const { requestPersistentStorage } = await import('/js/utils/project-storage.js')
+        const repeat = await requestPersistentStorage()
+        return { callsAfterImport: window.__persistCalls, repeat }
+    })
+    // The module-level init already spent the one request; the explicit
+    // repeat call is a no-op.
+    expect(result).toEqual({ callsAfterImport: 1, repeat: null })
+})
+
+test('requestPersistentStorage tolerates a missing StorageManager', async ({ page }) => {
+    await page.addInitScript(() => {
+        Object.defineProperty(navigator, 'storage', { value: undefined, configurable: true })
+    })
+    await page.goto('/js/utils/project-storage.js')
+    const result = await page.evaluate(async () => {
+        const { requestPersistentStorage } = await import('/js/utils/project-storage.js')
+        return { grant: await requestPersistentStorage(), hasStorage: navigator.storage }
+    })
+    expect(result).toEqual({ grant: null, hasStorage: undefined })
+})
+
+test('requestPersistentStorage maps a rejecting persist() to null', async ({ page }) => {
+    await page.addInitScript(() => {
+        Object.defineProperty(navigator, 'storage', {
+            value: { persist: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) },
+            configurable: true,
+        })
+    })
+    await page.goto('/js/utils/project-storage.js')
+    const grant = await page.evaluate(async () => {
+        const { requestPersistentStorage } = await import('/js/utils/project-storage.js')
+        return requestPersistentStorage()
+    })
+    expect(grant).toBeNull()
+})
