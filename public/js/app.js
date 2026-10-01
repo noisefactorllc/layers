@@ -4884,7 +4884,7 @@ class LayersApp {
     _setupLayerStackHandlers() {
         if (!this._layerStack) return
 
-        const CONTROL_SELECTOR = 'slider-value, .layer-opacity, input[type="range"], color-picker, .vector-picker'
+        const CONTROL_SELECTOR = 'slider-value, .layer-opacity, input[type="range"], color-picker, .vector-picker, .control-label'
         let gestureInControls = false
         const isControlEvent = (e) => {
             if (e.target?.closest?.(CONTROL_SELECTOR)) return true

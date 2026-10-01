@@ -532,6 +532,15 @@ effect-params {
     white-space: nowrap;
 }
 
+/* Scrubby slider label (effect params): horizontal drag scrubs the value.
+   touch-action:none keeps the gesture ours on touch, like the slider thumb. */
+.control-label-scrub {
+    cursor: ew-resize;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+}
+
 /* A control whose ui.enabledBy condition is not met: inert in the shader, so
    greyed out and non-interactive rather than silently doing nothing. */
 .control-group.disabled {

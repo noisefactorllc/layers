@@ -195,6 +195,11 @@ class EffectParams extends HTMLElement {
         const controlHandle = this._createControl(paramName, spec, currentValue)
         if (!controlHandle) return null
 
+        // Photoshop-style scrubby label for slider params
+        if (controlHandle.scrubbable) {
+            this._attachLabelScrub(label, paramName, spec, controlHandle)
+        }
+
         // Append the control element(s)
         if (controlHandle.element) {
             group.appendChild(controlHandle.element)
@@ -288,9 +293,87 @@ class EffectParams extends HTMLElement {
 
         return {
             element: slider,
+            scrubbable: true,
             getValue: () => spec.type === 'int' ? parseInt(slider.value, 10) : parseFloat(slider.value),
             setValue: (v) => { slider.value = v }
         }
+    }
+
+    /**
+     * Photoshop-style scrubby label: dragging a slider param's label
+     * horizontally changes the value without hunting the thumb — one pixel
+     * of travel equals one step, clamped to the declared range and
+     * quantized to the step grid relative to min. The gesture emits the
+     * same param-change events the slider itself does, and a pointerdown
+     * on `.control-label` arms the app's slider-drag undo coalescing
+     * (CONTROL_SELECTOR in app.js), so a whole drag lands as one history
+     * entry on release. Escape mid-drag restores the starting value.
+     * @private
+     */
+    _attachLabelScrub(label, paramName, spec, handle) {
+        const min = Number(spec.min ?? 0)
+        const max = Number(spec.max ?? 100)
+        const step = Number(spec.step ?? (spec.type === 'int' ? 1 : 0.01))
+        if (![min, max, step].every(Number.isFinite) || max <= min || step <= 0) return
+
+        label.classList.add('control-label-scrub')
+
+        let drag = null
+
+        const stop = () => {
+            if (!drag) return
+            drag = null
+            document.removeEventListener('keydown', onKey)
+        }
+
+        const onKey = (e) => {
+            if (!drag || e.key !== 'Escape') return
+            e.stopPropagation()
+            handle.setValue(drag.startValue)
+            this._handleValueChange(paramName, drag.startValue, spec)
+            stop()
+        }
+
+        label.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || drag) return
+            const startValue = typeof handle.getValue === 'function' ? handle.getValue() : NaN
+            if (!Number.isFinite(startValue)) return
+            drag = {
+                pointerId: e.pointerId,
+                startX: e.clientX,
+                startValue,
+                lastEmitted: startValue
+            }
+            label.setPointerCapture(e.pointerId)
+            e.preventDefault()
+            document.addEventListener('keydown', onKey)
+        })
+
+        label.addEventListener('pointermove', (e) => {
+            if (!drag || e.pointerId !== drag.pointerId) return
+            const dx = e.clientX - drag.startX
+            // Dead zone so a click (no intent) never perturbs the value.
+            if (Math.abs(dx) < 2) return
+            const raw = Math.min(max, Math.max(min, drag.startValue + dx * step))
+            const quantized = min + Math.round((raw - min) / step) * step
+            const value = spec.type === 'int'
+                ? Math.round(quantized)
+                : Number(quantized.toFixed(6))
+            if (value === drag.lastEmitted) return
+            drag.lastEmitted = value
+            handle.setValue(value)
+            this._handleValueChange(paramName, value, spec)
+        })
+
+        const end = (e) => {
+            if (!drag || e.pointerId !== drag.pointerId) return
+            if (label.hasPointerCapture && label.hasPointerCapture(e.pointerId)) {
+                label.releasePointerCapture(e.pointerId)
+            }
+            stop()
+        }
+        label.addEventListener('pointerup', end)
+        label.addEventListener('pointercancel', end)
     }
 
     /**
