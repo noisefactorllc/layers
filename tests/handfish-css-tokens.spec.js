@@ -588,6 +588,49 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         expect(restoredBrushAria).toBe('Brush Tool (B)')
     })
 
+    test('canvas clears the fixed toolbar and menu bar dropdowns stack above it', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await defaultProjectReady(page)
+
+        // Fit mode fills the panel's content box; the panel must reserve the
+        // toolbar's width so the canvas never slides underneath it.
+        const clearance = await page.evaluate(() => {
+            const toolbar = document.getElementById('toolbar').getBoundingClientRect()
+            const canvas = document.getElementById('canvas').getBoundingClientRect()
+            return canvas.left - toolbar.right
+        })
+        expect(clearance).toBeGreaterThanOrEqual(16)
+
+        // The file dropdown opens over the toolbar; it must paint on top.
+        await page.locator('#menu .hf-menubar-trigger', { hasText: 'file' }).click()
+        const fileNew = page.locator('#menu #newMenuItem')
+        await fileNew.waitFor({ state: 'visible' })
+        const dropdownWins = await page.evaluate(() => {
+            const toolbar = document.getElementById('toolbar').getBoundingClientRect()
+            const dropdown = document.getElementById('newMenuItem').closest('[role="menu"]').getBoundingClientRect()
+            const x = (dropdown.left + toolbar.right) / 2
+            const y = (Math.max(dropdown.top, toolbar.top) + Math.min(dropdown.bottom, toolbar.bottom)) / 2
+            const overlaps = dropdown.left < toolbar.right && dropdown.top < toolbar.bottom && dropdown.bottom > toolbar.top
+            const hit = document.elementFromPoint(x, y)
+            return { overlaps, onTop: !!hit && !hit.closest('#toolbar') && !!hit.closest('#menu') }
+        })
+        expect(dropdownWins.overlaps).toBe(true)
+        expect(dropdownWins.onTop).toBe(true)
+        await page.keyboard.press('Escape')
+        await expect(fileNew).toBeHidden()
+
+        // An open toolbar flyout still sits above the menu bar.
+        await page.locator('#selectionMenu .tool-caret').click()
+        const flyout = page.locator('#selectionMenu .menu-items')
+        await expect(flyout).not.toHaveClass(/hide/)
+        const flyoutWins = await page.evaluate(() => {
+            const items = document.querySelector('#selectionMenu .menu-items')
+            const box = items.getBoundingClientRect()
+            return items.contains(document.elementFromPoint(box.left + box.width / 2, box.top + 8))
+        })
+        expect(flyoutWins).toBe(true)
+    })
+
     test('modal dialog chrome resolves from --hf-* tokens and re-themes on theme switch', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })

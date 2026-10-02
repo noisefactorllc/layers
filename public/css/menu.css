@@ -12,7 +12,8 @@
     top: 0;
     left: 0;
     width: calc(590px - 0.5em);
-    z-index: 2000;
+    /* Above #toolbar and the drawing options bar so menu dropdowns are never buried */
+    z-index: 2001;
     height: var(--ui-titlebar-height);
     align-items: stretch;
     border-radius: 0 0 var(--ui-corner-radius) 0;
@@ -175,6 +176,8 @@
     top: 50%;
     transform: translateY(-50%);
     z-index: 2000;
+    box-sizing: border-box;
+    min-width: var(--toolbar-width);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -185,6 +188,11 @@
     font-weight: bold;
     color: var(--hf-color-7);
     border-radius: 0 var(--ui-corner-radius) var(--ui-corner-radius) 0;
+}
+
+/* An open tool flyout can reach up under the menu bar on short viewports */
+#toolbar:has(.menu-items:not(.hide)) {
+    z-index: 2002;
 }
 
 #toolbarBackdrop {

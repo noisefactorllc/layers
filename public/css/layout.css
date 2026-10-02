@@ -137,6 +137,8 @@ html, body {
     background-color: var(--hf-color-2);
     overflow: auto;
     padding: 16px;
+    /* Keep the canvas clear of the fixed #toolbar */
+    padding-left: calc(var(--toolbar-width) + 16px);
 }
 
 .canvas-container {

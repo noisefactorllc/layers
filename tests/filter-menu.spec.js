@@ -305,6 +305,10 @@ test.describe('Filter menu', () => {
             const fileTitle = page.locator('#menu .hf-menubar-trigger', { hasText: 'file' })
             await fileTitle.click()
             await expect(page.locator('#newMenuItem')).toBeVisible()
+            // The open dropdown stacks above the toolbar, so close it before
+            // probing the toolbar's own hit targets.
+            await page.keyboard.press('Escape')
+            await expect(page.locator('#newMenuItem')).toBeHidden()
 
             const toolbar = page.locator('#toolbar')
             const toolbarRect = await toolbar.boundingBox()
