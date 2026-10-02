@@ -41,6 +41,14 @@ function resolveSystemTheme() {
 export function applyTheme(themeValue) {
     const resolved = themeValue === 'system' ? resolveSystemTheme() : themeValue
     document.documentElement.dataset.theme = resolved
+    // Browser chrome follows the active theme: the meta theme-color was a
+    // hardcoded #333333 that ignored theme switching entirely. The computed
+    // body background resolves the live --hf-* token for the new theme.
+    const meta = document.querySelector('meta[name="theme-color"]')
+    if (meta) {
+        const bg = getComputedStyle(document.body).backgroundColor
+        if (bg) meta.content = bg
+    }
 }
 
 // Single shared MediaQueryList + listener so the prefers-color-scheme handler

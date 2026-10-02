@@ -451,6 +451,34 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         await expect(tooltipLayer).toBeHidden({ timeout: 2000 })
     })
 
+    test('browser theme-color meta follows the active theme', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await defaultProjectReady(page)
+
+        const read = () => page.evaluate(() => ({
+            meta: document.querySelector('meta[name="theme-color"]')?.content,
+            body: getComputedStyle(document.body).backgroundColor
+        }))
+
+        // Boot applies the saved theme through initTheme/applyTheme; the meta
+        // must carry the computed body background, not the removed hardcoded
+        // #333333.
+        const booted = await read()
+        expect(booted.meta).toBe(booted.body)
+        expect(booted.meta).not.toBe('#333333')
+
+        // Theme switches (agent path, same applyTheme choke point as the
+        // Settings dialog) update the meta in lockstep.
+        await page.evaluate(() => window.LayersAgent.setSettings({ theme: 'light' }))
+        const light = await read()
+        expect(light.meta).toBe(light.body)
+        expect(light.meta).not.toBe(booted.meta)
+
+        await page.evaluate(() => window.LayersAgent.setSettings({ theme: 'system' }))
+        const restored = await read()
+        expect(restored.meta).toBe(restored.body)
+    })
+
     test('toolbar icon buttons have consistent 32x32 sizing, states, and Handfish tooltips', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await defaultProjectReady(page)
