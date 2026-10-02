@@ -1,19 +1,16 @@
 import { test, expect } from './fixtures.js'
-import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function bootApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
-    await page.evaluate(async () => { await window.LayersAgent.ready })
-    await reopenNewProjectDialog(page)
-    await page.click('.media-option[data-type="solid"]')
-    await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
-    // 512 canvas: same state assertions, 4x fewer pixels per composited
-    // frame (shard-cost trim; nothing here reads pixels).
-    await page.fill('#canvas-width', '512')
-    await page.fill('#canvas-height', '512')
-    await page.click('.canvas-size-dialog .action-btn.primary')
-    await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
+    // Agent-path boot (same project-replacement handler the dialog reaches)
+    // instead of the dialog round-trip: the webkit 4/10 shard pays this boot
+    // 11 times. Nothing here tests the dialog flow (canvas-size.spec does).
+    await page.evaluate(async () => {
+        await window.LayersAgent.ready
+        const env = await window.LayersAgent.newProject({ width: 512, height: 512 })
+        if (!env.ok) throw new Error(env.error?.message || 'newProject failed')
+    })
 }
 
 test.describe('setForegroundColor', () => {
