@@ -407,6 +407,50 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         }
     })
 
+    test('layer panel icon controls carry Handfish tooltips, including the drag handle', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await defaultProjectReady(page)
+        // The base layer's drag handle is intentionally hidden (the base
+        // cannot be reordered); add a reorderable layer to measure it.
+        await page.evaluate(async () => {
+            await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'filter/blur' })
+        })
+
+        const controls = await page.evaluate(() => {
+            const first = document.querySelector('layer-item:not(.base-layer):not(.child-layer)')
+            if (!first) throw new Error('No layer-item rendered')
+            const selectors = ['.layer-drag-handle', '.layer-visibility', '.layer-add-child', '.layer-delete', '.layer-params-toggle']
+            return selectors.map(sel => {
+                const el = first.querySelector(sel)
+                if (!el) return { sel, missing: true }
+                return {
+                    sel,
+                    hasTooltip: el.classList.contains('tooltip'),
+                    dataTitle: el.getAttribute('data-title'),
+                    title: el.getAttribute('title'),
+                    ariaLabel: el.getAttribute('aria-label')
+                }
+            })
+        })
+
+        for (const c of controls) {
+            expect(c.missing, `${c.sel} present`).toBeFalsy()
+            expect(c.hasTooltip, `${c.sel} tooltip class`).toBe(true)
+            expect(c.dataTitle, `${c.sel} data-title matches title`).toBe(c.title)
+            expect(c.ariaLabel, `${c.sel} has aria-label`).toBeTruthy()
+        }
+
+        // The drag handle is the only non-button control in the row; hovering
+        // it must raise the shared handfish tooltip layer like its siblings.
+        const handle = page.locator('layer-item:not(.base-layer):not(.child-layer) .layer-drag-handle').first()
+        await handle.hover()
+        const tooltipLayer = page.locator('#hf-tooltip-layer')
+        await expect(tooltipLayer).toBeVisible({ timeout: 2000 })
+        expect(await tooltipLayer.textContent()).toContain('Drag to reorder')
+        await page.mouse.move(0, 0)
+        await expect(tooltipLayer).toBeHidden({ timeout: 2000 })
+    })
+
     test('toolbar icon buttons have consistent 32x32 sizing, states, and Handfish tooltips', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await defaultProjectReady(page)

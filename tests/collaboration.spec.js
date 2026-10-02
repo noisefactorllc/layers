@@ -150,7 +150,10 @@ async function layersState(page) {
 test('go online menu item is visible by default and the dialog stays closed until opened', async ({ page }) => {
     await preparePage(page)
     await gotoApp(page)
-    await createProject(page)
+    // Preserved 1024 case: the suite defaults to the 512 preset for shard
+    // cost (see createProject), but one boot keeps default-resolution
+    // coverage of the online menu surface. No canvas reads in this test.
+    await createProject(page, 'transparent', 1024)
 
     await openFileMenu(page)
     await expect(page.locator('#goOnlineMenuItem')).toBeVisible()

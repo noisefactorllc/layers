@@ -114,7 +114,7 @@ class LayerItem extends HTMLElement {
 
         this.innerHTML = `
             <div class="layer-row">
-                <div class="layer-drag-handle" title="Drag to reorder">
+                <div class="layer-drag-handle tooltip" data-title="Drag to reorder" aria-label="Drag to reorder" title="Drag to reorder">
                     <span class="icon-material">drag_indicator</span>
                 </div>
                 <button class="layer-visibility tooltip ${isVisible ? 'visible' : ''}" data-title="Toggle visibility" aria-label="Toggle visibility" title="Toggle visibility">
