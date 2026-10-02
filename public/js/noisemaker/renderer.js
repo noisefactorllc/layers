@@ -2226,7 +2226,10 @@ export class LayersRenderer {
      * @private
      */
     _buildChildChain(layer, currentOutput, lines, surfaces) {
-        const alloc = surfaces?.alloc ?? (() => ++currentOutput)
+        // The fallback counter is separate from currentOutput: each line reads
+        // the previous result before the next surface is written.
+        let lastAllocated = currentOutput
+        const alloc = surfaces?.alloc ?? (() => ++lastAllocated)
         const release = surfaces?.release ?? (() => {})
         const visibleChildren = (layer.children || []).filter(c => c.visible)
         for (const child of visibleChildren) {
