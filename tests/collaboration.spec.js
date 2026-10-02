@@ -66,7 +66,11 @@ async function gotoApp(page, params = {}) {
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 25000 })
 }
 
-async function createProject(page, type = 'transparent', size) {
+// 512 preset default: quarters the composited-frame raster cost on software-
+// rendered CI (the webkit 4/10 shard cap). Every pixel read in this suite is
+// fractional/relative to canvas.width, so the boot size is free; explicit
+// sizes (128/400) still override for their tests.
+async function createProject(page, type = 'transparent', size = 512) {
     await reopenNewProjectDialog(page)
     await page.click(`.media-option[data-type="${type}"]`)
     await page.waitForSelector('.canvas-size-dialog', { timeout: 15000 })
