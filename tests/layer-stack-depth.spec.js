@@ -40,7 +40,7 @@ async function assertNoErrorToast(page) {
         const container = document.querySelector('#toast-container')
         return container
             ? [...container.querySelectorAll('.toast')]
-                .filter(el => el.classList.contains('error'))
+                .filter(el => el.classList.contains('toast-error'))
                 .map(el => el.textContent.trim())
             : []
     })
@@ -157,7 +157,6 @@ test('a mixed eight-layer stack with text, a mask and a child effect renders', a
         strokes.push(await addDrawing('Stroke C', '#0000ff', 72))
 
         // A layer mask on Stroke C, and a child effect on Stroke B.
-        const masked = strokes.find(Boolean)
         const layerC = app._layers.find(candidate => candidate.name === 'Stroke C')
         if (layerC) {
             try {
@@ -189,11 +188,31 @@ test('a mixed eight-layer stack with text, a mask and a child effect renders', a
             masked: !!(layer.mask && layer.maskEnabled !== false),
             children: (layer.children || []).filter(child => child.visible).length,
         })),
-        rebuilt: true,
     }))
     expect(stack.dsl).toBeTruthy()
     expect(stack.layers.filter(layer => layer.visible).length).toBe(8)
     expect(stack.layers.some(layer => layer.masked)).toBe(true)
     expect(stack.layers.some(layer => layer.children > 0)).toBe(true)
     await assertDslWithinBudget(page)
+
+    // Render-success signal: the composite must actually contain the strokes
+    // of the layers the stack modification did not transform. (Stroke B is
+    // blurred by its child effect and Stroke C passes through its mask, so
+    // only the untouched strokes are asserted here.) A failed compile cannot
+    // fake these: exportImage would return stale or empty pixels.
+    const bytes = await page.evaluate(async () => {
+        const exported = await window.LayersAgent.exportImage({ format: 'png', captureOnly: true })
+        if (!exported.ok) throw new Error(exported.error?.message || 'Export failed')
+        return exported.result.bytes
+    })
+    const exported = PNG.sync.read(Buffer.from(bytes, 'base64'))
+    expect([exported.width, exported.height]).toEqual([128, 128])
+    for (const [r, g, b] of [[255, 0, 0], [255, 255, 0], [0, 255, 255], [255, 0, 255]]) {
+        const found = exported.data.some((value, index) =>
+            index % 4 === 0
+            && Math.abs(exported.data[index] - r) <= 2
+            && Math.abs(exported.data[index + 1] - g) <= 2
+            && Math.abs(exported.data[index + 2] - b) <= 2)
+        expect(found, `stroke color rgb(${r},${g},${b}) must appear in the composite`).toBe(true)
+    }
 })
