@@ -6,16 +6,13 @@ async function boot(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForFunction(() => !!window.LayersAgent, null, { timeout: 15000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
-    await reopenNewProjectDialog(page)
-    await page.click('.media-option[data-type="solid"]')
-    await page.locator('#canvas-width').fill('128')
-    await page.locator('#canvas-height').fill('128')
-            // 512 preset: quarters the composited frame cost on software-rendered CI
-            // shards (same capacity trim as drawing-shortcuts); this suite reads no
-    // absolute canvas coordinates.
-    await page.click('.size-preset[data-width="512"]')
-    await page.click('.canvas-size-dialog .action-btn.primary')
-    await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden' })
+    // 512 preset: quarters the composited frame cost on software-rendered CI
+    // shards; this suite reads no absolute canvas coordinates. The boot calls
+    // the same handler the dialog confirm reaches (app.js onSolid ->
+    // _handleCreateSolidBase) without the dialog round-trip: webkit 8/10
+    // shard capacity trim (same lever as 5e79b55). Identical project semantics.
+    await defaultProjectReady(page)
+    await page.evaluate(() => window.layersApp._handleCreateSolidBase(512, 512))
 }
 
 // Recovery copies are reached through File > recover unsaved work...

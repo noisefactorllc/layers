@@ -1,20 +1,17 @@
 import { test, expect } from './fixtures.js'
 import path from 'node:path'
 import { IN_PAGE_UNTIL, defaultProjectReady } from './waits.js'
-import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
-    await reopenNewProjectDialog(page)
-    const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await page.locator('.media-option[data-type="solid"]').click()
-            // 512 preset: quarters the composited frame cost on software-rendered CI
-            // shards (same capacity trim as drawing-shortcuts); this suite reads no
-    // absolute canvas coordinates.
-    await page.locator('.size-preset[data-width="512"]').click()
-    await page.locator('.canvas-size-dialog .action-btn.primary').click()
-    await backdrop.waitFor({ state: 'hidden' })
+    // 512 preset: quarters the composited frame cost on software-rendered CI
+    // shards; this suite reads no absolute canvas coordinates. The boot calls
+    // the same handler the dialog confirm reaches (app.js onSolid ->
+    // _handleCreateSolidBase) without the dialog round-trip: webkit 8/10
+    // shard capacity trim (same lever as 5e79b55). Identical project semantics.
+    await defaultProjectReady(page)
+    await page.evaluate(() => window.layersApp._handleCreateSolidBase(512, 512))
 }
 
 async function projectState(page) {

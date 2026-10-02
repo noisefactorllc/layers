@@ -1,15 +1,16 @@
 import { test, expect } from './fixtures.js'
-import { IN_PAGE_UNTIL } from './waits.js'
-import { reopenNewProjectDialog } from './helpers/new-project.js'
+import { IN_PAGE_UNTIL, defaultProjectReady } from './waits.js'
 
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.locator('#loading-screen').waitFor({ state: 'hidden' })
-    await reopenNewProjectDialog(page)
-    const backdrop = page.locator('.open-dialog-backdrop.visible')
-    await page.locator('.media-option[data-type="solid"]').click()
-    await page.locator('.canvas-size-dialog .action-btn.primary').click()
-    await backdrop.waitFor({ state: 'hidden' })
+    // Same handler the dialog confirm reaches (app.js onSolid ->
+    // _handleCreateSolidBase) without the dialog round-trip: webkit 8/10
+    // shard capacity trim (same lever as 5e79b55). Identical project
+    // semantics; keeps the dialog-boot's 1024 default because some tests
+    // read absolute canvas dimensions.
+    await defaultProjectReady(page)
+    await page.evaluate(() => window.layersApp._handleCreateSolidBase(1024, 1024))
 }
 
 test('an SDK-pending local edit survives a peer version advance until its own acknowledgement', async ({ page }) => {
