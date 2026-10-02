@@ -1958,7 +1958,50 @@ export class LayersRenderer {
         lines.push(`search ${[...usedNamespaces].join(', ')}`)
         lines.push('')
 
-        let currentOutput = 0 // Track which output buffer we're using
+        // Output-surface recycling. The engine exposes eight output surfaces
+        // (o0-o7) and rejects any reference beyond them at the lex step. The
+        // previous emission gave every intermediate result a fresh, monotonically
+        // increasing surface, so any stack deeper than roughly four rendered
+        // layers emitted o8 and the whole stack stopped compositing. Instead,
+        // scratch surfaces are recycled: allocation prefers a surface that is
+        // provably dead (every instruction that reads it has already been
+        // emitted), and a new surface is only minted when none is free.
+        //
+        // Invariant: a surface is released exactly after the last emitted
+        // instruction that reads it. Instructions are strictly sequential, and
+        // a released surface is never returned while an in-flight instruction
+        // still reads it, because the accumulator (the only cross-block live
+        // surface) is never released until its own consumer has run.
+        let nextSurface = 0
+        const freeSurfaces = []
+        const allocSurface = () => {
+            if (freeSurfaces.length > 0) return freeSurfaces.shift()
+            if (nextSurface > 7) {
+                throw new Error('This layer stack needs more intermediate render targets than the engine provides (o0-o7). Flatten or shorten the stack, or remove masks, overlays or child effects.')
+            }
+            return nextSurface++
+        }
+        const releaseSurface = (index) => {
+            if (!freeSurfaces.includes(index)) freeSurfaces.push(index)
+        }
+        const surfaces = { alloc: allocSurface, release: releaseSurface }
+
+        const applyChildChain = (layer, input) =>
+            this._buildChildChain(layer, input, lines, surfaces)
+
+        const applyMask = (layer, input) => {
+            if (layer.mask && layer.maskEnabled !== false) {
+                const maskOutput = allocSurface()
+                lines.push(`read(o${input}).alphaMask(tex: media(), maskMode: 1).write(o${maskOutput})`)
+                releaseSurface(input)
+                return maskOutput
+            }
+            return input
+        }
+
+        // Accumulator: the composite so far. Every block reads it and blends
+        // into a new surface, then retires both.
+        let currentOutput = allocSurface()
 
         // Process each visible layer from bottom to top
         for (let i = 0; i < visibleLayers.length; i++) {
@@ -1979,14 +2022,8 @@ export class LayersRenderer {
                     const toHex = (v) => Math.round(v * 255).toString(16).padStart(2, '0')
                     const hex = `#${toHex(color[0])}${toHex(color[1])}${toHex(color[2])}`
                     lines.push(`solid(color: ${hex}, alpha: ${effectAlpha.toFixed(4)}).write(o${currentOutput})`)
-                    currentOutput = this._buildChildChain(layer, currentOutput, lines)
-
-                    // Apply layer mask if present and enabled
-                    if (layer.mask && layer.maskEnabled !== false) {
-                        const maskOutput = currentOutput + 1
-                        lines.push(`read(o${currentOutput}).alphaMask(tex: media(), maskMode: 1).write(o${maskOutput})`)
-                        currentOutput = maskOutput
-                    }
+                    currentOutput = applyChildChain(layer, currentOutput)
+                    currentOutput = applyMask(layer, currentOutput)
                 } else {
                     // Media or effect base - blend over transparent background for opacity.
                     // Effects that require an input (non-synth: overlay like text, or
@@ -2000,65 +2037,62 @@ export class LayersRenderer {
                         : this._buildEffectCall(layer)
                     const mixAmt = this._opacityToMixAmt(layer.opacity, layer.blendMode)
                     const shaderMode = this._shaderBlendMode(layer.blendMode)
-                    lines.push(`solid(color: #000000, alpha: 0).write(o${currentOutput})`)
+                    const transparent = allocSurface()
+                    const layerOutput = allocSurface()
+                    lines.push(`solid(color: #000000, alpha: 0).write(o${transparent})`)
                     if (needsInput) {
-                        lines.push(`read(o${currentOutput}).${layerCall}.write(o${currentOutput + 1})`)
+                        lines.push(`read(o${transparent}).${layerCall}.write(o${layerOutput})`)
                     } else {
-                        lines.push(`${layerCall}.write(o${currentOutput + 1})`)
+                        lines.push(`${layerCall}.write(o${layerOutput})`)
                     }
-                    lines.push(`read(o${currentOutput}).blendMode(tex: read(o${currentOutput + 1}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${currentOutput + 2})`)
-                    currentOutput += 2
-                    currentOutput = this._buildChildChain(layer, currentOutput, lines)
-
-                    // Apply layer mask if present and enabled
-                    if (layer.mask && layer.maskEnabled !== false) {
-                        const maskOutput = currentOutput + 1
-                        lines.push(`read(o${currentOutput}).alphaMask(tex: media(), maskMode: 1).write(o${maskOutput})`)
-                        currentOutput = maskOutput
-                    }
+                    const composed = allocSurface()
+                    lines.push(`read(o${transparent}).blendMode(tex: read(o${layerOutput}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${composed})`)
+                    releaseSurface(transparent)
+                    releaseSurface(layerOutput)
+                    currentOutput = applyChildChain(layer, composed)
+                    currentOutput = applyMask(layer, currentOutput)
                 }
             } else {
                 // Non-base layers - blend with previous
                 const prevOutput = currentOutput
-                currentOutput++
+                let layerOutput = allocSurface()
                 const mixAmt = this._opacityToMixAmt(layer.opacity, layer.blendMode)
 
                 if (layer.sourceType === 'media' || layer.sourceType === 'drawing') {
-                    lines.push(`${this._buildMediaCall()}.write(o${currentOutput})`)
+                    lines.push(`${this._buildMediaCall()}.write(o${layerOutput})`)
                 } else if (layer.sourceType === 'effect') {
                     const effectCall = this._buildEffectCall(layer)
                     const isSynth = this._isEffectSynth(layer.effectId)
                     const isOverlay = this._isOverlayEffect(layer.effectId)
 
                     if (isSynth) {
-                        lines.push(`${effectCall}.write(o${currentOutput})`)
+                        lines.push(`${effectCall}.write(o${layerOutput})`)
                     } else if (isOverlay) {
                         // Overlay effects (e.g. filter/text) source their content from an
                         // external texture. Render them onto a transparent buffer so child
                         // effects and blending isolate them from the composite below.
-                        lines.push(`solid(color: #000000, alpha: 0).write(o${currentOutput})`)
-                        const overlayOutput = currentOutput + 1
-                        lines.push(`read(o${currentOutput}).${effectCall}.write(o${overlayOutput})`)
-                        currentOutput = overlayOutput
+                        lines.push(`solid(color: #000000, alpha: 0).write(o${layerOutput})`)
+                        const overlayOutput = allocSurface()
+                        lines.push(`read(o${layerOutput}).${effectCall}.write(o${overlayOutput})`)
+                        releaseSurface(layerOutput)
+                        layerOutput = overlayOutput
                     } else {
-                        lines.push(`read(o${prevOutput}).${effectCall}.write(o${currentOutput})`)
+                        lines.push(`read(o${prevOutput}).${effectCall}.write(o${layerOutput})`)
                     }
                 }
 
                 // Apply child effects to this layer's output
-                currentOutput = this._buildChildChain(layer, currentOutput, lines)
+                layerOutput = applyChildChain(layer, layerOutput)
 
                 // Apply layer mask if present and enabled
-                if (layer.mask && layer.maskEnabled !== false) {
-                    const maskOutput = currentOutput + 1
-                    lines.push(`read(o${currentOutput}).alphaMask(tex: media(), maskMode: 1).write(o${maskOutput})`)
-                    currentOutput = maskOutput
-                }
+                layerOutput = applyMask(layer, layerOutput)
 
-                const nextOutput = currentOutput + 1
+                const blended = allocSurface()
                 const shaderMode = this._shaderBlendMode(layer.blendMode)
-                lines.push(`read(o${prevOutput}).blendMode(tex: read(o${currentOutput}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${nextOutput})`)
-                currentOutput = nextOutput
+                lines.push(`read(o${prevOutput}).blendMode(tex: read(o${layerOutput}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${blended})`)
+                releaseSurface(prevOutput)
+                releaseSurface(layerOutput)
+                currentOutput = blended
             }
         }
 
@@ -2185,22 +2219,30 @@ export class LayersRenderer {
      * @param {object} layer - Parent layer
      * @param {number} currentOutput - Current output buffer index
      * @param {string[]} lines - DSL lines array to append to
+     * @param {object} [surfaces] - Output-surface allocator from _buildDsl
+     *   ({ alloc, release }). Omitted by direct callers: each intermediate
+     *   result gets a fresh monotonically increasing surface, as before.
      * @returns {number} Updated output buffer index
      * @private
      */
-    _buildChildChain(layer, currentOutput, lines) {
+    _buildChildChain(layer, currentOutput, lines, surfaces) {
+        const alloc = surfaces?.alloc ?? (() => ++currentOutput)
+        const release = surfaces?.release ?? (() => {})
         const visibleChildren = (layer.children || []).filter(c => c.visible)
         for (const child of visibleChildren) {
             const effectCall = this._buildEffectCall(child)
             if (child.mask) {
-                const fxOutput = currentOutput + 1
-                const composedOutput = currentOutput + 2
+                const fxOutput = alloc()
+                const composedOutput = alloc()
                 lines.push(`read(o${currentOutput}).${effectCall}.write(o${fxOutput})`)
                 lines.push(`read(o${fxOutput}).alphaMask(tex: media(), baseTex: read(o${currentOutput}), maskMode: 1).write(o${composedOutput})`)
+                release(currentOutput)
+                release(fxOutput)
                 currentOutput = composedOutput
             } else {
-                const nextOutput = currentOutput + 1
+                const nextOutput = alloc()
                 lines.push(`read(o${currentOutput}).${effectCall}.write(o${nextOutput})`)
+                release(currentOutput)
                 currentOutput = nextOutput
             }
         }
