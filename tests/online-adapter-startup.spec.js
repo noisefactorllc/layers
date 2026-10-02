@@ -7,6 +7,8 @@ async function bootSolid(page) {
     await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
     await page.locator('.media-option[data-type="solid"]').click()
+    // keep the default 1024 canvas: the raster-budget test below derives its
+    // layer count from a 1024x1024 per-drawing raster
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
 }

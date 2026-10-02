@@ -10,6 +10,10 @@ async function boot(page) {
     await page.click('.media-option[data-type="solid"]')
     await page.locator('#canvas-width').fill('128')
     await page.locator('#canvas-height').fill('128')
+            // 512 preset: quarters the composited frame cost on software-rendered CI
+            // shards (same capacity trim as drawing-shortcuts); this suite reads no
+    // absolute canvas coordinates.
+    await page.click('.size-preset[data-width="512"]')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden' })
 }
@@ -151,6 +155,7 @@ test('Keep for later retains the old checkpoint after creating and saving anothe
     await page.getByRole('button', { name: 'Keep for later', exact: true }).click()
     await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
+        await page.click('.size-preset[data-width="512"]')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.evaluate(() => window.LayersAgent.saveProjectAs({ name: 'another document' }))
     const ids = await page.evaluate(async () => (await (await import('/js/utils/project-recovery.js')).listRecoveries()).map(row => row.id))
@@ -167,6 +172,7 @@ test('discarding accumulated copies removes them and closes back to the active c
     await page.getByRole('button', { name: 'Keep for later', exact: true }).click()
     await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="solid"]')
+        await page.click('.size-preset[data-width="512"]')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden' })
     await waitForCheckpoint(page)

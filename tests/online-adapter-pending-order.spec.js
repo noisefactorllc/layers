@@ -8,6 +8,10 @@ test('an SDK-pending parent delete and recreate does not resurrect its old child
     await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
     await page.locator('.media-option[data-type="solid"]').click()
+            // 512 preset: quarters the composited frame cost on software-rendered CI
+            // shards (same capacity trim as drawing-shortcuts); this suite reads no
+    // absolute canvas coordinates.
+    await page.locator('.size-preset[data-width="512"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
 
@@ -62,6 +66,7 @@ test(`a ${change} during semantic loading never restores the pre-edit model or h
     await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
     await page.locator('.media-option[data-type="solid"]').click()
+        await page.locator('.size-preset[data-width="512"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
 
@@ -150,6 +155,7 @@ test('joining a room that changes during initial apply catches up without reject
     await reopenNewProjectDialog(page)
     const backdrop = page.locator('.open-dialog-backdrop.visible')
     await page.locator('.media-option[data-type="solid"]').click()
+        await page.locator('.size-preset[data-width="512"]').click()
     await page.locator('.canvas-size-dialog .action-btn.primary').click()
     await backdrop.waitFor({ state: 'hidden' })
 
