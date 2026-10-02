@@ -157,16 +157,10 @@
     left: -10px;
     box-shadow: var(--hf-shadow-lg);
     font-weight: normal;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
     border-radius: var(--ui-corner-radius-small, 0.375rem);
     flex-direction: column;
     border: none;
     backdrop-filter: var(--glass-blur-strength);
-}
-
-.menu-items::-webkit-scrollbar {
-    display: none;
 }
 
 /* Toolbar */
@@ -272,7 +266,6 @@
         overflow-x: hidden;
         overflow-y: auto;
         overscroll-behavior: contain;
-        scrollbar-width: thin;
         --ui-titlebar-base: color-mix(in srgb,
                 var(--hf-color-2) 65%,
                 transparent 35%);
@@ -790,8 +783,6 @@
     left: -10px;
     box-shadow: var(--hf-shadow-lg);
     font-weight: normal;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
     border-radius: var(--ui-corner-radius-small, 0.375rem);
     flex-direction: column;
     border: none;
@@ -800,10 +791,6 @@
     overflow-y: visible;
     backdrop-filter: var(--glass-blur-strength);
     -webkit-backdrop-filter: var(--glass-blur-strength);
-}
-
-#menu .hf-menubar-panel::-webkit-scrollbar {
-    display: none;
 }
 
 #menu .hf-menubar-panel[hidden] {

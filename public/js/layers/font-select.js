@@ -275,28 +275,6 @@ if (!document.getElementById(FONT_SELECT_STYLES_ID)) {
             background: color-mix(in srgb, var(--hf-accent-3) 25%, transparent 75%);
         }
 
-        font-select .dropdown-options::-webkit-scrollbar {
-            width: 0.3rem;
-        }
-
-        font-select .dropdown-options::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        font-select .dropdown-options::-webkit-scrollbar-thumb {
-            background: color-mix(in srgb, var(--hf-accent-3) 30%, transparent 70%);
-            border-radius: 0.2rem;
-        }
-
-        font-select .dropdown-options::-webkit-scrollbar-thumb:hover {
-            background: color-mix(in srgb, var(--hf-accent-3) 50%, transparent 50%);
-        }
-
-        font-select .dropdown-options {
-            scrollbar-width: thin;
-            scrollbar-color: color-mix(in srgb, var(--hf-accent-3) 30%, transparent 70%) transparent;
-        }
-
         font-select .empty-message {
             padding: 16px 12px;
             font-size: 0.75rem;

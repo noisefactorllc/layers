@@ -9,6 +9,39 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 test.describe('Handfish Design System CSS Token Compliance', () => {
+    test('every Layers scroll region uses the Handfish scrollbar treatment', async ({ page, browserName }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+
+        const { core, styles } = await page.evaluate(() => {
+            const core = ['#canvas-panel', '.layers-list'].map(selector => !!document.querySelector(selector))
+            const styles = [...document.querySelectorAll('body *')]
+                .filter(element => {
+                    const style = getComputedStyle(element)
+                    return element.getClientRects().length > 0
+                        && (['auto', 'scroll'].includes(style.overflowX)
+                            || ['auto', 'scroll'].includes(style.overflowY))
+                })
+                .map(element => {
+                    const style = getComputedStyle(element)
+                    return {
+                        selector: element.id || element.className || element.tagName,
+                        width: style.scrollbarWidth,
+                        color: style.scrollbarColor
+                    }
+                })
+            return { core, styles }
+        })
+
+        expect(core).toEqual([true, true])
+        expect(styles.length).toBeGreaterThan(1)
+        for (const { selector, width, color } of styles) {
+            // Headless Firefox can force hidden native bars even over inline CSS.
+            if (browserName !== 'firefox') expect(width, `${selector} scrollbar width`).toBe('thin')
+            expect(color, `${selector} scrollbar color`).not.toBe('auto')
+        }
+    })
+
     test('public/css stylesheets contain zero hardcoded colors and zero !important declarations', () => {
         const cssDir = path.resolve(__dirname, '../public/css')
         const files = fs.readdirSync(cssDir).filter(f => f.endsWith('.css'))
@@ -854,4 +887,3 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         }
     })
 })
-

@@ -339,32 +339,6 @@ dialog[open] {
     padding: var(--hf-space-6);
     overflow-y: auto;
     max-height: calc(85vh - 120px);
-    scrollbar-color: var(--hf-border-hover) var(--hf-bg-surface);
-    scrollbar-width: thin;
-}
-
-.dialog-body::-webkit-scrollbar {
-    width: var(--hf-space-3);
-    height: var(--hf-space-3);
-}
-
-.dialog-body::-webkit-scrollbar-track,
-.dialog-body::-webkit-scrollbar-corner {
-    background: var(--hf-bg-surface);
-}
-
-.dialog-body::-webkit-scrollbar-thumb {
-    background: var(--hf-bg-muted);
-    border: var(--hf-border-width) solid var(--hf-bg-surface);
-    border-radius: var(--hf-radius-pill);
-}
-
-.dialog-body::-webkit-scrollbar-thumb:hover {
-    background: var(--hf-accent);
-}
-
-.dialog-body::-webkit-scrollbar-thumb:active {
-    background: var(--hf-accent-hover);
 }
 
 .dialog-actions {
