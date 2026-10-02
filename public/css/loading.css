@@ -51,7 +51,7 @@
 .loading-logo {
     width: 64px;
     height: 64px;
-    margin-bottom: 16px;
+    margin-bottom: var(--hf-space-4);
     color: var(--hf-color-7);
     filter: drop-shadow(0 0 20px color-mix(in srgb, var(--hf-accent-3) 40%, transparent));
     animation: title-glow 3s ease-in-out infinite alternate;
@@ -90,25 +90,29 @@
     }
 }
 
-/* Tagline */
+/* Tagline. Muted-by-color-5 text on this --hf-color-2 surface fails WCAG AA
+   in the gray-dark/terminal/organic/corporate/cyberpunk themes (worst 2.43:1),
+   even at full opacity — color-5 does not oppose color-2's polarity there.
+   --hf-color-7 opposes color-2 in every handfish theme (8.27:1 worst), so the
+   tagline and status text paint it at full strength; dimming via opacity
+   re-composites toward the background in sRGB and eats the margin. */
 .loading-tagline {
     font-family: var(--font-body);
     font-size: 11px;
     font-weight: 400;
-    color: var(--hf-color-5);
-    margin: 8px 0 0;
-    opacity: 0.8;
+    color: var(--hf-color-7);
+    margin: var(--hf-space-2) 0 0;
 }
 
 /* Loading status */
 .loading-status {
-    margin-top: 24px;
+    margin-top: var(--hf-space-6);
     font-family: var(--font-body);
     font-size: 13px;
-    color: var(--hf-color-5);
+    color: var(--hf-color-7);
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--hf-space-2);
 }
 
 /* Loading Spinner */

@@ -309,6 +309,104 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         }
     })
 
+    test('loading screen text meets WCAG AA contrast on its surface across all themes', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        // The boot sequence fades the screen out (0.35s) and then marks it
+        // .hidden; the element stays in the DOM, so unhide it in place to
+        // measure its production styles. Wait for the fade transition to
+        // finish before re-showing so the measured opacity is 1.
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+
+        const results = await page.evaluate(async () => {
+            function toSrgb(colorStr) {
+                const canvas = document.createElement('canvas')
+                canvas.width = 1
+                canvas.height = 1
+                const ctx = canvas.getContext('2d', { willReadFrequently: true })
+                ctx.clearRect(0, 0, 1, 1)
+                ctx.fillStyle = '#000000'
+                ctx.fillStyle = colorStr
+                ctx.fillRect(0, 0, 1, 1)
+                const data = ctx.getImageData(0, 0, 1, 1).data
+                // Canvas stores premultiplied pixels: [r,g,b] are already
+                // multiplied by the alpha channel, and alpha carries the
+                // color's own alpha (color(srgb … / a), rgba(), etc.).
+                return { rgb: [data[0] / 255, data[1] / 255, data[2] / 255], alpha: data[3] / 255 }
+            }
+
+            function luminance([r, g, b]) {
+                const a = [r, g, b].map(v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
+                return a[0] * 0.2126 + a[1] * 0.7152 + a[2] * 0.0722
+            }
+
+            function contrastRatio(fg, bg) {
+                const l1 = luminance(fg)
+                const l2 = luminance(bg)
+                return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+            }
+
+            const screen = document.getElementById('loading-screen')
+            if (!screen) throw new Error('Missing #loading-screen')
+            screen.classList.remove('hidden')
+            screen.classList.remove('fade-out')
+            // The screen itself fades in over 0.35s from the just-ended
+            // fade-out; wait for its opacity transition to settle so the
+            // measured stack matches the fully-rendered screen.
+            for (let i = 0; i < 60; i++) {
+                if (parseFloat(window.getComputedStyle(screen).opacity) === 1) break
+                await new Promise(r => requestAnimationFrame(r))
+            }
+
+            const modal = screen.querySelector('.loading-modal')
+            if (!modal) throw new Error('Missing .loading-modal')
+
+            const themes = ['dark', 'light', 'gray-dark', 'gray-light', 'neutral-dark', 'neutral-light',
+                'corporate', 'cyberpunk', 'earthy', 'organic', 'terminal']
+            const report = {}
+            const targets = [
+                ['tagline', screen.querySelector('.loading-tagline')],
+                ['status', screen.querySelector('.loading-status')]
+            ]
+
+            for (const theme of themes) {
+                document.documentElement.dataset.theme = theme
+                await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+                // The text sits on .loading-modal, an alpha-composited panel
+                // over #loading-screen's opaque --hf-color-2 backdrop.
+                // Composite the same stack the browser does per theme: modal
+                // color (premultiplied by its own alpha) over screen color.
+                const screenBg = toSrgb(window.getComputedStyle(screen).backgroundColor)
+                const modalSample = toSrgb(window.getComputedStyle(modal).backgroundColor)
+                const panelBg = modalSample.rgb.map((c, i) => c + screenBg.rgb[i] * (1 - modalSample.alpha))
+                report[theme] = {}
+                for (const [name, el] of targets) {
+                    if (!el) throw new Error(`Missing loading screen element: ${name}`)
+                    const cs = window.getComputedStyle(el)
+                    // Composite the element's own opacity, if any, into the
+                    // foreground (the screen's fade is settled to 1 above).
+                    const fgSample = toSrgb(cs.color)
+                    const ownOpacity = parseFloat(cs.opacity)
+                    const fg = fgSample.rgb.map(c => c * (Number.isNaN(ownOpacity) ? 1 : ownOpacity))
+                    report[theme][name] = {
+                        contrast: contrastRatio(fg, panelBg),
+                        fg: cs.color,
+                        opacity: cs.opacity
+                    }
+                }
+            }
+
+            screen.classList.add('hidden')
+            document.documentElement.removeAttribute('data-theme')
+            return report
+        })
+
+        for (const [theme, metrics] of Object.entries(results)) {
+            for (const [name, m] of Object.entries(metrics)) {
+                expect(m.contrast, `${theme} loading ${name} contrast (fg ${m.fg} opacity ${m.opacity})`).toBeGreaterThanOrEqual(4.5)
+            }
+        }
+    })
+
     test('toolbar icon buttons have consistent 32x32 sizing, states, and Handfish tooltips', async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })
         await defaultProjectReady(page)
