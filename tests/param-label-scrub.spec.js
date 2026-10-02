@@ -118,7 +118,17 @@ test.describe('Scrubby effect-param labels', () => {
         const group = await openSliderGroup(page)
         const before = await sliderState(page, group)
 
-        await dragLabel(page, group, 4000)
+        // Firefox clips out-of-viewport pointermove clientX to 0 (Juggler
+        // delivers clientX 0 for synthetic moves beyond the viewport), which
+        // turned the +4000px overshoot into a -360px drag clamping at min
+        // (CI run 36921218854, firefox 4/4, test 116: radius x stuck at 0).
+        // dragLabel starts at the label CENTER, so the drag distance ends the
+        // pointer 20px inside the right viewport edge; that still overshoots
+        // the 45px span from the default 5 to max 50, so the clamp assertion
+        // is unchanged.
+        const labelBox = await group.locator('.control-label').boundingBox()
+        const labelCenterX = labelBox.x + labelBox.width / 2
+        await dragLabel(page, group, Math.min(4000, page.viewportSize().width - 20 - labelCenterX))
         await page.mouse.up()
 
         await page.waitForFunction(

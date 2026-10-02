@@ -587,12 +587,42 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
 
             const themes = ['dark', 'light', 'gray-dark', 'gray-light', 'neutral-dark', 'neutral-light',
                 'corporate', 'cyberpunk', 'earthy', 'organic', 'terminal']
+            // .dialog-close carries a color transition; a fixed sleep measured
+            // mid-transition colors under two-worker load (1.17:1 on an
+            // in-flight color, failing all retries). Settle deterministically
+            // instead: resolve on the element's own color transitionend, or
+            // once the computed color has held identical across three rAF
+            // samples after the transition's span, bounded at 3s.
+            const settleColor = (el) => new Promise((resolve) => {
+                const startedAt = performance.now()
+                let settled = false
+                const finish = () => {
+                    if (settled) return
+                    settled = true
+                    el.removeEventListener('transitionend', onEnd)
+                    resolve()
+                }
+                const onEnd = (e) => {
+                    if (e.target === el && e.propertyName === 'color') finish()
+                }
+                el.addEventListener('transitionend', onEnd)
+                let prev = null
+                let same = 0
+                const poll = () => {
+                    if (settled) return
+                    const c = window.getComputedStyle(el).color
+                    same = c === prev ? same + 1 : 0
+                    prev = c
+                    if (same >= 3 && performance.now() - startedAt > 300) finish()
+                    else requestAnimationFrame(poll)
+                }
+                requestAnimationFrame(poll)
+                setTimeout(finish, 3000)
+            })
             const report = {}
             for (const theme of themes) {
                 document.documentElement.dataset.theme = theme
-                // .dialog-close carries a color transition; settle past it so
-                // computed colors reflect the theme's steady state.
-                await new Promise(r => setTimeout(r, 600))
+                await settleColor(dialogCloseGlyph)
                 report[theme] = {
                     dialogClose: contrastRatio(window.getComputedStyle(dialogCloseGlyph).color, effectiveBg(dialogClose)),
                     layerType: contrastRatio(window.getComputedStyle(layerType).color, effectiveBg(layerType)),
