@@ -361,9 +361,9 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
                 ctx.fillStyle = colorStr
                 ctx.fillRect(0, 0, 1, 1)
                 const data = ctx.getImageData(0, 0, 1, 1).data
-                // Canvas stores premultiplied pixels: [r,g,b] are already
-                // multiplied by the alpha channel, and alpha carries the
-                // color's own alpha (color(srgb … / a), rgba(), etc.).
+                // getImageData() returns unpremultiplied sRGB components plus
+                // the color's own alpha (color(srgb … / a), rgba(), etc.);
+                // callers must weight rgb by alpha when compositing.
                 return { rgb: [data[0] / 255, data[1] / 255, data[2] / 255], alpha: data[3] / 255 }
             }
 
@@ -406,20 +406,23 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
                 await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
                 // The text sits on .loading-modal, an alpha-composited panel
                 // over #loading-screen's opaque --hf-color-2 backdrop.
-                // Composite the same stack the browser does per theme: modal
-                // color (premultiplied by its own alpha) over screen color.
+                // Composite the same stack the browser does per theme: the
+                // modal color weighted by its own alpha over the screen color.
                 const screenBg = toSrgb(window.getComputedStyle(screen).backgroundColor)
                 const modalSample = toSrgb(window.getComputedStyle(modal).backgroundColor)
-                const panelBg = modalSample.rgb.map((c, i) => c + screenBg.rgb[i] * (1 - modalSample.alpha))
+                const panelBg = modalSample.rgb.map((c, i) => c * modalSample.alpha + screenBg.rgb[i] * (1 - modalSample.alpha))
                 report[theme] = {}
                 for (const [name, el] of targets) {
                     if (!el) throw new Error(`Missing loading screen element: ${name}`)
                     const cs = window.getComputedStyle(el)
-                    // Composite the element's own opacity, if any, into the
-                    // foreground (the screen's fade is settled to 1 above).
+                    // Composite the text over the panel: effective text alpha
+                    // is the color's own alpha times the element's opacity
+                    // (the screen's fade is settled to 1 above); the remainder
+                    // shows the panel, it does not fade toward black.
                     const fgSample = toSrgb(cs.color)
-                    const ownOpacity = parseFloat(cs.opacity)
-                    const fg = fgSample.rgb.map(c => c * (Number.isNaN(ownOpacity) ? 1 : ownOpacity))
+                    const ownOpacity = Number.isNaN(parseFloat(cs.opacity)) ? 1 : parseFloat(cs.opacity)
+                    const eo = fgSample.alpha * ownOpacity
+                    const fg = fgSample.rgb.map((c, i) => c * eo + panelBg[i] * (1 - eo))
                     report[theme][name] = {
                         contrast: contrastRatio(fg, panelBg),
                         fg: cs.color,
@@ -458,6 +461,9 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
                     ctx.fillStyle = colorStr
                     ctx.fillRect(0, 0, 1, 1)
                     const data = ctx.getImageData(0, 0, 1, 1).data
+                    // getImageData() returns unpremultiplied sRGB components
+                    // plus the color's own alpha (color(srgb … / a), rgba(),
+                    // etc.); callers must weight rgb by alpha when compositing.
                     return { rgb: [data[0] / 255, data[1] / 255, data[2] / 255], alpha: data[3] / 255 }
                 }
 
@@ -489,7 +495,7 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
 
                 const screenBg = toSrgb(window.getComputedStyle(screen).backgroundColor)
                 const modalSample = toSrgb(window.getComputedStyle(modal).backgroundColor)
-                const panelBg = modalSample.rgb.map((c, i) => c + screenBg.rgb[i] * (1 - modalSample.alpha))
+                const panelBg = modalSample.rgb.map((c, i) => c * modalSample.alpha + screenBg.rgb[i] * (1 - modalSample.alpha))
 
                 const metrics = {}
                 const targets = [
@@ -499,9 +505,13 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
                 for (const [name, el] of targets) {
                     if (!el) throw new Error(`Missing loading screen element: ${name}`)
                     const cs = window.getComputedStyle(el)
+                    // Composite the text over the panel: effective text alpha
+                    // is the color's own alpha times the element's opacity;
+                    // the remainder shows the panel, not black.
                     const fgSample = toSrgb(cs.color)
-                    const ownOpacity = parseFloat(cs.opacity)
-                    const fg = fgSample.rgb.map(c => c * (Number.isNaN(ownOpacity) ? 1 : ownOpacity))
+                    const ownOpacity = Number.isNaN(parseFloat(cs.opacity)) ? 1 : parseFloat(cs.opacity)
+                    const eo = fgSample.alpha * ownOpacity
+                    const fg = fgSample.rgb.map((c, i) => c * eo + panelBg[i] * (1 - eo))
                     metrics[name] = {
                         contrast: contrastRatio(fg, panelBg),
                         fg: cs.color,

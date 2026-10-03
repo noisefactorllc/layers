@@ -93,7 +93,9 @@
 /* Tagline. Muted-by-color-5 text on this --hf-color-2 surface fails WCAG AA
    in the gray-dark/terminal/organic/corporate/cyberpunk themes (worst 2.43:1),
    even at full opacity — color-5 does not oppose color-2's polarity there.
-   --hf-color-7 opposes color-2 in every handfish theme (8.27:1 worst), so the
+   --hf-color-7 opposes color-2 in every handfish theme — 8.21:1 worst on the
+   raw token pair (gray-dark) and 8.10:1 through this panel's alpha composite,
+   both rendered in-browser per theme — so the
    tagline and status text paint it at full strength; dimming via opacity
    re-composites toward the background in sRGB and eats the margin. */
 .loading-tagline {
