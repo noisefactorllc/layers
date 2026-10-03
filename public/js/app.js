@@ -2990,11 +2990,71 @@ class LayersApp {
 
     _closeContextMenus() {
         for (const id of ['maskContextMenu', 'layerContextMenu']) {
-            document.getElementById(id)?.classList.add('hidden')
+            const menu = document.getElementById(id)
+            if (!menu) continue
+            menu.classList.add('hidden')
+            menu.onkeydown = null
         }
         if (this._contextMenuCloseHandler) {
             document.removeEventListener('mousedown', this._contextMenuCloseHandler)
             this._contextMenuCloseHandler = null
+        }
+        // Give focus back to the element the menu was opened from (the
+        // keyboard-open path focuses items inside the menu); no-op when focus
+        // has already moved somewhere else, e.g. a dialog the action opened.
+        const trigger = this._contextMenuReturnFocus
+        this._contextMenuReturnFocus = null
+        const active = document.activeElement
+        const insideMenu = active instanceof HTMLElement
+            && (document.getElementById('maskContextMenu')?.contains(active)
+                || document.getElementById('layerContextMenu')?.contains(active))
+        if (trigger?.isConnected && (insideMenu || active === document.body || active === null)) {
+            trigger.focus()
+        }
+    }
+
+    /**
+     * Shared keyboard support for the pointer-position context menus. Focuses
+     * the menu's first visible item so keyboard and screen-reader users can
+     * operate the ARIA menu, wires arrow navigation and Enter/Space
+     * activation, and remembers the trigger element for focus restore.
+     * @param {HTMLElement} menu
+     * @private
+     */
+    _openContextMenu(menu) {
+        const visibleItems = () => Array.from(menu.querySelectorAll('[role="menuitem"]'))
+            .filter(el => !el.classList.contains('hidden') && !el.classList.contains('hide'))
+        const items = visibleItems()
+        if (items.length) items[0].focus()
+
+        menu.onkeydown = (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp'
+                || e.key === 'Home' || e.key === 'End') {
+                const list = visibleItems()
+                if (!list.length) return
+                e.preventDefault()
+                let next
+                if (e.key === 'Home') {
+                    next = list[0]
+                } else if (e.key === 'End') {
+                    next = list[list.length - 1]
+                } else {
+                    const delta = e.key === 'ArrowDown' ? 1 : -1
+                    const current = Math.max(list.indexOf(document.activeElement), 0)
+                    next = list[(current + delta + list.length) % list.length]
+                }
+                next.focus()
+            } else if (e.key === 'Enter' || e.key === ' ') {
+                // Activate like a pointer click would. Stopped here so the
+                // document-level Space shortcut (space-pan hold) never sees
+                // a keypress whose target is a menu item.
+                const item = document.activeElement
+                if (item instanceof HTMLElement && menu.contains(item)) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    item.click()
+                }
+            }
         }
     }
 
@@ -3030,6 +3090,9 @@ class LayersApp {
         menu.style.left = `${x}px`
         menu.style.top = `${y}px`
         menu.classList.remove('hidden')
+        this._contextMenuReturnFocus = document.activeElement instanceof HTMLElement
+            ? document.activeElement : null
+        this._openContextMenu(menu)
 
         // Close on click outside
         this._contextMenuCloseHandler = (e) => {
@@ -3085,6 +3148,9 @@ class LayersApp {
         menu.style.left = `${x}px`
         menu.style.top = `${y}px`
         menu.classList.remove('hidden')
+        this._contextMenuReturnFocus = document.activeElement instanceof HTMLElement
+            ? document.activeElement : null
+        this._openContextMenu(menu)
 
         this._contextMenuCloseHandler = (e) => {
             if (!menu.contains(e.target)) {

@@ -123,7 +123,7 @@ class LayerItem extends HTMLElement {
                 <div class="layer-thumbnail">
                     <span class="icon-material">${iconName}</span>
                 </div>
-                ${layer.mask ? `<div class="layer-mask-thumbnail ${layer.maskVisible ? 'mask-visible' : ''} ${(!this._isChild && !layer.maskEnabled) ? 'mask-disabled' : ''}" title="${this._isChild ? 'Effect mask (captured from selection) | Click: mask options' : 'Click: edit mask | Right-click: mask options'}">
+                ${layer.mask ? `<div class="layer-mask-thumbnail ${layer.maskVisible ? 'mask-visible' : ''} ${(!this._isChild && !layer.maskEnabled) ? 'mask-disabled' : ''}" tabindex="0" role="button" aria-label="${this._isChild ? 'Effect mask options' : 'Layer mask. Enter: edit mask. Context menu key: mask options.'}" title="${this._isChild ? 'Effect mask (captured from selection) | Click: mask options' : 'Click: edit mask | Right-click or Context menu key: mask options'}">
                     <canvas class="mask-thumb-canvas" width="36" height="36"></canvas>
                 </div>` : ''}
                 <div class="layer-info">
@@ -449,6 +449,55 @@ class LayerItem extends HTMLElement {
                         hasMask: !!this._layer.mask,
                         x: e.clientX,
                         y: e.clientY
+                    }
+                }))
+            }
+        })
+
+        // Keyboard access: Enter/Space activate the mask thumbnail exactly
+        // like a click; the context-menu key (or Shift+F10) opens the same
+        // context menu a right-click would, anchored to the focused element.
+        this.addEventListener('keydown', (e) => {
+            const maskThumb = e.target instanceof Element
+                ? e.target.closest('.layer-mask-thumbnail') : null
+
+            if (e.key === 'Enter' || e.key === ' ') {
+                if (!maskThumb) return
+                e.preventDefault()
+                e.stopPropagation()
+                const rect = maskThumb.getBoundingClientRect()
+                if (this._isChild) {
+                    // Child-effect masks have no edit mode — every activation
+                    // opens the (reduced) mask options menu.
+                    this.dispatchEvent(new CustomEvent('mask-context-menu', {
+                        bubbles: true,
+                        detail: { layerId: this._layer.id, x: rect.left, y: rect.bottom + 4 }
+                    }))
+                } else {
+                    this.dispatchEvent(new CustomEvent('mask-edit', {
+                        bubbles: true,
+                        detail: { layerId: this._layer.id }
+                    }))
+                }
+                return
+            }
+
+            if (e.key !== 'ContextMenu' && !(e.key === 'F10' && e.shiftKey)) return
+            e.preventDefault()
+            const rect = (maskThumb ?? this).getBoundingClientRect()
+            if (maskThumb) {
+                this.dispatchEvent(new CustomEvent('mask-context-menu', {
+                    bubbles: true,
+                    detail: { layerId: this._layer.id, x: rect.left, y: rect.bottom + 4 }
+                }))
+            } else {
+                this.dispatchEvent(new CustomEvent('layer-context-menu', {
+                    bubbles: true,
+                    detail: {
+                        layerId: this._layer.id,
+                        hasMask: !!this._layer?.mask,
+                        x: rect.left,
+                        y: rect.bottom + 4
                     }
                 }))
             }

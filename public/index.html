@@ -393,22 +393,22 @@
     <div id="toast-container"></div>
 
         <!-- Mask Context Menu -->
-        <div id="maskContextMenu" class="context-menu hidden">
-            <div data-action="invert">Invert Mask</div>
-            <div data-action="feather">Feather Mask…</div>
-            <div data-action="expand">Expand Mask…</div>
-            <div data-action="contract">Contract Mask…</div>
-            <div data-action="smooth">Smooth Mask…</div>
-            <div data-action="disable">Disable Mask</div>
-            <div data-action="selection-from-mask">Selection from Mask</div>
-            <hr class="menu-seperator">
-            <div data-action="delete">Delete Mask</div>
+        <div id="maskContextMenu" class="context-menu hidden" role="menu" aria-label="Mask options">
+            <div data-action="invert" role="menuitem" tabindex="-1">Invert Mask</div>
+            <div data-action="feather" role="menuitem" tabindex="-1">Feather Mask…</div>
+            <div data-action="expand" role="menuitem" tabindex="-1">Expand Mask…</div>
+            <div data-action="contract" role="menuitem" tabindex="-1">Contract Mask…</div>
+            <div data-action="smooth" role="menuitem" tabindex="-1">Smooth Mask…</div>
+            <div data-action="disable" role="menuitem" tabindex="-1">Disable Mask</div>
+            <div data-action="selection-from-mask" role="menuitem" tabindex="-1">Selection from Mask</div>
+            <hr class="menu-seperator" role="separator">
+            <div data-action="delete" role="menuitem" tabindex="-1">Delete Mask</div>
         </div>
 
         <!-- Layer Context Menu -->
-        <div id="layerContextMenu" class="context-menu hidden">
-            <div data-action="add-mask">Add Layer Mask</div>
-            <div data-action="mask-from-selection">Mask from Selection</div>
+        <div id="layerContextMenu" class="context-menu hidden" role="menu" aria-label="Layer options">
+            <div data-action="add-mask" role="menuitem" tabindex="-1">Add Layer Mask</div>
+            <div data-action="mask-from-selection" role="menuitem" tabindex="-1">Mask from Selection</div>
         </div>
 
     <script type="module" src="js/app.js"></script>

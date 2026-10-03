@@ -634,6 +634,15 @@
     color: var(--hf-accent-4);
 }
 
+/* Keyboard focus: same ring the filter-menu items use, so a keyboard user
+ * navigating with the arrow keys sees where they are in either theme. */
+.context-menu div:focus-visible {
+    outline: none;
+    background-color: var(--hf-bg-muted);
+    color: var(--hf-accent-4);
+    box-shadow: inset 0 0 0 2px var(--hf-accent-3);
+}
+
 /* Section labels in menu */
 .menu-items div.menu-section-label,
 .menu-section-label {
