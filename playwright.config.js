@@ -5,15 +5,16 @@ import { defineConfig } from 'playwright/test'
 // test count alone, and test counts are a poor proxy for cost: collaboration
 // (18 tests) took 431 worker-seconds on webkit while 29 tests of agent
 // validation took 37. The vectors below are the min-max partitions of the
-// per-file worker-seconds, each computed over the slower of five independent
+// per-file worker-seconds, each computed over the slower of six independent
 // runs (green 37079716969 at 9e75c75; 37084442565 at 8218bb3, in which two
 // legs died at the globalTimeout; green 37086745924 at d134f61; green
-// 37088512479 at 03add4a; and green 37090854261 at 2f18934) so the split does
-// not overfit one fast window: a first split measured against a single run
-// put webkit 8/10 and chromium 5/5 within seconds of the cap in the next run,
-// which executed the same files up to 1.6x slower, a second left webkit 9/10
-// at 1129 s and a third left chromium 1/5 at 1090 s and a fourth left
-// chromium 5/5 at 1130 s. They put every predicted shard step at or under
+// 37088512479 at 03add4a; green 37090854261 at 2f18934; and green
+// 37092481780 at e2e911e) so the split does not overfit one fast window: a
+// first split measured against a single run put webkit 8/10 and chromium 5/5
+// within seconds of the cap in the next run, which executed the same files up
+// to 1.6x slower, a second left webkit 9/10 at 1129 s, a third left chromium
+// 1/5 at 1090 s, a fourth left chromium 5/5 at 1130 s and a fifth left
+// firefox 4/4 at 1176 s. They put every predicted shard step at or under
 // about eighteen minutes against
 // the twenty minute promise below, with the caveat that files inside the
 // capacity-killed shards are measured only by the runs that completed them,
@@ -29,8 +30,8 @@ import { defineConfig } from 'playwright/test'
 // touching the vectors, and never hand one a shard that runs no tests.
 const shardWeights = {
     chromium: [240, 217, 202, 231, 221],
-    firefox: [260, 245, 269, 337],
-    webkit: [103, 122, 110, 91, 107, 126, 115, 140, 89, 108],
+    firefox: [287, 246, 280, 298],
+    webkit: [103, 122, 110, 91, 107, 126, 116, 139, 89, 108],
 }
 
 function cliFlag(flag) {
