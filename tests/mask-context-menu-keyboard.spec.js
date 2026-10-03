@@ -131,24 +131,50 @@ test.describe('Mask context menu keyboard access', () => {
         })).toBe(true)
     })
 
-    test('Enter on Feather Mask opens the radius dialog without changing the mask', async ({ page }) => {
+    test('Enter applies the Feather radius through the keyboard path', async ({ page }) => {
+        // A mask with a real boundary: left half selected, right half not.
+        // (Feathering an all-white mask is a boundary-ramp no-op.) The canvas
+        // center sits exactly on the contour, radius 5 deep in both halves.
+        await page.evaluate(() => {
+            const layer = window.layersApp._layers[1]
+            const data = layer.mask.data
+            for (let i = 0; i < data.length; i += 4) {
+                const selected = ((i / 4) % 512) < 256
+                const v = selected ? 255 : 0
+                data[i] = data[i + 1] = data[i + 2] = data[i + 3] = v
+            }
+        })
+
         await openMaskMenuFromKeyboard(page)
         await page.keyboard.press('ArrowDown')
+        await expect.poll(() => activeElementText(page)).toBe('Feather Mask…')
         await page.keyboard.press('Enter')
 
+        // The dialog opens with the radius input focused; Enter on it confirms.
         const dialog = page.locator('.selection-param-dialog')
         await expect(dialog).toBeVisible()
         await expect(dialog.locator('.dialog-header h2')).toHaveText('Feather Mask')
-
-        // Cancel: the mask stays untouched.
-        await dialog.locator('#selection-param-cancel').click()
+        await page.keyboard.press('Enter')
         await expect(dialog).toBeHidden()
+
+        // The contour pixel flips from unselected (0) to the ramp midpoint
+        // (~128); the deep-interior and deep-outside values are preserved.
         await expect.poll(async () => page.evaluate(() => {
-            const mask = window.layersApp._layers[1].mask
-            for (let i = 0; i < mask.data.length; i += 4) {
-                if (mask.data[i] !== 255) return false
+            const data = window.layersApp._layers[1].mask.data
+            const px = (x, y) => data[(y * 512 + x) * 4]
+            return {
+                contour: px(256, 256),
+                inside: px(128, 256),
+                outside: px(384, 256),
             }
-            return true
+        })).toEqual({
+            contour: expect.any(Number),
+            inside: 255,
+            outside: 0,
+        })
+        await expect.poll(async () => page.evaluate(() => {
+            const v = window.layersApp._layers[1].mask.data[(256 * 512 + 256) * 4]
+            return v >= 100 && v <= 160
         })).toBe(true)
     })
 
