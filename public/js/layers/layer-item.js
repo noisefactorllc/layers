@@ -111,6 +111,13 @@ class LayerItem extends HTMLElement {
         this.className = classes
         this.dataset.layerId = layer.id
         this.draggable = !isBase
+        // Roving tabindex is owned by layer-stack (one row in the stack is
+        // the Tab stop). A row rendered outside the stack (standalone
+        // component use; items render before appendChild, so no parent yet)
+        // defaults itself focusable.
+        if (this.parentElement === null && !this.hasAttribute('tabindex')) {
+            this.tabIndex = 0
+        }
 
         this.innerHTML = `
             <div class="layer-row">
@@ -458,6 +465,45 @@ class LayerItem extends HTMLElement {
         // like a click; the context-menu key (or Shift+F10) opens the same
         // context menu a right-click would, anchored to the focused element.
         this.addEventListener('keydown', (e) => {
+            // Row-level keys (the row itself is focused via its roving
+            // tabindex): Enter/Space select the row, F2 renames it, plain
+            // arrows move row focus, Alt+Arrow Up/Down move the layer in the
+            // stack. Each is stopped here so the document-level shortcuts
+            // (space-pan hold, tool letters, delete) never see a row
+            // keypress, and inner controls keep their own behavior.
+            if (e.target === this) {
+                const plain = !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey
+                if (plain && (e.key === 'Enter' || e.key === ' ')) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    this._emitSelect()
+                    return
+                }
+                if (plain && e.key === 'F2') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    const nameEl = this.querySelector('.layer-name')
+                    if (nameEl) this._startEditingName(nameEl, { fromKeyboard: true })
+                    return
+                }
+                if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                    e.preventDefault()
+                    if (e.altKey) {
+                        e.stopPropagation()
+                        this.dispatchEvent(new CustomEvent('layer-keyboard-move', {
+                            bubbles: true,
+                            detail: {
+                                layerId: this._layer?.id,
+                                direction: e.key === 'ArrowUp' ? 'up' : 'down',
+                            },
+                        }))
+                    } else {
+                        this._focusSiblingRow(e.key === 'ArrowDown' ? 1 : -1)
+                    }
+                    return
+                }
+            }
+
             const maskThumb = e.target instanceof Element
                 ? e.target.closest('.layer-mask-thumbnail') : null
 
@@ -556,11 +602,35 @@ class LayerItem extends HTMLElement {
     }
 
     /**
-     * Start editing the layer name
-     * @param {HTMLElement} nameEl - Name element
+     * Move row focus to the previous/next layer-item sibling in DOM order
+     * (the stack renders top layer first, so next == one row down the panel).
+     * Uses the same roving tabindex the stack maintains, so the row the focus
+     * leaves becomes the only tab stop again. Does nothing at the ends.
+     * @param {number} delta - +1 for the next row, -1 for the previous
      * @private
      */
-    _startEditingName(nameEl) {
+    _focusSiblingRow(delta) {
+        const items = [...this.parentElement.querySelectorAll(':scope > layer-item')]
+        const index = items.indexOf(this)
+        const next = items[index + delta]
+        if (!next) return
+        // Roving tabindex: the single Tab stop travels with the focus. The
+        // sibling has no tabindex yet (only one row ever carries it), so it
+        // must gain it before it can take focus.
+        this.removeAttribute('tabindex')
+        next.setAttribute('tabindex', '0')
+        next.focus({ preventScroll: true })
+    }
+
+    /**
+     * Start editing the layer name
+     * @param {HTMLElement} nameEl - Name element
+     * @param {{fromKeyboard?: boolean}} [options] - fromKeyboard restores row
+     *   focus (not caret focus) when the edit commits, matching the rename
+     *   entry path
+     * @private
+     */
+    _startEditingName(nameEl, { fromKeyboard = false } = {}) {
         nameEl.contentEditable = 'true'
         nameEl.classList.add('editing')
         nameEl.focus()
@@ -581,6 +651,12 @@ class LayerItem extends HTMLElement {
             if (this._layer && this._layer.name !== newName) {
                 const previousValue = this._layer.name
                 this._emitChange('name', newName, previousValue)
+            }
+            // A keyboard-entered rename returns focus to the row itself so
+            // the keyboard user keeps their place in the stack (the pointer
+            // path keeps focus wherever the click left it).
+            if (fromKeyboard && this._layer) {
+                this.focus({ preventScroll: true })
             }
         }
 
@@ -758,6 +834,23 @@ class LayerItem extends HTMLElement {
 customElements.define('layer-item', LayerItem)
 
 /**
+ * Sync a focused row's roving tabindex after stack mutations.
+ *
+ * @param {LayerStack} stack
+ */
+function refreshRovingTabindex(stack) {
+    const items = stack.querySelectorAll(':scope > layer-item')
+    if (items.length === 0) return
+    for (const item of items) item.removeAttribute('tabindex')
+    const focused = [...items].find(item => item === document.activeElement)
+        ?? [...items].find(item => item.contains(document.activeElement))
+    const anchor = focused
+        ?? [...items].find(item => item.selected)
+        ?? items[0]
+    anchor.setAttribute('tabindex', '0')
+}
+
+/**
  * Signature of the layer's *structure*: the fields whose change requires
  * re-rendering the item's inner HTML (different controls, thumbnails, or
  * children). Everything else is patchable in place by sync().
@@ -775,4 +868,4 @@ function structuralSignature(layer) {
     ].join('|')
 }
 
-export { LayerItem, structuralSignature }
+export { LayerItem, structuralSignature, refreshRovingTabindex }

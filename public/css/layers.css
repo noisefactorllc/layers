@@ -29,6 +29,14 @@
     box-shadow: 0 0 0 1px var(--hf-accent-3);
 }
 
+/* Keyboard focus on the row itself (roving tabindex): same ring the row's
+ * inner controls use, so a keyboard user sees which row is active. */
+.layer-item:focus-visible {
+    outline: none;
+    border-color: var(--hf-accent-3);
+    box-shadow: 0 0 0 1px var(--hf-accent-3), 0 0 0 4px color-mix(in srgb, var(--hf-accent-3) 35%, transparent 65%);
+}
+
 .layer-item.dragging {
     opacity: 0.5;
     border-style: dashed;

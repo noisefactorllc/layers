@@ -5097,6 +5097,52 @@ class LayersApp {
             const { layerId, hasMask, x, y } = e.detail
             this._showLayerContextMenu(layerId, hasMask, x, y)
         })
+
+        // Keyboard reorder: Alt+ArrowUp/Down on a focused layer row moves
+        // that layer one slot up (visually higher) or down the stack, through
+        // the same FSM a drag uses. ArrowUp = visually up = higher index.
+        this._layerStack?.addEventListener('layer-keyboard-move', (e) => {
+            const { layerId, direction } = e.detail
+            const index = this._layers.findIndex(l => l.id === layerId)
+            if (index <= 0) return  // unknown layer or the base layer
+            const targetIndex = direction === 'up' ? index + 1 : index - 1
+            if (targetIndex < 1 || targetIndex >= this._layers.length) return
+            void this._moveLayerByKeyboard(layerId, targetIndex)
+        })
+    }
+
+    /**
+     * Keyboard reorder: run the same reorder FSM a drag uses, keeping focus
+     * on the moved row so consecutive Alt+arrows keep working.
+     * @param {string} layerId
+     * @param {number} toIndex - target index in this._layers (model order)
+     * @private
+     */
+    async _moveLayerByKeyboard(layerId, toIndex) {
+        if (this._reorderState !== 'IDLE') return
+        this._startDrag(layerId)
+        if (this._reorderState !== 'DRAGGING') return
+        // Same drop semantics the drag path produces for a pointer release
+        // over the target row: 'above' when the layer moves toward the top
+        // (higher index), 'below' when it moves toward the base.
+        const dropPosition = toIndex > this._layers.findIndex(l => l.id === layerId)
+            ? 'above' : 'below'
+        const targetId = this._layers[toIndex].id
+        await this._processDrop(targetId, dropPosition)
+        // The reconcile re-rendered or repositioned the rows and refresh-
+        // RovingTabindex re-anchored the Tab stop on the selection, so the
+        // moved row may not be focusable right now. Re-anchor the single Tab
+        // stop onto the moved row first, then put focus back so consecutive
+        // Alt+arrows keep working.
+        const stack = this._layerStack
+        const item = stack?.querySelector(`layer-item[data-layer-id="${layerId}"]`)
+        if (stack && item) {
+            for (const row of stack.querySelectorAll(':scope > layer-item')) {
+                row.removeAttribute('tabindex')
+            }
+            item.setAttribute('tabindex', '0')
+            item.focus({ preventScroll: true })
+        }
     }
 
     /**

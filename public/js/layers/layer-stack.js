@@ -6,7 +6,7 @@
  */
 
 import './layer-item.js'
-import { structuralSignature } from './layer-item.js'
+import { structuralSignature, refreshRovingTabindex } from './layer-item.js'
 
 /**
  * LayerStack - Web component for the layer list
@@ -161,6 +161,10 @@ class LayerStack extends HTMLElement {
                 this.appendChild(childItem)
             }
         }
+
+        // Roving tabindex: exactly one row is the stack's Tab stop — the
+        // selected row when one exists, else the first row.
+        refreshRovingTabindex(this)
     }
 
     /**
@@ -248,6 +252,10 @@ class LayerStack extends HTMLElement {
             }
             cursor = item
         }
+
+        // Structural changes re-rendered some rows: re-anchor the roving
+        // tabindex (exactly one row must be the stack's Tab stop).
+        refreshRovingTabindex(this)
     }
 
     /** @private */
@@ -271,6 +279,9 @@ class LayerStack extends HTMLElement {
         items.forEach(item => {
             item.selected = this._selectedLayerIds.has(item.layer?.id)
         })
+        // The roving tabindex follows the selection: a keyboard or pointer
+        // selection makes that row the stack's Tab stop.
+        refreshRovingTabindex(this)
         this.dispatchEvent(new CustomEvent('selection-change', {
             bubbles: true,
             detail: { selectedIds: [...this._selectedLayerIds] }
@@ -318,6 +329,12 @@ class LayerStack extends HTMLElement {
 
             this._updateSelection()
         })
+
+        // Keyboard reorder requests (layer-keyboard-move, Alt+ArrowUp/Down on
+        // a focused row) need no re-emit here: the event bubbles from the
+        // layer-item to this stack, where the app's own handler listens. A
+        // stopPropagation + re-dispatch on `this` would re-trigger this
+        // stack's listeners synchronously and loop.
 
         // Edge auto-scroll during a layer drag: a long stack cannot show all
         // rows at once, and a native drag near the panel's top/bottom edge
