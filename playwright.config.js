@@ -1,5 +1,50 @@
 import { defineConfig } from 'playwright/test'
 
+// Shard sizes, one vector per engine, expressed as the number of tests each
+// shard should carry. Playwright's default shard split divides the suite by
+// test count alone, and test counts are a poor proxy for cost: collaboration
+// (18 tests) took 431 worker-seconds on webkit while 29 tests of agent
+// validation took 37. The vectors below are the min-max partitions of the
+// measured per-file worker-seconds from run 37079716969 (main 9e75c75), each
+// computed over that engine's own durations and rounded so every boundary
+// still falls between files. They put every predicted shard step at or under
+// about fifteen and a half minutes, against the twenty minute promise below,
+// where the even split put four legs over eighteen. Playwright reads these
+// through PWTEST_SHARD_WEIGHTS after this config is imported, so setting it
+// here reaches the runner. Each CI leg runs exactly one --project, which is
+// why one vector per engine is enough; a leg without --shard must not set the
+// variable at all, because weights without a shard are a usage error.
+//
+// These are measurements, not preferences: adding tests to a heavy file, or
+// splitting one, shifts the balance. Re-measure (worker-seconds per file per
+// engine from the artifacts of a green run, min-max partitioned) before
+// touching the vectors, and never hand one a shard that runs no tests.
+const shardWeights = {
+    chromium: [268, 210, 173, 219, 241],
+    firefox: [287, 218, 269, 337],
+    webkit: [68, 113, 106, 121, 70, 74, 159, 164, 115, 121],
+}
+
+function cliFlag(flag) {
+    const argv = process.argv
+    for (let i = 0; i < argv.length; i++) {
+        if (argv[i] === flag)
+            return argv[i + 1]
+        if (argv[i].startsWith(flag + '='))
+            return argv[i].slice(flag.length + 1)
+    }
+    return undefined
+}
+
+if (process.env.CI) {
+    const project = cliFlag('--project')
+    const shard = cliFlag('--shard')
+    const total = shard ? Number((shard.split('/')[1] || '')) : NaN
+    const weights = shardWeights[project]
+    if (weights && Number.isInteger(total) && total === weights.length)
+        process.env.PWTEST_SHARD_WEIGHTS = weights.join(':')
+}
+
 export default defineConfig({
     testDir: './tests',
     // Software-rendered browser runs include shader compilation and page
@@ -14,19 +59,21 @@ export default defineConfig({
     // does. Raise the shard count before raising this again.
     timeout: 90000,
     forbidOnly: !!process.env.CI,
-    // A shard is about thirteen minutes, so one timeout under runner load must
-    // not throw that away. A retry that passes is still reported as flaky by
+    // With the weighted split above, every shard's test step is measured or
+    // predicted at or under about sixteen minutes, so one timeout under
+    // runner load must not throw that away. A retry that passes is still
+    // reported as flaky by
     // name (scripts/quality-reporter.mjs) so it gets fixed rather than
     // absorbed. Locally, no retries: a flake should be visible while you are
     // the one who caused it.
     retries: process.env.CI ? 2 : 0,
     // A whole-run ceiling, and a deliberately strict one. CI runs each engine
     // in shards on separate runners, so no single Playwright run is the whole
-    // suite any more: the largest, one eighth of webkit, is about thirteen
-    // minutes against a twenty minute promise for the harness as a whole.
-    // Twenty here is that promise, not a safety margin around a number nobody
-    // measured. If a shard reaches it, find what got slow or add a shard;
-    // never raise this.
+    // suite any more: the weighted split above keeps the largest shard's test
+    // step around sixteen minutes against a twenty minute promise for the
+    // harness as a whole. Twenty here is that promise, not a safety margin
+    // around a number nobody measured. If a shard reaches it, find what got
+    // slow or rebalance the shards; never raise this.
     globalTimeout: process.env.CI ? 20 * 60 * 1000 : 0,
     workers: process.env.CI ? 2 : undefined,
     reporter: process.env.CI
