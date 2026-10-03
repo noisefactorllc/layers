@@ -438,6 +438,88 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
                 expect(m.contrast, `${theme} loading ${name} contrast (fg ${m.fg} opacity ${m.opacity})`).toBeGreaterThanOrEqual(4.5)
             }
         }
+
+        // The THEMES list also offers System, which resolves through
+        // prefers-color-scheme to neutral-dark / neutral-light. Check it under
+        // both color schemes through the production setSettings path, stepping
+        // out to an explicit theme first so the resolution back to System is
+        // observed, not inherited from boot.
+        const resolvedSystem = {}
+        for (const scheme of ['dark', 'light']) {
+            await page.emulateMedia({ colorScheme: scheme })
+            resolvedSystem[scheme] = await page.evaluate(async (expected) => {
+                function toSrgb(colorStr) {
+                    const canvas = document.createElement('canvas')
+                    canvas.width = 1
+                    canvas.height = 1
+                    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+                    ctx.clearRect(0, 0, 1, 1)
+                    ctx.fillStyle = '#000000'
+                    ctx.fillStyle = colorStr
+                    ctx.fillRect(0, 0, 1, 1)
+                    const data = ctx.getImageData(0, 0, 1, 1).data
+                    return { rgb: [data[0] / 255, data[1] / 255, data[2] / 255], alpha: data[3] / 255 }
+                }
+
+                function luminance([r, g, b]) {
+                    const a = [r, g, b].map(v => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4))
+                    return a[0] * 0.2126 + a[1] * 0.7152 + a[2] * 0.0722
+                }
+
+                function contrastRatio(fg, bg) {
+                    const l1 = luminance(fg)
+                    const l2 = luminance(bg)
+                    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+                }
+
+                await window.LayersAgent.setSettings({ theme: 'dark' })
+                await window.LayersAgent.setSettings({ theme: 'system' })
+                const resolved = document.documentElement.dataset.theme
+
+                const screen = document.getElementById('loading-screen')
+                if (!screen) throw new Error('Missing #loading-screen')
+                screen.classList.remove('hidden')
+                screen.classList.remove('fade-out')
+                for (let i = 0; i < 60; i++) {
+                    if (parseFloat(window.getComputedStyle(screen).opacity) === 1) break
+                    await new Promise(r => requestAnimationFrame(r))
+                }
+                const modal = screen.querySelector('.loading-modal')
+                if (!modal) throw new Error('Missing .loading-modal')
+
+                const screenBg = toSrgb(window.getComputedStyle(screen).backgroundColor)
+                const modalSample = toSrgb(window.getComputedStyle(modal).backgroundColor)
+                const panelBg = modalSample.rgb.map((c, i) => c + screenBg.rgb[i] * (1 - modalSample.alpha))
+
+                const metrics = {}
+                const targets = [
+                    ['tagline', screen.querySelector('.loading-tagline')],
+                    ['status', screen.querySelector('.loading-status')]
+                ]
+                for (const [name, el] of targets) {
+                    if (!el) throw new Error(`Missing loading screen element: ${name}`)
+                    const cs = window.getComputedStyle(el)
+                    const fgSample = toSrgb(cs.color)
+                    const ownOpacity = parseFloat(cs.opacity)
+                    const fg = fgSample.rgb.map(c => c * (Number.isNaN(ownOpacity) ? 1 : ownOpacity))
+                    metrics[name] = {
+                        contrast: contrastRatio(fg, panelBg),
+                        fg: cs.color,
+                        opacity: cs.opacity
+                    }
+                }
+
+                screen.classList.add('hidden')
+                return { resolved, expected, metrics }
+            }, scheme === 'dark' ? 'neutral-dark' : 'neutral-light')
+
+            expect(resolvedSystem[scheme].resolved, `System under ${scheme} color scheme resolves its palette`)
+                .toBe(resolvedSystem[scheme].expected)
+            for (const [name, m] of Object.entries(resolvedSystem[scheme].metrics)) {
+                expect(m.contrast, `System (${scheme}) loading ${name} contrast (fg ${m.fg} opacity ${m.opacity})`).toBeGreaterThanOrEqual(4.5)
+            }
+        }
+        await page.emulateMedia({ colorScheme: null })
     })
 
     test('layer panel icon controls carry Handfish tooltips, including the drag handle', async ({ page }) => {
