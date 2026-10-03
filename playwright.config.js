@@ -5,11 +5,16 @@ import { defineConfig } from 'playwright/test'
 // test count alone, and test counts are a poor proxy for cost: collaboration
 // (18 tests) took 431 worker-seconds on webkit while 29 tests of agent
 // validation took 37. The vectors below are the min-max partitions of the
-// measured per-file worker-seconds from run 37079716969 (main 9e75c75), each
-// computed over that engine's own durations and rounded so every boundary
-// still falls between files. They put every predicted shard step at or under
-// about fifteen and a half minutes, against the twenty minute promise below,
-// where the even split put four legs over eighteen. Playwright reads these
+// per-file worker-seconds, each computed over the slower of two independent
+// runs (green 37079716969 at 9e75c75 and 37084442565 at 8218bb3, in which two
+// legs died at the globalTimeout and contribute no measurement for the tests
+// that never ran there) so the split does not overfit one fast window: a
+// first split measured against a single run put webkit 8/10 and chromium 5/5
+// within seconds of the cap in the next run, which executed the same files up
+// to 1.6x slower. They put every predicted shard step at or under about
+// seventeen minutes against the twenty minute promise below, with the caveat
+// that files inside the two capacity-killed shards are measured only by the
+// green run, so their envelope can be biased low. Playwright reads these
 // through PWTEST_SHARD_WEIGHTS after this config is imported, so setting it
 // here reaches the runner. Each CI leg runs exactly one --project, which is
 // why one vector per engine is enough; a leg without --shard must not set the
@@ -17,12 +22,12 @@ import { defineConfig } from 'playwright/test'
 //
 // These are measurements, not preferences: adding tests to a heavy file, or
 // splitting one, shifts the balance. Re-measure (worker-seconds per file per
-// engine from the artifacts of a green run, min-max partitioned) before
+// engine from the artifacts of recent runs, min-max partitioned) before
 // touching the vectors, and never hand one a shard that runs no tests.
 const shardWeights = {
-    chromium: [268, 210, 173, 219, 241],
-    firefox: [287, 218, 269, 337],
-    webkit: [68, 113, 106, 121, 70, 74, 159, 164, 115, 121],
+    chromium: [238, 219, 202, 231, 221],
+    firefox: [305, 247, 266, 293],
+    webkit: [103, 122, 110, 91, 91, 134, 123, 116, 113, 108],
 }
 
 function cliFlag(flag) {
