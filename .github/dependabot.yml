@@ -33,12 +33,10 @@ updates:
     labels:
       - "dependencies"
 
-  # The Electron wrapper in desktop/ has its own lockfile. It is a separate
-  # entry, not a second directory on the root entry, because its
-  # @nf/desktop-shell dependency is a file: link into the scaffold checkout.
-  # Dependabot cannot fetch that path, and a fetch failure fails every
-  # directory in the same job. Ignoring the link lets the rest of desktop/
-  # update, and a failure here cannot stop root updates.
+  # The Electron wrapper in desktop/ has its own package.json and lockfile.
+  # It is a separate entry, not a second directory on the root entry, so a
+  # desktop failure cannot stop root updates. The desktop build declares the
+  # @nf/desktop-shell link itself; desktop/package.json does not (scaffold#75).
   - package-ecosystem: "npm"
     directory: "/desktop"
     schedule:
@@ -49,8 +47,6 @@ updates:
     cooldown:
       default-days: 7
       semver-major-days: 14
-    ignore:
-      - dependency-name: "@nf/desktop-shell"
     groups:
       npm-desktop-patches:
         patterns:
