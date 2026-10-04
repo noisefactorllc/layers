@@ -131,6 +131,32 @@ test.describe('Layer keyboard interaction', () => {
         await page.keyboard.press('Escape')
     })
 
+    test('Enter on the focused row keeps focus on that row after selecting it', async ({ page }) => {
+        const topId = await rowId(page, 1)
+        await page.evaluate(() => {
+            window.layersApp._layerStack.selectedLayerIds = []
+        })
+
+        await page.locator(`layer-item[data-layer-id="${topId}"]`).focus()
+        await page.keyboard.press('Enter')
+        await appState(page,
+            (id) => window.layersApp._layerStack.selectedLayerIds[0] === id, topId)
+
+        // Selecting re-anchors the roving tabindex; that must not strip the
+        // focused row's own tabindex, which would drop focus to BODY and
+        // strand a keyboard user at the top of the document.
+        const state = await page.evaluate(() => {
+            const el = document.activeElement
+            return {
+                row: el instanceof Element && el.matches('layer-item'),
+                rowId: el instanceof Element && el.matches('layer-item')
+                    ? el.dataset.layerId : null,
+                tabindex: el instanceof Element ? el.getAttribute('tabindex') : null,
+            }
+        })
+        expect(state).toEqual({ row: true, rowId: topId, tabindex: '0' })
+    })
+
     test('F2 on the focused row renames it, and Enter commits back to the row', async ({ page }) => {
         const topId = await rowId(page, 1)
         const row = page.locator(`layer-item[data-layer-id="${topId}"]`)
