@@ -8,6 +8,10 @@ test.describe('Spacebar Pan Toggle and Hand Tool', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await defaultProjectReady(page)
         await pausePlayback(page)
+        // 512 solid base: quarters the composited frame cost on software-rendered
+        // CI shards (same lever as project-replacement-atomicity); this suite
+        // reads no absolute canvas coordinates.
+        await page.evaluate(() => window.layersApp._handleCreateSolidBase(512, 512))
     })
 
     test('toolbar button #handToolBtn exists and activates pan tool on click', async ({ page }) => {
@@ -348,6 +352,10 @@ test.describe('Spacebar Pan after tapping a layer row', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await defaultProjectReady(page)
         await pausePlayback(page)
+        // 512 solid base: quarters the composited frame cost on software-rendered
+        // CI shards (same lever as project-replacement-atomicity); this suite
+        // reads no absolute canvas coordinates.
+        await page.evaluate(() => window.layersApp._handleCreateSolidBase(512, 512))
 
         await page.keyboard.press('b')
         expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')

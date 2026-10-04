@@ -23,6 +23,10 @@ async function bootFromOpenDialog(page, type) {
     await reopenNewProjectDialog(page)
     await page.click(`.media-option[data-type="${type}"]`)
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    // 512 preset: quarters the composited frame cost on software-rendered CI
+    // shards (same capacity trim as drawing-shortcuts); this suite reads no
+    // absolute canvas coordinates.
+    await page.click('.size-preset[data-width="512"]')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await appReady(page)
