@@ -90,31 +90,17 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      # Shards, sized from measurement rather than symmetry. The whole suite is
-      # 963 tests per engine and the engines are not comparable: on run
-      # 34367638949 the test step took 76.7 minutes for webkit, 56.8 for
-      # chromium and 41.3 for firefox, while everything around it, both
-      # checkouts, the harness build, npm ci and the browser install, took 2.1.
-      # Setup is therefore nearly free and wall clock is almost entirely the
-      # test step, so splitting that step is the only lever that matters.
-      #
-      # Each engine gets the shard count that puts its slowest observed leg
-      # under about fifteen minutes, which leaves the whole harness inside
-      # twenty: webkit's worst leg was 100.4, chromium's 60.9, firefox's 48.8.
-      # Playwright splits by file and files differ in size, so the counts carry
-      # room for an uneven split rather than assuming a perfect one. Nineteen
-      # jobs is also deliberate: it stays under the twenty concurrent jobs a
-      # public repository gets, because a shard that queues costs exactly the
-      # wall clock this axis was added to save. Re-measure before changing
-      # these; a shard count picked to look tidy will either miss the target or
-      # burn runners for nothing.
-      #
-      # Webkit went from eight to ten on the measurement from run 34405252523,
-      # where its worst shard was 18.2 minutes against a whole-run ceiling of
-      # twenty. Splitting by file means one shard carries collaboration.spec.js
-      # whole, 6.3 minutes of that 18.2, and no shard count divides a single
-      # file, so the extra shards buy margin on the long tail around it rather
-      # than on the file itself. If that stops being enough, split the file.
+      # This 5/4/10 matrix runs the 1138-test suite once per engine. The seven
+      # heaviest spec files are split into balanced -a/-b files so Playwright
+      # can place their halves in different shards. playwright.config.js sets
+      # one PWTEST_SHARD_WEIGHTS vector per engine from per-file worker-seconds
+      # in eleven green main runs (37097762272 through 37217268294), minimizing
+      # the worst predicted test step across those measured windows. The
+      # resulting worst-window predictions are 1118 s chromium, 1087 s firefox
+      # and 1035 s webkit; exact-source run 37232832949 measured a 1069 s
+      # maximum. Keep the matrix and those vectors aligned, and re-measure
+      # after a file split or test addition. The 19 legs fit below the public
+      # repository's 20 concurrent-job limit; globalTimeout remains 20 minutes.
       matrix:
         include:
           - { browser: chromium, shard: 1, shards: 5 }
