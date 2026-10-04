@@ -464,6 +464,30 @@ class LayerItem extends HTMLElement {
         // Keyboard access: Enter/Space activate the mask thumbnail exactly
         // like a click; the context-menu key (or Shift+F10) opens the same
         // context menu a right-click would, anchored to the focused element.
+        // Space on a row that a click focused must keep reaching the
+        // document-level space-to-pan hold. :focus-visible cannot tell the two
+        // apart (Chromium turns it on at the first keydown after a click), so
+        // record whether the row took focus during a pointer gesture: focus
+        // lands between pointerdown and pointerup.
+        this._pointerActive = false
+        this._focusedByPointer = false
+        this.addEventListener('pointerdown', () => {
+            this._pointerActive = true
+            const end = () => {
+                this._pointerActive = false
+                window.removeEventListener('pointerup', end, true)
+                window.removeEventListener('pointercancel', end, true)
+            }
+            window.addEventListener('pointerup', end, true)
+            window.addEventListener('pointercancel', end, true)
+        }, true)
+        this.addEventListener('focus', (e) => {
+            if (e.target === this) this._focusedByPointer = this._pointerActive
+        }, true)
+        this.addEventListener('blur', (e) => {
+            if (e.target === this) this._focusedByPointer = false
+        }, true)
+
         this.addEventListener('keydown', (e) => {
             // Row-level keys (the row itself is focused via its roving
             // tabindex): Enter/Space select the row, F2 renames it, plain
@@ -473,7 +497,7 @@ class LayerItem extends HTMLElement {
             // keypress, and inner controls keep their own behavior.
             if (e.target === this) {
                 const plain = !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey
-                if (plain && (e.key === 'Enter' || e.key === ' ')) {
+                if (plain && (e.key === 'Enter' || (e.key === ' ' && !this._focusedByPointer))) {
                     e.preventDefault()
                     e.stopPropagation()
                     this._emitSelect()
@@ -838,9 +862,10 @@ customElements.define('layer-item', LayerItem)
  *
  * The focused row is read first and the Tab stop chosen from it; only the
  * other rows lose their tabindex. Stripping tabindex from the focused row
- * itself, even briefly, makes the browser drop its focus (Chromium fires
- * focusout to BODY immediately, Firefox defers it), so a keyboard user's row
- * focus would vanish on every selection change.
+ * itself can make the browser drop its focus (Chromium fires focusout to BODY
+ * immediately; Firefox defers the check and keeps focus if the attribute is
+ * restored), so a keyboard user's row focus could vanish on a selection
+ * change.
  *
  * After a rebuild or reconcile the focused row keeps the stop, else the
  * selected row, else the first row. After a selection change (followSelection)

@@ -64,6 +64,27 @@ test.describe('Spacebar Pan Toggle and Hand Tool', () => {
         await expect(page.locator('#handToolBtn')).not.toHaveClass(/active/)
     })
 
+    test('holding Spacebar after clicking a layer row still engages the Pan tool', async ({ page }) => {
+        await page.keyboard.press('b')
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')
+
+        // A click leaves the row focused; Space must still reach the
+        // document-level space-to-pan hold instead of being consumed by the
+        // row's keyboard-select handler.
+        await page.locator('layer-item .layer-name').first().click()
+        expect(await page.evaluate(() => document.activeElement?.matches('layer-item'))).toBe(true)
+
+        await page.keyboard.down('Space')
+        await page.waitForTimeout(50)
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('pan')
+
+        // A hold of 450ms or more reverts on release (a shorter tap toggles).
+        await page.waitForTimeout(500)
+        await page.keyboard.up('Space')
+        await page.waitForTimeout(50)
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')
+    })
+
     test('dragging with Spacebar held pans the viewport', async ({ page }) => {
         // Set zoom to 200% so the canvas overflows the panel
         await page.evaluate(() => window.layersApp._setZoom('200'))

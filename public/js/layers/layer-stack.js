@@ -281,9 +281,9 @@ class LayerStack extends HTMLElement {
         })
         // The roving tabindex follows the selection: a keyboard or pointer
         // selection makes that row the stack's Tab stop. Selection is
-        // authoritative here over whatever happens to hold focus — Firefox
-        // and WebKit leave a clicked row focused, so a later selection change
-        // would otherwise keep the stop parked on the stale focused row.
+        // authoritative here over whatever happens to hold focus: a
+        // clicked row stays focused, so a later selection change would
+        // otherwise keep the stop parked on the stale focused row.
         refreshRovingTabindex(this, { followSelection: true })
         this.dispatchEvent(new CustomEvent('selection-change', {
             bubbles: true,
