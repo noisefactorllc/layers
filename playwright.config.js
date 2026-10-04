@@ -4,16 +4,22 @@ import { defineConfig } from 'playwright/test'
 // shard should carry. Playwright's default shard split divides the suite by
 // test count alone, and test counts are a poor proxy for cost: collaboration
 // (18 tests) took 431 worker-seconds on webkit while 29 tests of agent
-// validation took 37. The vectors below minimize the worst predicted test
-// step over the nine green runs on main measured so far (37097762272 at
-// f537250; 37101997646 at ca6a404; 37107393719 at 49a639a; 37110907758 at
-// 7bf0824; 37146215821 at f14c52d; 37181219087 at 42a61cd; 37186286571 at
-// 46d47ad; 37205985800 at bae8d33; and 37209658207 at 56e1f96), where a
-// shard's step is predicted from that run's own per-file worker-seconds as
-// S/workers plus, on the two-worker engines, the largest file's share again,
-// because it starts last and runs alone (run 37209658207 chromium 5/5:
-// predicted 1165 s this way, 1148 s actual; webkit runs one worker, so its
-// step is just its worker-seconds plus about nine seconds of startup).
+// validation took 37. To give the sharding finer grain, the seven heaviest
+// spec files are split into balanced -a/-b halves at test boundaries (tests
+// unchanged; worker-seconds re-measured per half from the CI artifacts), so
+// shards can pack halves of the big files separately. The vectors below
+// minimize the worst predicted test step over the eleven green runs on main
+// measured so far (37097762272 at f537250; 37101997646 at ca6a404;
+// 37107393719 at 49a639a; 37110907758 at 7bf0824; 37146215821 at f14c52d;
+// 37181219087 at 42a61cd; 37186286571 at 46d47ad; 37205985800 at bae8d33;
+// 37209658207 at 56e1f96; 37212362193 at cc70181; and 37217268294 at
+// 41d9bec), where a shard's step
+// is predicted from that run's own per-file worker-seconds as S/workers plus,
+// on the two-worker engines, the largest file's share again, because it
+// starts last and runs alone (run 37209658207 chromium 5/5: predicted 1165 s
+// this way, 1148 s actual; run 37212362193 chromium 3/5: predicted 1155 s,
+// 1156 s actual; webkit runs one worker, so its step is just its
+// worker-seconds plus about nine seconds of startup).
 // Minimizing the worst measured window rather than a per-file envelope
 // matters: an envelope overstates, because no single run was slowest on
 // every file at once. History, for why single-run splits are avoided: a
@@ -21,15 +27,16 @@ import { defineConfig } from 'playwright/test'
 // 5/5 within seconds of the cap in the next run, which executed the same
 // files up to 1.6x slower, a second left webkit 9/10 at 1129 s, a third
 // left chromium 1/5 at 1090 s, a fourth left chromium 5/5 at 1130 s and a
-// fifth left firefox 4/4 at 1176 s. The re-partition at 56e1f96 balanced a
-// per-file envelope over eight runs and its own exact-SHA run still put
-// chromium 5/5 at 1148 s. These vectors predict, on the nine measured
-// windows, worst steps of 1156 s (chromium), 1122 s (firefox) and 1035 s
-// (webkit) for the best split there is at these shard counts; actual steps
-// have been observed up to about 120 s under the prediction, so windows
-// remain a draw. Chromium's floor is its total worker-seconds divided by
-// ten worker-slots, about 1024 s at the heaviest measured totals: past the
-// point these vectors already sit at, only more shards move it.
+// fifth left firefox 4/4 at 1176 s. These vectors predict, on the eleven
+// measured windows, worst steps of 1118 s (chromium), 1087 s (firefox; its
+// heaviest measured window 201 is about 8% over its window average) and
+// 1035 s (webkit) for the best split there is at these shard counts with
+// this file inventory; actual steps have been observed up to about 120 s
+// under the prediction, so windows remain a draw. Chromium's floor is its
+// total worker-seconds divided by ten worker-slots, about 1024 s at the
+// heaviest measured totals, and its cross-window variance adds about 90 s
+// more at the best granularity this inventory reaches: past the point these
+// vectors already sit at, only more shards move it.
 // Playwright reads these
 // through PWTEST_SHARD_WEIGHTS after this config is imported, so setting it
 // here reaches the runner. Each CI leg runs exactly one --project, which is
@@ -42,9 +49,9 @@ import { defineConfig } from 'playwright/test'
 // minimized) before
 // touching the vectors, and never hand one a shard that runs no tests.
 const shardWeights = {
-    chromium: [225, 212, 235, 239, 222],
-    firefox: [295, 225, 314, 299],
-    webkit: [121, 139, 127, 91, 82, 131, 104, 140, 89, 109],
+    chromium: [240, 221, 207, 232, 238],
+    firefox: [305, 247, 291, 295],
+    webkit: [121, 139, 127, 91, 82, 135, 104, 140, 89, 110],
 }
 
 function cliFlag(flag) {

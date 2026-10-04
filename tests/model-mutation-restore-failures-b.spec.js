@@ -18,365 +18,13 @@ async function bootSolid(page) {
     await backdrop.waitFor({ state: 'hidden' })
 }
 
-test('agent flip restores the selected media transform when renderer update throws', async ({ page }) => {
-    await bootSolid(page)
-
-    const result = await page.evaluate(async (data) => {
-        const app = window.layersApp
-        const added = await window.LayersAgent.addLayer({
-            kind: 'media',
-            mediaType: 'image',
-            source: { kind: 'base64', data, mimeType: 'image/png' },
-        })
-        const layer = app._layers.find(candidate => candidate.id === added.result.layerId)
-        const priorLayer = app._layers.find(candidate => candidate.id !== layer.id)
-        app._layerStack.selectedLayerId = priorLayer.id
-        app._markClean()
-        const before = {
-            flipH: layer.flipH,
-            selectedLayerIds: app._layerStack.selectedLayerIds,
-            selectionAnchor: app._layerStack._lastClickedLayerId,
-            dirty: app._isDirty,
-            mutationRevision: app._projectMutationRevision,
-            undoStackLength: app._undoManager._stack.length,
-            undoIndex: app._undoManager._index,
-            pendingUndo: Boolean(app._undoDebounceTimer),
-        }
-        const updateTransformRender = app._updateTransformRender.bind(app)
-        let updateCalls = 0
-        app._updateTransformRender = (candidate) => {
-            updateCalls += 1
-            if (updateCalls === 1) throw new Error('injected flip renderer failure')
-            return updateTransformRender(candidate)
-        }
-
-        const envelope = await window.LayersAgent.flipLayer({
-            layerId: layer.id,
-            axis: 'h',
-        })
-        return {
-            before,
-            after: {
-                flipH: layer.flipH,
-                selectedLayerIds: app._layerStack.selectedLayerIds,
-                selectionAnchor: app._layerStack._lastClickedLayerId,
-                dirty: app._isDirty,
-                mutationRevision: app._projectMutationRevision,
-                undoStackLength: app._undoManager._stack.length,
-                undoIndex: app._undoManager._index,
-                pendingUndo: Boolean(app._undoDebounceTimer),
-            },
-            envelope,
-            updateCalls,
-        }
-    }, TINY_PNG_B64)
-
-    expect(result.envelope.ok).toBe(false)
-    expect(result.envelope.error.code).toBe('INTERNAL_ERROR')
-    expect(result.after).toEqual(result.before)
-    expect(result.updateCalls).toBeGreaterThanOrEqual(2)
-})
-
-const reorderCases = [
-    { name: 'human layer reorder', operation: 'human-layer', agent: false },
-    { name: 'agent layer reorder', operation: 'agent-layer', agent: true },
-    { name: 'agent child reorder', operation: 'agent-child', agent: true },
-]
-
-for (const entry of reorderCases) {
-    test(`${entry.name} restores exact order when final rebuild fails`, async ({ page }) => {
-        await bootSolid(page)
-
-        const result = await page.evaluate(async ({ operation }) => {
-            const app = window.layersApp
-            const first = await app._handleAddEffectLayer('synth/gradient')
-            const second = await app._handleAddEffectLayer('synth/gradient')
-            const firstLayer = app._layers.find(layer => layer.id === first.layerId)
-            if (operation === 'agent-child') {
-                await app._handleAddChildEffect(firstLayer.id, 'filter/blur')
-                await app._handleAddChildEffect(firstLayer.id, 'filter/invert')
-            }
-            app._markClean()
-
-            const layersArray = app._layers
-            const layerObjects = app._layers.slice()
-            const childrenArray = firstLayer.children
-            const childObjects = firstLayer.children.slice()
-            const state = () => ({
-                layerIds: app._layers.map(layer => layer.id),
-                childIds: firstLayer.children.map(child => child.id),
-                selectedLayerIds: app._layerStack.selectedLayerIds,
-                selectionAnchor: app._layerStack._lastClickedLayerId,
-                dirty: app._isDirty,
-                mutationRevision: app._projectMutationRevision,
-                undoStackLength: app._undoManager._stack.length,
-                undoIndex: app._undoManager._index,
-                pendingUndo: Boolean(app._undoDebounceTimer),
-            })
-            const before = state()
-            const rebuild = app._rebuild.bind(app)
-            let rebuildCalls = 0
-            app._rebuild = (...args) => {
-                if (rebuildCalls++ === 0) {
-                    return Promise.resolve({
-                        success: false,
-                        error: 'injected reorder final rebuild failure',
-                    })
-                }
-                return rebuild(...args)
-            }
-
-            let envelope = null
-            if (operation === 'human-layer') {
-                app._startDrag(second.layerId)
-                await app._processDrop(first.layerId, 'below')
-            } else if (operation === 'agent-layer') {
-                envelope = await window.LayersAgent.reorderLayer({
-                    layerId: second.layerId,
-                    toIndex: 1,
-                })
-            } else {
-                envelope = await window.LayersAgent.reorderChildEffect({
-                    layerId: firstLayer.id,
-                    childId: firstLayer.children[1].id,
-                    toIndex: 0,
-                })
-            }
-
-            return {
-                before,
-                after: state(),
-                envelope,
-                rebuildCalls,
-                sameLayersArray: app._layers === layersArray,
-                sameLayerObjects: layerObjects.every(
-                    (layer, index) => app._layers[index] === layer),
-                sameChildrenArray: firstLayer.children === childrenArray,
-                sameChildObjects: childObjects.every(
-                    (child, index) => firstLayer.children[index] === child),
-                reorderIdle: app._reorderState === 'IDLE',
-                lifecycleReleased: !app._projectLifecycleActive,
-            }
-        }, { operation: entry.operation })
-
-        expect(result.rebuildCalls).toBeGreaterThanOrEqual(2)
-        expect(result.after).toEqual(result.before)
-        expect(result.sameLayersArray).toBe(true)
-        expect(result.sameLayerObjects).toBe(true)
-        expect(result.sameChildrenArray).toBe(true)
-        expect(result.sameChildObjects).toBe(true)
-        expect(result.reorderIdle).toBe(true)
-        expect(result.lifecycleReleased).toBe(true)
-        if (entry.agent) {
-            expect(result.envelope.ok).toBe(false)
-            expect(result.envelope.error.code).toBe('INTERNAL_ERROR')
-        }
-    })
-}
-
-test('human reorder reports restoration rebuild failure without claiming changes reverted', async ({ page }) => {
-    await bootSolid(page)
-
-    const result = await page.evaluate(async () => {
-        const app = window.layersApp
-        const first = await app._handleAddEffectLayer('synth/gradient')
-        const second = await app._handleAddEffectLayer('synth/gradient')
-        const layersArray = app._layers
-        const layerObjects = app._layers.slice()
-        const beforeIds = app._layers.map(layer => layer.id)
-        let rebuildCalls = 0
-        app._renderer.tryCompile = () => Promise.resolve({
-            success: false,
-            error: 'injected reorder candidate validation failure',
-        })
-        app._rebuild = () => {
-            rebuildCalls += 1
-            return Promise.resolve({
-                success: false,
-                error: 'injected reorder restoration rebuild failure',
-            })
-        }
-
-        app._startDrag(second.layerId)
-        await app._processDrop(first.layerId, 'below')
-        const errors = Array.from(document.querySelectorAll(
-            '#toast-container .toast-error .toast-message'))
-            .map(element => element.textContent)
-
-        return {
-            beforeIds,
-            afterIds: app._layers.map(layer => layer.id),
-            sameLayersArray: app._layers === layersArray,
-            sameLayerObjects: layerObjects.every(
-                (layer, index) => app._layers[index] === layer),
-            rebuildCalls,
-            lastError: errors.at(-1),
-            reorderIdle: app._reorderState === 'IDLE',
-            lifecycleReleased: !app._projectLifecycleActive,
-        }
-    })
-
-    expect(result.afterIds).toEqual(result.beforeIds)
-    expect(result.sameLayersArray).toBe(true)
-    expect(result.sameLayerObjects).toBe(true)
-    expect(result.rebuildCalls).toBe(1)
-    expect(result.lastError).toContain('injected reorder candidate validation failure')
-    expect(result.lastError).toContain('injected reorder restoration rebuild failure')
-    expect(result.lastError).not.toContain('Changes reverted')
-    expect(result.reorderIdle).toBe(true)
-    expect(result.lifecycleReleased).toBe(true)
-})
-
 const maskCases = [
-    'add',
-    'from-selection',
-    'delete',
-    'invert',
-    'feather',
-    'expand',
     'contract',
+    'delete',
+    'feather',
+    'invert',
     'smooth',
-    'enable',
-    'exit-edit',
 ]
-
-test('overlapping successful mask strokes settle without a stale snapshot override', async ({ page }) => {
-    await bootSolid(page)
-
-    const result = await page.evaluate(async () => {
-        const app = window.layersApp
-        const { createPathStroke } = await import('/js/drawing/stroke-model.js')
-        await app._handleCreateSolidBase(64, 64)
-        const added = await app._handleAddEffectLayer('synth/gradient')
-        const layer = app._layers.find(candidate => candidate.id === added.layerId)
-        await app._addLayerMask(layer.id, { enterEditMode: false })
-        app._enterMaskEditMode(layer.id)
-        const stroke = x => createPathStroke({
-            color: '#000000',
-            size: 10,
-            opacity: 1,
-            points: [{ x, y: 16 }, { x: x + 8, y: 16 }],
-        })
-
-        let rebuildCalls = 0
-        let enterFirst
-        let releaseFirst
-        let rebuildTail = Promise.resolve()
-        const firstEntered = new Promise(resolve => { enterFirst = resolve })
-        const firstRelease = new Promise(resolve => { releaseFirst = resolve })
-        app._rebuild = () => {
-            const call = ++rebuildCalls
-            const run = rebuildTail.then(async () => {
-                if (call === 1) {
-                    enterFirst()
-                    await firstRelease
-                }
-                return { success: true }
-            })
-            rebuildTail = run.catch(() => {})
-            return run
-        }
-
-        const older = app._handleMaskStroke(stroke(8), true)
-        await firstEntered
-        const newer = app._handleMaskStroke(stroke(40), true)
-        releaseFirst()
-        const [olderOutcome, newerOutcome] = await Promise.all([older, newer])
-        const snapshot = (await window.LayersAgent.getState()).state
-        const snapshotLayer = snapshot.layers.find(candidate => candidate.id === layer.id)
-        const maskValue = (x, y) => layer.mask.data[(y * layer.mask.width + x) * 4]
-        return {
-            olderStatus: olderOutcome.status,
-            newerStatus: newerOutcome.status,
-            rebuildCalls,
-            transactionDepth: app._publishTransactionDepth,
-            snapshotOverrideCleared: app._projectSnapshotCanvasOverride === null,
-            firstPixel: maskValue(12, 16),
-            secondPixel: maskValue(44, 16),
-            snapshotCoverage: snapshotLayer.mask.coverage,
-        }
-    })
-
-    expect(result).toMatchObject({
-        olderStatus: 'committed',
-        newerStatus: 'committed',
-        rebuildCalls: 2,
-        transactionDepth: 0,
-        snapshotOverrideCleared: true,
-        firstPixel: 0,
-        secondPixel: 0,
-    })
-    expect(result.snapshotCoverage).toBeLessThan(1)
-})
-
-test('a failed older mask stroke cannot roll back a newer successful stroke', async ({ page }) => {
-    await bootSolid(page)
-
-    const result = await page.evaluate(async () => {
-        const app = window.layersApp
-        const { createPathStroke } = await import('/js/drawing/stroke-model.js')
-        await app._handleCreateSolidBase(64, 64)
-        const added = await app._handleAddEffectLayer('synth/gradient')
-        const layer = app._layers.find(candidate => candidate.id === added.layerId)
-        await app._addLayerMask(layer.id, { enterEditMode: false })
-        app._enterMaskEditMode(layer.id)
-        const stroke = x => createPathStroke({
-            color: '#000000',
-            size: 10,
-            opacity: 1,
-            points: [{ x, y: 16 }, { x: x + 8, y: 16 }],
-        })
-
-        let rebuildCalls = 0
-        let enterFirst
-        let releaseFirst
-        let rebuildTail = Promise.resolve()
-        const firstEntered = new Promise(resolve => { enterFirst = resolve })
-        const firstRelease = new Promise(resolve => { releaseFirst = resolve })
-        app._rebuild = () => {
-            const call = ++rebuildCalls
-            const run = rebuildTail.then(async () => {
-                if (call === 1) {
-                    enterFirst()
-                    await firstRelease
-                    return {
-                        success: false,
-                        error: 'injected older mask failure',
-                    }
-                }
-                return { success: true }
-            })
-            rebuildTail = run.catch(() => {})
-            return run
-        }
-
-        const older = app._handleMaskStroke(stroke(8), true)
-        await firstEntered
-        const newer = app._handleMaskStroke(stroke(40), true)
-        releaseFirst()
-        const [olderOutcome, newerOutcome] = await Promise.all([older, newer])
-        const maskValue = (x, y) => layer.mask.data[(y * layer.mask.width + x) * 4]
-        return {
-            olderStatus: olderOutcome.status,
-            newerStatus: newerOutcome.status,
-            rebuildCalls,
-            transactionDepth: app._publishTransactionDepth,
-            snapshotOverrideCleared: app._projectSnapshotCanvasOverride === null,
-            firstPixel: maskValue(12, 16),
-            secondPixel: maskValue(44, 16),
-        }
-    })
-
-    expect(result).toEqual({
-        olderStatus: 'failed',
-        newerStatus: 'committed',
-        rebuildCalls: 3,
-        transactionDepth: 0,
-        snapshotOverrideCleared: true,
-        firstPixel: 255,
-        secondPixel: 0,
-    })
-})
 
 for (const actor of ['human', 'agent']) {
     for (const operation of maskCases) {
@@ -565,6 +213,142 @@ for (const actor of ['human', 'agent']) {
     }
 }
 
+test('overlapping successful mask strokes settle without a stale snapshot override', async ({ page }) => {
+    await bootSolid(page)
+
+    const result = await page.evaluate(async () => {
+        const app = window.layersApp
+        const { createPathStroke } = await import('/js/drawing/stroke-model.js')
+        await app._handleCreateSolidBase(64, 64)
+        const added = await app._handleAddEffectLayer('synth/gradient')
+        const layer = app._layers.find(candidate => candidate.id === added.layerId)
+        await app._addLayerMask(layer.id, { enterEditMode: false })
+        app._enterMaskEditMode(layer.id)
+        const stroke = x => createPathStroke({
+            color: '#000000',
+            size: 10,
+            opacity: 1,
+            points: [{ x, y: 16 }, { x: x + 8, y: 16 }],
+        })
+
+        let rebuildCalls = 0
+        let enterFirst
+        let releaseFirst
+        let rebuildTail = Promise.resolve()
+        const firstEntered = new Promise(resolve => { enterFirst = resolve })
+        const firstRelease = new Promise(resolve => { releaseFirst = resolve })
+        app._rebuild = () => {
+            const call = ++rebuildCalls
+            const run = rebuildTail.then(async () => {
+                if (call === 1) {
+                    enterFirst()
+                    await firstRelease
+                }
+                return { success: true }
+            })
+            rebuildTail = run.catch(() => {})
+            return run
+        }
+
+        const older = app._handleMaskStroke(stroke(8), true)
+        await firstEntered
+        const newer = app._handleMaskStroke(stroke(40), true)
+        releaseFirst()
+        const [olderOutcome, newerOutcome] = await Promise.all([older, newer])
+        const snapshot = (await window.LayersAgent.getState()).state
+        const snapshotLayer = snapshot.layers.find(candidate => candidate.id === layer.id)
+        const maskValue = (x, y) => layer.mask.data[(y * layer.mask.width + x) * 4]
+        return {
+            olderStatus: olderOutcome.status,
+            newerStatus: newerOutcome.status,
+            rebuildCalls,
+            transactionDepth: app._publishTransactionDepth,
+            snapshotOverrideCleared: app._projectSnapshotCanvasOverride === null,
+            firstPixel: maskValue(12, 16),
+            secondPixel: maskValue(44, 16),
+            snapshotCoverage: snapshotLayer.mask.coverage,
+        }
+    })
+
+    expect(result).toMatchObject({
+        olderStatus: 'committed',
+        newerStatus: 'committed',
+        rebuildCalls: 2,
+        transactionDepth: 0,
+        snapshotOverrideCleared: true,
+        firstPixel: 0,
+        secondPixel: 0,
+    })
+    expect(result.snapshotCoverage).toBeLessThan(1)
+})
+test('a failed older mask stroke cannot roll back a newer successful stroke', async ({ page }) => {
+    await bootSolid(page)
+
+    const result = await page.evaluate(async () => {
+        const app = window.layersApp
+        const { createPathStroke } = await import('/js/drawing/stroke-model.js')
+        await app._handleCreateSolidBase(64, 64)
+        const added = await app._handleAddEffectLayer('synth/gradient')
+        const layer = app._layers.find(candidate => candidate.id === added.layerId)
+        await app._addLayerMask(layer.id, { enterEditMode: false })
+        app._enterMaskEditMode(layer.id)
+        const stroke = x => createPathStroke({
+            color: '#000000',
+            size: 10,
+            opacity: 1,
+            points: [{ x, y: 16 }, { x: x + 8, y: 16 }],
+        })
+
+        let rebuildCalls = 0
+        let enterFirst
+        let releaseFirst
+        let rebuildTail = Promise.resolve()
+        const firstEntered = new Promise(resolve => { enterFirst = resolve })
+        const firstRelease = new Promise(resolve => { releaseFirst = resolve })
+        app._rebuild = () => {
+            const call = ++rebuildCalls
+            const run = rebuildTail.then(async () => {
+                if (call === 1) {
+                    enterFirst()
+                    await firstRelease
+                    return {
+                        success: false,
+                        error: 'injected older mask failure',
+                    }
+                }
+                return { success: true }
+            })
+            rebuildTail = run.catch(() => {})
+            return run
+        }
+
+        const older = app._handleMaskStroke(stroke(8), true)
+        await firstEntered
+        const newer = app._handleMaskStroke(stroke(40), true)
+        releaseFirst()
+        const [olderOutcome, newerOutcome] = await Promise.all([older, newer])
+        const maskValue = (x, y) => layer.mask.data[(y * layer.mask.width + x) * 4]
+        return {
+            olderStatus: olderOutcome.status,
+            newerStatus: newerOutcome.status,
+            rebuildCalls,
+            transactionDepth: app._publishTransactionDepth,
+            snapshotOverrideCleared: app._projectSnapshotCanvasOverride === null,
+            firstPixel: maskValue(12, 16),
+            secondPixel: maskValue(44, 16),
+        }
+    })
+
+    expect(result).toEqual({
+        olderStatus: 'failed',
+        newerStatus: 'committed',
+        rebuildCalls: 3,
+        transactionDepth: 0,
+        snapshotOverrideCleared: true,
+        firstPixel: 255,
+        secondPixel: 0,
+    })
+})
 for (const sourceType of ['image', 'video', 'drawing']) {
     test(`${sourceType} delete preserves resource on failure and disposes only after success`, async ({ page }) => {
         await bootSolid(page)
