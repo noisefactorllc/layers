@@ -69,6 +69,9 @@ initializeTooltips()
 
 const ONLINE_COLLABORATION_FEATURE = 'onlineCollaboration'
 const MAX_CANVAS_DIMENSION = 8192
+// The picked foreground color survives a reload the same way the theme does
+// (`layers-theme` in settings-dialog): every set writes here, boot reads back.
+const FOREGROUND_COLOR_STORAGE_KEY = 'layers-foreground-color'
 
 /**
  * Feature-flag check for online collaboration. Ships enabled by default;
@@ -1339,6 +1342,11 @@ class LayersApp {
         this._setupMenuHandlers()
         this._setupLayerStackHandlers()
         this._setupKeyboardShortcuts()
+
+        // Restore the persisted foreground color (same pattern as the
+        // theme's initTheme above): app state, the well swatch, and the
+        // native color input all come back as the user left them.
+        this._restoreForegroundColor()
 
         // Export system
         this._files = new Files()
@@ -6615,6 +6623,12 @@ class LayersApp {
      */
     _setForegroundColor(color) {
         this._foregroundColor = color
+        // Persist so a reload (or crash recovery) restores the picked color.
+        // Storage can be unavailable (private mode, quota); the in-memory
+        // color still applies, matching the theme's best-effort persistence.
+        try {
+            localStorage.setItem(FOREGROUND_COLOR_STORAGE_KEY, color)
+        } catch { /* storage unavailable; keep the in-memory color */ }
         if (this._brushTool) this._brushTool.color = color
         if (this._shapeTool) this._shapeTool.color = color
         if (this._fillTool) this._fillTool.color = color
@@ -6622,6 +6636,22 @@ class LayersApp {
         if (well) well.style.backgroundColor = color
         const input = document.getElementById('colorWellInput')
         if (input) input.value = color
+    }
+
+    /**
+     * Read the persisted foreground color at boot and apply it through the
+     * normal set path. An invalid, missing, or unreadable value keeps the
+     * black default.
+     * @private
+     */
+    _restoreForegroundColor() {
+        let saved = null
+        try {
+            saved = localStorage.getItem(FOREGROUND_COLOR_STORAGE_KEY)
+        } catch { return }
+        if (typeof saved === 'string' && /^#[0-9a-f]{6}$/i.test(saved)) {
+            this._setForegroundColor(saved)
+        }
     }
 
     /**
