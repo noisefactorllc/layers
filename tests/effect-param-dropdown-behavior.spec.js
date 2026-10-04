@@ -176,7 +176,7 @@ test('a member-enum dropdown with no explicit choices is populated and emits a b
     expect(result.index).toMatch(/^palette\.[A-Za-z]/)
     // Emitted bare, and as a whole identifier (not a prefix of a longer member
     // like palette.sherbet vs palette.sherbetDouble), never triple-quoted.
-    const idPattern = new RegExp(`index: ${result.index.replace(/\./g, '\\.')}(?![\\w.])`)
+    const idPattern = new RegExp(`index: ${result.index.replace(/[\\.]/g, '\\$&')}(?![\\w.])`)
     expect(result.dslLine).toMatch(idPattern)
     expect(result.dslLine).not.toContain('index: """')
 })
