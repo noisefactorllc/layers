@@ -30,6 +30,9 @@ on:
   release:
     types: [published]
 
+# No job uses the repo GITHUB_TOKEN.
+permissions: {}
+
 jobs:
   notify:
     runs-on: ubuntu-latest
