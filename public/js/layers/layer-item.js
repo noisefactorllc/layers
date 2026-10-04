@@ -837,15 +837,19 @@ customElements.define('layer-item', LayerItem)
  * Sync a focused row's roving tabindex after stack mutations.
  *
  * @param {LayerStack} stack
+ * @param {{followSelection?: boolean}} [options] - When true (selection
+ *   changes), the selected row outranks the focused row as the anchor; render
+ *   paths keep the default so a keyboard user's focus is never displaced by
+ *   an unrelated repaint.
  */
-function refreshRovingTabindex(stack) {
+function refreshRovingTabindex(stack, { followSelection = false } = {}) {
     const items = stack.querySelectorAll(':scope > layer-item')
     if (items.length === 0) return
     for (const item of items) item.removeAttribute('tabindex')
+    const selected = [...items].find(item => item.selected)
     const focused = [...items].find(item => item === document.activeElement)
         ?? [...items].find(item => item.contains(document.activeElement))
-    const anchor = focused
-        ?? [...items].find(item => item.selected)
+    const anchor = (followSelection ? selected ?? focused : focused ?? selected)
         ?? items[0]
     anchor.setAttribute('tabindex', '0')
 }
