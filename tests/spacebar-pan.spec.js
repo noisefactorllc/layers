@@ -336,3 +336,32 @@ test.describe('Spacebar Pan Toggle and Hand Tool', () => {
         })
     })
 })
+
+// Touch focus lands AFTER pointerup (it rides the compatibility mouse events),
+// so a row that records pointer focus only until pointerup mistakes a tapped
+// row for a keyboard-focused one and swallows Space.
+test.describe('Spacebar Pan after tapping a layer row', () => {
+    test.use({ hasTouch: true })
+
+    test('holding Spacebar after tapping a layer row still engages the Pan tool', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        await defaultProjectReady(page)
+        await pausePlayback(page)
+
+        await page.keyboard.press('b')
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')
+
+        await page.locator('layer-item .layer-name').first().tap()
+        expect(await page.evaluate(() => document.activeElement?.matches('layer-item'))).toBe(true)
+
+        await page.keyboard.down('Space')
+        await page.waitForTimeout(50)
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('pan')
+
+        await page.waitForTimeout(500)
+        await page.keyboard.up('Space')
+        await page.waitForTimeout(50)
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')
+    })
+})

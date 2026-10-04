@@ -157,6 +157,94 @@ test.describe('Layer keyboard interaction', () => {
         expect(state).toEqual({ row: true, rowId: topId, tabindex: '0' })
     })
 
+    /** Hold Space for the 500ms pan gesture; expect Pan while held, brush after. */
+    async function expectSpaceHoldPans(page) {
+        await page.keyboard.down('Space')
+        await page.waitForTimeout(50)
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('pan')
+        await page.waitForTimeout(500)
+        await page.keyboard.up('Space')
+        await page.waitForTimeout(50)
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')
+    }
+
+    test('clicking an already keyboard-focused row hands Space back to space-to-pan', async ({ page }) => {
+        const topId = await rowId(page, 1)
+        const row = page.locator(`layer-item[data-layer-id="${topId}"]`)
+        await page.keyboard.press('b')
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')
+
+        // Keyboard focus first; the click then fires no new focus event, so
+        // the most recent interaction (the pointer) has to be what counts.
+        await row.focus()
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowUp')
+        await expect(row).toBeFocused()
+        await row.locator('.layer-name').click()
+        await expect(row).toBeFocused()
+        await expectSpaceHoldPans(page)
+    })
+
+    test('keyboard navigation after a click makes Space select again', async ({ page }) => {
+        const bottomId = await rowId(page, 0)
+        const topId = await rowId(page, 1)
+        const topRow = page.locator(`layer-item[data-layer-id="${topId}"]`)
+        const bottomRow = page.locator(`layer-item[data-layer-id="${bottomId}"]`)
+        await page.keyboard.press('b')
+
+        // Pointer-focus the top row, then arrow down to the bottom row and
+        // press Space: that is keyboard focus again, so Space selects.
+        await topRow.locator('.layer-name').click()
+        await expect(topRow).toBeFocused()
+        await page.keyboard.press('ArrowDown')
+        await expect(bottomRow).toBeFocused()
+        await page.keyboard.press('Space')
+        await appState(page,
+            (id) => window.layersApp._layerStack.selectedLayerIds[0] === id, bottomId)
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')
+    })
+
+    test('an arrow press that cannot move a clicked row still counts as keyboard use', async ({ page }) => {
+        const topId = await rowId(page, 1)
+        const topRow = page.locator(`layer-item[data-layer-id="${topId}"]`)
+        await page.keyboard.press('b')
+
+        // Top row, nothing above it: ArrowUp moves no focus, but it is still
+        // keyboard use of a pointer-focused row. Space is the row's again, so
+        // it must not start a pan hold.
+        await topRow.locator('.layer-name').click()
+        await expect(topRow).toBeFocused()
+        await page.keyboard.press('ArrowUp')
+        await expect(topRow).toBeFocused()
+        await page.keyboard.down('Space')
+        await page.waitForTimeout(100)
+        expect(await page.evaluate(() => window.layersApp._currentTool)).toBe('brush')
+        await page.keyboard.up('Space')
+    })
+
+    test('a native drag that never reports pointerup does not leave a row pointer-focused', async ({ page }) => {
+        const topId = await rowId(page, 1)
+        const topRow = page.locator(`layer-item[data-layer-id="${topId}"]`)
+        await page.evaluate(() => {
+            window.layersApp._layerStack.selectedLayerIds = []
+        })
+
+        // A drag takes over the gesture: pointerdown, then dragstart, and the
+        // browser may never deliver pointerup, pointercancel or dragend.
+        await page.evaluate((id) => {
+            const row = document.querySelector(`layer-item[data-layer-id="${id}"]`)
+            row.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 41, pointerType: 'mouse' }))
+            row.dispatchEvent(new Event('dragstart', { bubbles: true, cancelable: true }))
+        }, topId)
+
+        // Keyboard focus straight afterwards is keyboard focus: Space selects.
+        await topRow.focus()
+        await expect(topRow).toBeFocused()
+        await page.keyboard.press('Space')
+        await appState(page,
+            (id) => window.layersApp._layerStack.selectedLayerIds[0] === id, topId)
+    })
+
     test('F2 on the focused row renames it, and Enter commits back to the row', async ({ page }) => {
         const topId = await rowId(page, 1)
         const row = page.locator(`layer-item[data-layer-id="${topId}"]`)

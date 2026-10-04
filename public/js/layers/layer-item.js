@@ -464,25 +464,51 @@ class LayerItem extends HTMLElement {
         // Keyboard access: Enter/Space activate the mask thumbnail exactly
         // like a click; the context-menu key (or Shift+F10) opens the same
         // context menu a right-click would, anchored to the focused element.
-        // Space on a row that a click focused must keep reaching the
+        // Space on a row that a pointer focused must keep reaching the
         // document-level space-to-pan hold. :focus-visible cannot tell the two
         // apart (Chromium turns it on at the first keydown after a click), so
-        // record whether the row took focus during a pointer gesture: focus
-        // lands between pointerdown and pointerup.
-        this._pointerActive = false
+        // record whether the row's focus came from a pointer interaction.
+        // Focus lands between pointerdown and pointerup for a mouse but AFTER
+        // pointerup for touch (it rides the compatibility mouse events), so
+        // the interaction stays pending until its click, or a short bounded
+        // window after pointerup when no click follows. A drag start or a
+        // cancelled pointer ends it at once, so it can never stay stuck. The
+        // most recent interaction wins: a pointerdown on the row that already
+        // has focus re-marks it as pointer-focused (no focus event fires),
+        // and Tab or arrow keys on the row mark it keyboard-focused again.
+        this._pointerPending = false
         this._focusedByPointer = false
+        let pendingTimer = 0
+        const endPointer = () => {
+            this._pointerPending = false
+            clearTimeout(pendingTimer)
+        }
         this.addEventListener('pointerdown', () => {
-            this._pointerActive = true
-            const end = () => {
-                this._pointerActive = false
-                window.removeEventListener('pointerup', end, true)
-                window.removeEventListener('pointercancel', end, true)
+            this._pointerPending = true
+            if (document.activeElement === this) this._focusedByPointer = true
+            clearTimeout(pendingTimer)
+            const detach = () => {
+                window.removeEventListener('pointerup', onUp, true)
+                window.removeEventListener('pointercancel', onCancel, true)
             }
-            window.addEventListener('pointerup', end, true)
-            window.addEventListener('pointercancel', end, true)
+            // Touch focus arrives after pointerup, so wait for the click.
+            const onUp = () => {
+                detach()
+                clearTimeout(pendingTimer)
+                pendingTimer = setTimeout(endPointer, 500)
+            }
+            const onCancel = () => {
+                detach()
+                endPointer()
+            }
+            window.addEventListener('pointerup', onUp, true)
+            window.addEventListener('pointercancel', onCancel, true)
         }, true)
+        this.addEventListener('click', endPointer, true)
+        this.addEventListener('dragstart', endPointer, true)
+        this.addEventListener('dragend', endPointer, true)
         this.addEventListener('focus', (e) => {
-            if (e.target === this) this._focusedByPointer = this._pointerActive
+            if (e.target === this) this._focusedByPointer = this._pointerPending
         }, true)
         this.addEventListener('blur', (e) => {
             if (e.target === this) this._focusedByPointer = false
@@ -496,6 +522,9 @@ class LayerItem extends HTMLElement {
             // (space-pan hold, tool letters, delete) never see a row
             // keypress, and inner controls keep their own behavior.
             if (e.target === this) {
+                if (e.key === 'Tab' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                    this._focusedByPointer = false
+                }
                 const plain = !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey
                 if (plain && (e.key === 'Enter' || (e.key === ' ' && !this._focusedByPointer))) {
                     e.preventDefault()
