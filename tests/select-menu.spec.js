@@ -477,6 +477,35 @@ test.describe('Select Menu', () => {
         expect(await page.evaluate(() => window.layersApp._selectionManager.selectionPath?.type)).toBe('rect')
     })
 
+    test('the wand tolerance slider announces the accessible name "Tolerance" when the selection flyout is open', async ({ page }) => {
+        await setupApp(page)
+        const selectionMenu = page.locator('#selectionMenu')
+        const caret = selectionMenu.locator(':scope > .tool-caret')
+        const flyout = selectionMenu.locator(':scope > .menu-items')
+
+        // Select the Magic Wand tool from the flyout; the flyout closes on pick.
+        await caret.click()
+        await selectionMenu.locator('.tool-menu-item[data-shape="wand"]').click()
+        await appState(page, () => window.layersApp._selectionManager?.currentTool === 'wand')
+        await expect(flyout).toBeHidden()
+
+        // Reopen the flyout with the wand active: the tolerance row is shown.
+        await caret.click()
+        await expect(page.locator('#wandToleranceRow')).toBeVisible()
+        await expect(page.locator('#wandTolerance')).toHaveAccessibleName('Tolerance')
+
+        // The name must come from a real label association, not a fallback.
+        const associated = await page.evaluate(() => {
+            const input = document.getElementById('wandTolerance')
+            return {
+                labelledByFor: !!document.querySelector('label[for="wandTolerance"]'),
+                labels: input.labels.length,
+            }
+        })
+        expect(associated.labelledByFor).toBe(true)
+        expect(associated.labels).toBe(1)
+    })
+
     test('setSelection with non-positive or malformed bounds safely clears selection', async ({ page }) => {
         await setupApp(page)
         await setRectSelection(page, 10, 10, 100, 100)
