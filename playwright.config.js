@@ -6,37 +6,38 @@ import { defineConfig } from 'playwright/test'
 // (18 tests) took 431 worker-seconds on webkit while 29 tests of agent
 // validation took 37. To give the sharding finer grain, the seven heaviest
 // spec files are split into balanced -a/-b halves at test boundaries (tests
-// unchanged; worker-seconds re-measured per half from the CI artifacts), so
-// shards can pack halves of the big files separately. The vectors below
-// minimize the worst predicted test step over the eleven green runs on main
-// measured so far (37097762272 at f537250; 37101997646 at ca6a404;
-// 37107393719 at 49a639a; 37110907758 at 7bf0824; 37146215821 at f14c52d;
-// 37181219087 at 42a61cd; 37186286571 at 46d47ad; 37205985800 at bae8d33;
-// 37209658207 at 56e1f96; 37212362193 at cc70181; and 37217268294 at
-// 41d9bec), where a shard's step
-// is predicted from that run's own per-file worker-seconds as S/workers plus,
-// on the two-worker engines, the largest file's share again, because it
-// starts last and runs alone (run 37209658207 chromium 5/5: predicted 1165 s
-// this way, 1148 s actual; run 37212362193 chromium 3/5: predicted 1155 s,
-// 1156 s actual; webkit runs one worker, so its step is just its
-// worker-seconds plus about nine seconds of startup).
-// Minimizing the worst measured window rather than a per-file envelope
-// matters: an envelope overstates, because no single run was slowest on
-// every file at once. History, for why single-run splits are avoided: a
-// first split measured against a single run put webkit 8/10 and chromium
-// 5/5 within seconds of the cap in the next run, which executed the same
-// files up to 1.6x slower, a second left webkit 9/10 at 1129 s, a third
-// left chromium 1/5 at 1090 s, a fourth left chromium 5/5 at 1130 s and a
-// fifth left firefox 4/4 at 1176 s. These vectors predict, on the eleven
-// measured windows, worst steps of 1118 s (chromium), 1087 s (firefox; its
-// heaviest measured window 201 is about 8% over its window average) and
-// 1035 s (webkit) for the best split there is at these shard counts with
-// this file inventory; actual steps have been observed up to about 120 s
-// under the prediction, so windows remain a draw. Chromium's floor is its
-// total worker-seconds divided by ten worker-slots, about 1024 s at the
-// heaviest measured totals, and its cross-window variance adds about 90 s
-// more at the best granularity this inventory reaches: past the point these
-// vectors already sit at, only more shards move it.
+// unchanged), so shards can pack halves of the big files separately.
+//
+// The vectors below minimize the worst predicted test step over the five
+// green main windows measured since the file inventory settled: 37232832949
+// (e0192f5), 37235920153 (1896485), 37244120728 (ff9b97e), 37317823100
+// (576c34b) and 37324449887 (7c40359), using the per-file worker-seconds
+// from each window's report artifacts. The two newest windows are why they
+// were re-derived: the previous vectors summed to 1138 while the suite grew
+// to 1140, and Playwright sizes shards as floor(weight x total / weight
+// sum), handing the remainder to the first shards, so those two extra tests
+// pulled the nine-test agent-export-image (about 90 webkit worker-seconds)
+// into webkit 1/10, which then measured 1084 s and 1096 s against the
+// 1080 s bar. These vectors sum to exactly 1140 and give the leading shards
+// one test of slack, so a one- or two-test addition no longer drags a whole
+// file across a boundary; the worst predicted step stays at or under 1040 s
+// (chromium), 995 s (firefox) and 1016 s (webkit) for suite totals
+// 1139 through 1143.
+//
+// Step prediction: webkit runs one worker, so its step is its
+// worker-seconds plus about nine seconds of startup. chromium and firefox
+// run two workers, and their step is modeled as greedy in-order two-worker
+// scheduling over the shard's files. The model was checked against all 95
+// measured legs of those five windows: RMS error 7.8 s, largest error 20 s,
+// slightly conservative (actual steps come in about 5 s under on average).
+// The 512-preset boot conversions of six more agent suites shipped in the
+// same change as these vectors only lower the prediction further.
+//
+// History, for why single-run splits are avoided: a first split measured
+// against a single run put webkit 8/10 and chromium 5/5 within seconds of
+// the cap in the next run, so the envelope is always taken over several
+// windows, never one.
+//
 // Playwright reads these
 // through PWTEST_SHARD_WEIGHTS after this config is imported, so setting it
 // here reaches the runner. Each CI leg runs exactly one --project, which is
@@ -49,9 +50,9 @@ import { defineConfig } from 'playwright/test'
 // minimized) before
 // touching the vectors, and never hand one a shard that runs no tests.
 const shardWeights = {
-    chromium: [240, 221, 207, 232, 238],
-    firefox: [305, 247, 291, 295],
-    webkit: [121, 139, 127, 91, 82, 135, 104, 140, 89, 110],
+    chromium: [239, 237, 198, 239, 227],
+    firefox: [304, 253, 280, 303],
+    webkit: [102, 134, 136, 77, 100, 125, 108, 131, 118, 109],
 }
 
 function cliFlag(flag) {
