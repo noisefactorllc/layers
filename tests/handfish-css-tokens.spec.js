@@ -978,4 +978,78 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
             expect(m.paramsTitle, `${theme} effect-params-title contrast ${JSON.stringify(m)}`).toBeGreaterThanOrEqual(4.5)
         }
     })
+
+    test('the foreground color input announces the accessible name "Foreground Color"', async ({ page, browserName }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await defaultProjectReady(page)
+
+        // The visible, named element is the wrapper div (.color-well carries
+        // the tooltip and the :focus-within ring), but the wrapper is not
+        // interactive: the widget that takes focus and is exposed to
+        // accessibility tools is the opacity-0 color input inside it. That
+        // input must carry its own accessible name, consistent with the
+        // wrapper's tooltip text. The DOM assertion runs on every engine;
+        // the engines' accessibility snapshots are not portable, so the
+        // Chromium tree itself is read further down.
+        const inputName = await page.evaluate(() => {
+            const input = document.getElementById('colorWellInput')
+            if (!input) throw new Error('Missing #colorWellInput')
+            const aria = (input.getAttribute('aria-label') || '').trim()
+            if (aria) return aria
+            const labelFor = input.id ? document.querySelector(`label[for="${CSS.escape(input.id)}"]`) : null
+            if (labelFor) {
+                const text = (labelFor.textContent || '').trim()
+                if (text) return text
+            }
+            return ((input.closest('label') || {}).textContent || '').trim()
+        })
+        expect(inputName).toContain('Foreground Color')
+
+        if (browserName !== 'chromium') return
+
+        // In the engine's accessibility tree the input is the ColorWell
+        // node that screen readers announce (the wrapper is a generic that
+        // cannot lend its name to the focusable child), and it must carry
+        // the name above.
+        const cdp = await page.context().newCDPSession(page)
+        await cdp.send('DOM.enable')
+        const { root } = await cdp.send('DOM.getDocument', { depth: -1 })
+        const domIds = new Map()
+        const walk = node => {
+            if (node.backendNodeId) {
+                const i = node.attributes?.indexOf('id')
+                if (i >= 0) domIds.set(node.backendNodeId, node.attributes[i + 1])
+            }
+            for (const child of node.children || []) walk(child)
+            if (node.shadowRoots) for (const shadow of node.shadowRoots) walk(shadow)
+            if (node.templateContent) walk(node.templateContent)
+            if (node.contentDocument) walk(node.contentDocument)
+        }
+        walk(root)
+        await cdp.send('Accessibility.enable')
+        const { nodes } = await cdp.send('Accessibility.getFullAXTree')
+        const described = node => {
+            const id = domIds.get(node.backendDOMNodeId)
+            return `${node.role?.value ?? '?'}${id ? `#${id}` : ''}`
+        }
+
+        const colorWell = nodes.filter(node => !node.ignored && node.role?.value === 'ColorWell')
+        expect(colorWell.length).toBeGreaterThanOrEqual(1)
+        expect(colorWell.some(node => domIds.get(node.backendDOMNodeId) === 'colorWellInput'
+            && (node.name?.value || '').includes('Foreground Color')), described(colorWell[0])).toBe(true)
+
+        // And the default boot state exposes no other interactive control
+        // without an accessible name: every non-ignored Button, Slider,
+        // TextBox and the like in the full tree carries one.
+        const interactiveRoles = new Set([
+            'Button', 'Slider', 'TextBox', 'CheckBox', 'Radio', 'ToggleButton',
+            'Switch', 'Link', 'MenuItem', 'MenuButton', 'ListBox', 'Option',
+            'SpinButton', 'ColorWell', 'TextField', 'SearchBox',
+        ])
+        const unnamed = nodes
+            .filter(node => !node.ignored && interactiveRoles.has(node.role?.value)
+                && !(node.name?.value || '').trim())
+            .map(described)
+        expect(unnamed, 'accessibility-tree interactive nodes without an accessible name').toEqual([])
+    })
 })
