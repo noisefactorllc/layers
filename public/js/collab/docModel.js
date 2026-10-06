@@ -11,10 +11,21 @@
  * seance/docs/superpowers/specs/2026-07-09-layers-dialect-design.md §5):
  *
  *   meta                    layers-meta     {v, canvas:{w,h}, order:[...]}
- *   L<layerId>              layers-layer    {v, ...props, childOrder, strokesMeta, maskMeta}
+ *   L<layerId>              layers-layer    {v, ...props, childOrder, strokesMeta, maskMeta, maskImage?}
  *   L<layerId>.C<childId>   layers-child    {v, name, effectId, effectParams, visible}
  *   L<layerId>.S<i>         layers-strokes  {v, i, strokes:[...]}         (chunk i)
- *   L<layerId>.M<i>         layers-mask     {v, i, data:"<base64 slice>"} (chunk i)
+ *   L<layerId>.M<i>         layers-mask     legacy, read only (see below)
+ *
+ * Masks are images, and images travel as images: a layer mask is a PNG in
+ * the session image store, uploaded as raw bytes and named by the SHA-256 of
+ * those bytes. The layer node refers to it as
+ * `maskImage: {id, width, height}` and carries `maskMeta: null`. A layer
+ * without a mask has no `maskImage` key, so its text is unchanged from older
+ * builds. Builds before the image store sent a mask as base64 text slices in
+ * `layers-mask` chunk nodes, described by `maskMeta: {n, hash}`. Readers
+ * still accept that form from an older peer and decode it at once; writers
+ * never produce it, and a writer that republishes such a layer deletes its
+ * chunk nodes.
  *
  * Layer props = the `createLayer()` fields minus runtime objects
  * (drawingCanvas, mask ImageData, mediaFile) and minus strokes (chunked
@@ -90,10 +101,6 @@ function childNodeId(layerId, childId) {
 
 function strokesNodeId(layerId, i) {
     return `${layerNodeId(layerId)}.S${i}`
-}
-
-function maskNodeId(layerId, i) {
-    return `${layerNodeId(layerId)}.M${i}`
 }
 
 function layerIdFromNodeId(nodeId) {
@@ -228,20 +235,6 @@ function splitOversizedStroke(stroke) {
     return segments.map((segPoints, i) => ({ ...stroke, id: `${stroke.id}.${i}`, points: segPoints }))
 }
 
-/**
- * Split a base64 string into fixed-size character slices.
- * @param {string} base64
- * @returns {Array<string>}
- */
-export function chunkBase64(base64) {
-    if (!base64) return []
-    const chunks = []
-    for (let i = 0; i < base64.length; i += CHUNK_BUDGET) {
-        chunks.push(base64.slice(i, i + CHUNK_BUDGET))
-    }
-    return chunks
-}
-
 // ---------------------------------------------------------------------
 // Ordering self-heal: order entries without a node are ignored; nodes
 // missing from order append last (sorted by id) — tolerant of drift under
@@ -264,57 +257,95 @@ export function resolveOrder(order, availableIds) {
 }
 
 // ---------------------------------------------------------------------
-// Mask <-> base64 PNG data URL (same encoding approach as
-// utils/project-storage.js / layers/layer-model.js serializeLayers — a
-// canvas round trip. No decode here; applyNodesToComposition returns the
-// mask as a string and leaves ImageData decoding to the caller, exactly
-// like project-storage's decodeMasks()).
+// Mask <-> PNG image in the session image store
 // ---------------------------------------------------------------------
 
-function encodeMaskToBase64(mask) {
-    const canvas = document.createElement('canvas')
-    canvas.width = mask.width
-    canvas.height = mask.height
-    canvas.getContext('2d').putImageData(mask, 0, 0)
-    return canvas.toDataURL('image/png')
-}
+const IMAGE_ID_PATTERN = /^[a-f0-9]{64}$/
 
 // PNG bytes are encoder-specific: the same pixels serialize differently in
-// Chromium, Firefox and WebKit. Re-encoding a mask that arrived from a peer
-// would therefore re-stamp maskMeta.hash with bytes this browser never sent,
-// leaving the hash describing something other than the chunk nodes the server
-// actually holds, so every later joiner reassembles the chunks, fails the hash
-// check and drops the mask. Remembering the wire form a mask arrived as keeps
-// the hash and the chunks describing each other.
+// Chromium, Firefox and WebKit, so re-encoding a mask that arrived from a peer
+// would name a different image, upload it again and republish the layer for
+// no visible change. Remembering the image a mask arrived as keeps one mask
+// one image.
 //
 // Keyed by ImageData identity, which is a sound change signal: every mask
 // write path replaces the object rather than mutating it in place (a mask
 // stroke assigns ctx.getImageData(...), adding a mask constructs a new
-// ImageData). A repainted mask is therefore a cache miss and is re-encoded.
-// The cache doubles as the encode memo for the publish funnel, which rebuilds
-// the model several times per apply and once per 150ms publish tick.
+// ImageData). A repainted mask is therefore a cache miss and must be encoded
+// and uploaded again before it can be published.
 const maskWireCache = new WeakMap()
 
-/**
- * Record the exact wire bytes a mask arrived as, so republishing it does not
- * re-encode it. Call with the decoded ImageData and the base64 PNG data URL it
- * was decoded from.
- * @param {ImageData} mask
- * @param {string} data
- */
-export function rememberMaskWire(mask, data) {
-    if (!mask || typeof data !== 'string' || !data) return
-    maskWireCache.set(mask, { data, hash: fnv1a(data) })
+function isMaskImageRef(value) {
+    return isPlainObject(value) && typeof value.id === 'string'
+        && IMAGE_ID_PATTERN.test(value.id)
+        && Number.isSafeInteger(value.width) && value.width > 0
+        && Number.isSafeInteger(value.height) && value.height > 0
 }
 
-/** Wire form (base64 + hash) for a mask, encoding and memoizing on a miss. */
-function maskWireFor(mask) {
-    const cached = maskWireCache.get(mask)
-    if (cached) return cached
-    const data = encodeMaskToBase64(mask)
-    const entry = { data, hash: fnv1a(data) }
-    maskWireCache.set(mask, entry)
-    return entry
+/**
+ * Record the session image a mask is stored as, so building the node model
+ * can refer to it. Call with the decoded or encoded ImageData and the image
+ * id (SHA-256 of the PNG bytes) and dimensions of that PNG. Anything else,
+ * including text, is ignored.
+ * @param {ImageData} mask
+ * @param {{imageId:string, width:number, height:number}} wire
+ */
+export function rememberMaskWire(mask, wire) {
+    if (!mask || typeof mask !== 'object') return
+    const ref = { id: wire?.imageId, width: wire?.width, height: wire?.height }
+    if (!isMaskImageRef(ref)) return
+    maskWireCache.set(mask, { imageId: ref.id, width: ref.width, height: ref.height })
+}
+
+/**
+ * The session image a mask is stored as, or null when it has not been
+ * encoded and named yet.
+ * @param {ImageData} mask
+ * @returns {{imageId:string, width:number, height:number}|null}
+ */
+export function maskWireOf(mask) {
+    return (mask && typeof mask === 'object' && maskWireCache.get(mask)) || null
+}
+
+/**
+ * Encode a mask as PNG bytes.
+ * @param {ImageData} mask
+ * @returns {Promise<Blob>}
+ */
+export function encodeMaskPng(mask) {
+    const canvas = document.createElement('canvas')
+    canvas.width = mask.width
+    canvas.height = mask.height
+    canvas.getContext('2d').putImageData(mask, 0, 0)
+    return new Promise((resolve, reject) => canvas.toBlob(blob => {
+        if (blob) resolve(blob)
+        else reject(new Error('Could not encode the layer mask'))
+    }, 'image/png'))
+}
+
+/**
+ * Decode mask PNG bytes into ImageData of the declared size.
+ * @param {Blob} blob
+ * @param {{width:number, height:number}} expected
+ * @returns {Promise<ImageData>}
+ */
+export async function decodeMaskPng(blob, { width, height }) {
+    const bitmap = await createImageBitmap(blob, {
+        premultiplyAlpha: 'none', colorSpaceConversion: 'none',
+    })
+    try {
+        if (bitmap.width !== width || bitmap.height !== height) {
+            throw new Error('Shared mask dimensions do not match its image')
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(bitmap, 0, 0)
+        return ctx.getImageData(0, 0, width, height)
+    } finally {
+        bitmap.close?.()
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -364,18 +395,15 @@ export function buildNodeModel(layers, canvas) {
             strokesMeta = { n: chunks.length }
         }
 
-        let maskMeta = null
-        let maskNodes = []
+        // A mask that has not been named in the image store yet is described
+        // with a null id. Bounds validation rejects that reference, so it can
+        // never be published; the publish funnel uploads the mask first.
+        let maskImage = null
         if (layer.mask) {
-            const { data: base64, hash } = maskWireFor(layer.mask)
-            const chunks = chunkBase64(base64)
-            maskNodes = chunks.map((slice, i) => ({
-                id: maskNodeId(layer.id, i),
-                kind: 'layers-mask',
-                text: JSON.stringify({ v: NODE_VERSION, i, data: slice }),
-                parentId: lid
-            }))
-            maskMeta = { n: chunks.length, hash }
+            const wire = maskWireOf(layer.mask)
+            maskImage = wire
+                ? { id: wire.imageId, width: wire.width, height: wire.height }
+                : { id: null, width: layer.mask.width ?? null, height: layer.mask.height ?? null }
         }
 
         const props = {}
@@ -396,13 +424,13 @@ export function buildNodeModel(layers, canvas) {
                 ...props,
                 childOrder: (layer.children || []).map(c => childNodeId(layer.id, c.id)),
                 strokesMeta,
-                maskMeta
+                maskMeta: null,
+                ...(maskImage ? { maskImage } : {})
             }),
             parentId: null
         })
 
         nodes.push(...strokeNodes)
-        nodes.push(...maskNodes)
 
         for (const child of layer.children || []) {
             nodes.push({
@@ -885,6 +913,33 @@ export function assertRemoteNodeModelWithinBounds(nodes, options = {}) {
             && isTextEffect(parsed.effectId)) {
             addRasterPixels(canvasPixels)
         }
+        const addMaskPixels = (width, height) => {
+            if (width < 1 || height < 1
+                || width > MAX_REMOTE_CANVAS_DIMENSION
+                || height > MAX_REMOTE_CANVAS_DIMENSION) {
+                throw remoteBoundsError(
+                    `mask dimensions must be from 1 to ${MAX_REMOTE_CANVAS_DIMENSION}`)
+            }
+            if (width > canvasWidth || height > canvasHeight) {
+                throw remoteBoundsError('mask dimensions exceed the canvas dimensions')
+            }
+            const pixels = width * height
+            if (pixels > MAX_REMOTE_MASK_PIXELS - totalMaskPixels) {
+                throw remoteBoundsError(
+                    `document mask pixels exceed ${MAX_REMOTE_MASK_PIXELS}`)
+            }
+            totalMaskPixels += pixels
+            addRasterPixels(pixels)
+        }
+
+        // A mask image reference supersedes any legacy chunk metadata.
+        if (parsed.maskImage != null) {
+            if (!isMaskImageRef(parsed.maskImage)) {
+                throw remoteBoundsError('mask image reference is invalid')
+            }
+            addMaskPixels(parsed.maskImage.width, parsed.maskImage.height)
+            continue
+        }
         if (!parsed.maskMeta) continue
 
         const count = parsed.maskMeta.n
@@ -896,22 +951,7 @@ export function assertRemoteNodeModelWithinBounds(nodes, options = {}) {
         const firstChunk = maskChunksByParent.get(node.id)?.get(0)
         if (firstChunk === undefined) continue
         const { width, height } = readPngDimensions(firstChunk)
-        if (width < 1 || height < 1
-            || width > MAX_REMOTE_CANVAS_DIMENSION
-            || height > MAX_REMOTE_CANVAS_DIMENSION) {
-            throw remoteBoundsError(
-                `mask dimensions must be from 1 to ${MAX_REMOTE_CANVAS_DIMENSION}`)
-        }
-        if (width > canvasWidth || height > canvasHeight) {
-            throw remoteBoundsError('mask dimensions exceed the canvas dimensions')
-        }
-        const pixels = width * height
-        if (pixels > MAX_REMOTE_MASK_PIXELS - totalMaskPixels) {
-            throw remoteBoundsError(
-                `document mask pixels exceed ${MAX_REMOTE_MASK_PIXELS}`)
-        }
-        totalMaskPixels += pixels
-        addRasterPixels(pixels)
+        addMaskPixels(width, height)
     }
 }
 
@@ -1185,10 +1225,14 @@ function reassembleMaskChunks(nodes, parentNodeId, maskMeta) {
  * `mediaPlaceholderLayerIds`) if a legacy node has no image reference.
  * Valid image references are hydrated separately by the online adapter.
  *
- * `mask`, when present, is the same base64 PNG data-url STRING shape
- * `layers/layer-model.js`'s serializeLayers()/decodeMasks() round-trip —
- * callers decode it to ImageData themselves (decodeMasks is not imported
- * here to keep this module free of app-adjacent dependencies).
+ * A mask stored in the session image store comes back as
+ * `maskImage: {id, width, height}` with `mask: null`, unless
+ * `previousLayers` already holds that image decoded, in which case `mask` is
+ * that ImageData. The caller fetches and decodes the image (decodeMaskPng)
+ * and remembers it (rememberMaskWire). A legacy chunked mask from an older
+ * peer comes back as the reassembled PNG data-url string, which the caller
+ * must decode to ImageData immediately (layer-model.js decodeMasks) and never
+ * republish as text.
  *
  * @param {Array} nodes - node-doc array (e.g. online.getNodes())
  * @param {Array} [previousLayers] - the composition's layers before this
@@ -1245,9 +1289,24 @@ export function applyNodesToComposition(nodes, previousLayers = []) {
             strokes = reassembled !== null ? reassembled : (prevLayer?.strokes || [])
         }
 
-        // mask (any layer)
+        // mask (any layer). An image reference the previous layer already
+        // holds decoded is reused as is; any other reference is returned as
+        // `maskImage` for the caller to fetch and decode. A legacy chunked
+        // mask is returned as its reassembled text for immediate decoding.
         let mask = null
-        if (parsed.maskMeta) {
+        let maskImage = null
+        if (isMaskImageRef(parsed.maskImage)) {
+            const prevMask = prevLayer?.mask
+            if (prevMask && maskWireOf(prevMask)?.imageId === parsed.maskImage.id) {
+                mask = prevMask
+            } else {
+                maskImage = {
+                    id: parsed.maskImage.id,
+                    width: parsed.maskImage.width,
+                    height: parsed.maskImage.height,
+                }
+            }
+        } else if (parsed.maskMeta) {
             const reassembled = reassembleMaskChunks(list, nodeId, parsed.maskMeta)
             mask = reassembled !== null ? reassembled : (prevLayer?.mask ?? null)
         }
@@ -1278,6 +1337,8 @@ export function applyNodesToComposition(nodes, previousLayers = []) {
             maskEnabled: parsed.maskEnabled !== false,
             maskVisible: !!parsed.maskVisible
         }
+
+        if (maskImage) layer.maskImage = maskImage
 
         if (layer.sourceType === 'media') {
             if (parsed.imageId) {

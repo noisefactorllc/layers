@@ -143,6 +143,30 @@ async function layersState(page) {
     })))
 }
 
+// SHA-256 of a layer's decoded mask pixels, or null without a mask.
+async function maskDigest(page, layerId) {
+    return page.evaluate(async (id) => {
+        const mask = window.layersApp._layers.find(l => l.id === id)?.mask
+        if (!mask?.data) return null
+        const digest = await crypto.subtle.digest('SHA-256', mask.data)
+        return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')
+    }, layerId)
+}
+
+// How the session document describes a layer's mask, as this page sees it.
+async function sessionMaskWire(page, layerId) {
+    return page.evaluate((id) => {
+        const nodes = window.layersApp._onlineAdapter.online.getNodes()
+        const layer = JSON.parse(nodes.find(n => n.id === `L${id}`).text)
+        return {
+            maskImage: layer.maskImage ?? null,
+            maskMeta: layer.maskMeta ?? null,
+            textMaskNodes: nodes.filter(n => n.kind === 'layers-mask').length,
+            dataUrls: nodes.some(n => n.text.includes('data:image')),
+        }
+    }, layerId)
+}
+
 // ---------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------
@@ -222,6 +246,97 @@ test('drawing-layer strokes and a mask edit converge and actually render', async
     const baseId = await pageA.evaluate(() => window.layersApp._layers[0].id)
     await pageA.evaluate(async (id) => { await window.layersApp._addLayerMask(id) }, baseId)
     await expect.poll(async () => (await layersState(pageB))[0]?.hasMask, { timeout: 60000 }).toBe(true)
+
+    // A repainted mask travels as a PNG image named by its bytes, never as
+    // text in the session document, and B decodes the same pixels.
+    await pageA.evaluate(async (id) => {
+        const app = window.layersApp
+        await app._exitMaskEditMode()
+        const layer = app._layers.find(l => l.id === id)
+        const mask = new ImageData(layer.mask.width, layer.mask.height)
+        for (let i = 0; i < mask.data.length; i += 4) {
+            const v = (i / 4) % mask.width < mask.width / 2 ? 255 : 0
+            mask.data[i] = v; mask.data[i + 1] = v; mask.data[i + 2] = v; mask.data[i + 3] = 255
+        }
+        layer.mask = mask
+        app._pushUndoState()
+    }, baseId)
+    await expect.poll(() => maskDigest(pageB, baseId), { timeout: 60000 })
+        .toBe(await maskDigest(pageA, baseId))
+    const wire = await sessionMaskWire(pageA, baseId)
+    expect(wire.maskImage?.id).toMatch(/^[a-f0-9]{64}$/)
+    expect(wire.maskImage).toMatchObject({ width: 512, height: 512 })
+    expect(wire.maskMeta).toBe(null)
+    expect(wire.textMaskNodes).toBe(0)
+    expect(wire.dataUrls).toBe(false)
+    await expect.poll(() => sessionMaskWire(pageB, baseId), { timeout: 60000 }).toEqual(wire)
+})
+
+test('a mask an older peer sent as text is decoded and republished as an image', async ({ page, context }) => {
+    const pageA = page
+    const pageB = await context.newPage()
+    await preparePage(pageA)
+    await preparePage(pageB)
+
+    await gotoApp(pageA)
+    await createProject(pageA, 'solid', 128)
+    const baseId = (await layersState(pageA))[0].id
+    // A mask present when the session is created is seeded as an image too.
+    await pageA.evaluate(async (id) => {
+        await window.layersApp._addLayerMask(id, { enterEditMode: false })
+    }, baseId)
+    const sessionId = await takeOnline(pageA)
+    await closeSeanceDialog(pageA)
+    const seeded = await sessionMaskWire(pageA, baseId)
+    expect(seeded.maskImage?.id).toMatch(/^[a-f0-9]{64}$/)
+    expect(seeded.textMaskNodes).toBe(0)
+    expect(seeded.dataUrls).toBe(false)
+
+    await gotoApp(pageB)
+    await createProject(pageB, 'solid', 128)
+    await joinById(pageB, sessionId)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
+    await expect.poll(() => maskDigest(pageB, baseId), { timeout: 60000 })
+        .toBe(await maskDigest(pageA, baseId))
+
+    // B writes the layer the way a build from before the image store did:
+    // maskMeta plus base64 PNG slices in layers-mask chunk nodes.
+    const sentDigest = await pageB.evaluate(async (id) => {
+        const { fnv1a } = await import('/js/collab/docModel.js')
+        const online = window.layersApp._onlineAdapter.online
+        const node = online.getNodes().find(n => n.id === `L${id}`)
+        const canvas = document.createElement('canvas')
+        canvas.width = 128
+        canvas.height = 128
+        const ctx = canvas.getContext('2d')
+        ctx.fillStyle = '#000'
+        ctx.fillRect(0, 0, 128, 128)
+        ctx.fillStyle = '#fff'
+        ctx.fillRect(0, 0, 64, 128)
+        const legacy = canvas.toDataURL('image/png')
+        const slices = [legacy.slice(0, 100), legacy.slice(100)]
+        const layer = JSON.parse(node.text)
+        delete layer.maskImage
+        online.upsertNode(node.id, { kind: node.kind, parentId: null,
+            text: JSON.stringify({ ...layer, maskMeta: { n: slices.length, hash: fnv1a(legacy) } }) })
+        slices.forEach((data, i) => online.upsertNode(`${node.id}.M${i}`, {
+            kind: 'layers-mask', parentId: node.id, text: JSON.stringify({ v: 1, i, data }) }))
+        const pixels = ctx.getImageData(0, 0, 128, 128).data
+        const digest = await crypto.subtle.digest('SHA-256', pixels)
+        return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')
+    }, baseId)
+
+    // A reads the text mask, decodes it at once, and replaces it in the
+    // session with an image. No text mask remains for later joiners.
+    await expect.poll(() => maskDigest(pageA, baseId), { timeout: 60000 }).toBe(sentDigest)
+    await expect.poll(async () => {
+        const wire = await sessionMaskWire(pageA, baseId)
+        return wire.textMaskNodes === 0 && wire.maskMeta === null
+            && /^[a-f0-9]{64}$/.test(wire.maskImage?.id || '') && !wire.dataUrls
+    }, { timeout: 60000 }).toBe(true)
+    await expect.poll(() => maskDigest(pageB, baseId), { timeout: 60000 }).toBe(sentDigest)
+    await expect.poll(async () => JSON.stringify(await sessionMaskWire(pageB, baseId))
+        === JSON.stringify(await sessionMaskWire(pageA, baseId)), { timeout: 60000 }).toBe(true)
 })
 
 test('?seance= boot join applies the shared composition directly, with no confirm', async ({ page, context }) => {

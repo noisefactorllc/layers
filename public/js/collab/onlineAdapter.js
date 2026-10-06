@@ -25,6 +25,9 @@ import {
     isLayersSession,
     overlayPendingWrites,
     rememberMaskWire,
+    maskWireOf,
+    encodeMaskPng,
+    decodeMaskPng,
     fnv1a,
     rememberImageWire
 } from './docModel.js'
@@ -109,6 +112,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     let publishTask = null
     let imageDraftHeld = false
     const preparedImages = new WeakMap()
+    const preparedMasks = new WeakMap() // mask ImageData -> Promise<{file, asset}>
     const sessionImages = new WeakMap()
     let deferredApplyRequest = null
     let deferredPollTimer = null
@@ -669,15 +673,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
 
         const { layers, canvas } =
             applyNodesToComposition(effectiveNodes, app._layers)
-        // decodeMasks() replaces each base64 PNG with an ImageData; pair the
-        // two first so republishing a mask reuses the bytes it arrived as
-        // instead of this browser's own encoding of the same pixels.
-        const adoptedMaskWire = layers.map(layer =>
-            typeof layer.mask === 'string' ? layer.mask : null)
-        await decodeMasks(layers)
-        layers.forEach((layer, index) => {
-            if (adoptedMaskWire[index]) rememberMaskWire(layer.mask, adoptedMaskWire[index])
-        })
+        const convertsLegacyMasks = await hydrateSessionMasks(request.layer, layers)
         if (!isCurrentSession(request)) return false
 
         // A gesture may have started, or a local edit may have armed a
@@ -806,9 +802,9 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 return true
             }
 
-            // Canonicalization (notably mask PNG encoding) is fallible. Build
-            // the publish baseline before resizing live state or committing a
-            // staged renderer candidate so failure remains fully rollbackable.
+            // Build the publish baseline before resizing live state or
+            // committing a staged renderer candidate so any failure remains
+            // fully rollbackable.
             candidateBaseline = buildNodeModel(layers, targetSize)
             app._finalizePendingUndo()
             snapshotTransaction = app._beginPublishTransaction()
@@ -923,6 +919,9 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             // browser's canonical encoding. The lifecycle lease prevents a
             // local edit from racing this successful commit snapshot.
             lastPublished = candidateBaseline
+            // A mask an older peer sent as text has no image yet. Publishing
+            // uploads it as an image and replaces the text in the session.
+            if (convertsLegacyMasks) schedulePublish()
 
             if (!app._renderer.isRunning) {
                 try {
@@ -1136,7 +1135,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 && publishTask === task
             if (!current()) return
             const files = imagesForSession(request.layer)
-            for (const entry of entries) {
+            const maskSources = captureMaskSources()
+            const maskEntries = await prepareMaskSources(
+                maskSources.filter(({ mask }) => !files.has(maskWireOf(mask)?.imageId)))
+            if (!current()) return
+            for (const entry of [...entries, ...maskEntries]) {
                 if (files.has(entry.asset.id)) continue
                 const id = await request.layer.uploadImage(entry.file)
                 if (!current()) return
@@ -1146,6 +1149,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             if (!current()) return
             if (pendingSessionTransitionGeneration !== null || applyingRemote
                 || app._publishTransactionDepth > 0 || !imageSourcesUnchanged(sources)
+                || !maskSourcesUnchanged(maskSources)
                 || getStatus() === 'readonly') {
                 schedulePublish()
                 return
@@ -1153,7 +1157,10 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             installImageSources(entries)
             const nextModel = buildNodeModel(app._layers, canvasDims())
             assertRemoteCompositionWithinBounds(nextModel)
-            const { upserts, deletes } = diffNodeModels(lastPublished, nextModel)
+            const diff = diffNodeModels(lastPublished, nextModel)
+            const upserts = diff.upserts
+            const deletes = [...diff.deletes,
+                ...legacyMaskChunkIds(request.layer.getNodes(), upserts, diff.deletes)]
             // The versions these writes are being sent against. A pending write is
             // retired once the server's copy of its node moves past this, which is
             // what stops an already-published edit from being re-asserted over a
@@ -1277,6 +1284,112 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         }
     }
 
+    // -- layer masks as session images ----------------------------------
+    //
+    // A mask is a PNG in the session image store, uploaded as its bytes
+    // beside the image layers (see docModel.js). It counts toward the same
+    // per-session image budget.
+
+    function captureMaskSources() {
+        return (app._layers || []).filter(layer => layer.mask)
+            .map(layer => ({ layer, mask: layer.mask }))
+    }
+
+    function maskSourcesUnchanged(sources) {
+        const current = captureMaskSources()
+        return current.length === sources.length && current.every((item, index) =>
+            item.layer === sources[index].layer && item.mask === sources[index].mask)
+    }
+
+    // Encode a mask as PNG bytes and name it, once per mask object. Masks are
+    // replaced, never repainted in place, so the memo cannot go stale.
+    async function prepareMaskImage(mask) {
+        let pending = preparedMasks.get(mask)
+        if (!pending) {
+            pending = (async () => {
+                const sdk = await sdkPromise
+                if (typeof sdk?.prepareImage !== 'function') {
+                    throw new Error('The collaboration SDK does not support images; reload the application')
+                }
+                if (typeof mask?.width !== 'number' || !mask.data) {
+                    throw new Error('Layer mask is not decoded')
+                }
+                const blob = await encodeMaskPng(mask)
+                const file = new File([blob], 'mask.png', { type: 'image/png' })
+                const asset = await sdk.prepareImage(file)
+                if (asset.width !== mask.width || asset.height !== mask.height) {
+                    throw new Error('Encoded mask dimensions do not match the mask')
+                }
+                rememberMaskWire(mask, {
+                    imageId: asset.id, width: asset.width, height: asset.height,
+                })
+                return { file, asset }
+            })().catch(error => { preparedMasks.delete(mask); throw error })
+            preparedMasks.set(mask, pending)
+        }
+        return pending
+    }
+
+    async function prepareMaskSources(sources) {
+        const entries = []
+        for (const source of sources) {
+            const { file, asset } = await prepareMaskImage(source.mask)
+            entries.push({ ...source, file, asset })
+        }
+        return entries
+    }
+
+    // Republishing a layer node in the image form makes any text chunks an
+    // older peer wrote for it obsolete; delete them in the same publish. Text
+    // chunks whose layer no longer describes them are deleted too.
+    function legacyMaskChunkIds(serverNodes, upserts, deletes) {
+        const upserted = new Set(upserts.map(node => node.id))
+        const deleted = new Set(deletes)
+        const layerNodes = new Map()
+        for (const node of serverNodes || []) {
+            if (node?.kind === 'layers-layer') layerNodes.set(node.id, node)
+        }
+        const ids = []
+        for (const node of serverNodes || []) {
+            if (node?.kind !== 'layers-mask' || deleted.has(node.id)) continue
+            const parent = layerNodes.get(node.parentId)
+            if (!parent || deleted.has(parent.id)) continue
+            let parentMeta = null
+            try {
+                parentMeta = JSON.parse(parent.text)?.maskMeta ?? null
+            } catch {
+                parentMeta = null
+            }
+            if (upserted.has(parent.id) || !parentMeta) ids.push(node.id)
+        }
+        return ids
+    }
+
+    // Fetch and decode every mask image the applied layers refer to, and
+    // decode legacy text masks to ImageData at once. Returns true when a
+    // legacy text mask was decoded, so the caller republishes it as an image.
+    async function hydrateSessionMasks(session, layers) {
+        const files = imagesForSession(session)
+        for (const layer of layers) {
+            const ref = layer.maskImage
+            if (!ref) continue
+            delete layer.maskImage
+            let file = files.get(ref.id)
+            if (!file) {
+                // The SDK checks that the bytes it returns are the named image.
+                const blob = await session.getImage(ref.id)
+                file = new File([blob], 'mask.png', { type: blob.type || 'image/png' })
+            }
+            const mask = await decodeMaskPng(file, ref)
+            rememberMaskWire(mask, { imageId: ref.id, width: ref.width, height: ref.height })
+            files.set(ref.id, file)
+            layer.mask = mask
+        }
+        if (!layers.some(layer => typeof layer.mask === 'string')) return false
+        await decodeMasks(layers)
+        return true
+    }
+
     async function loadSessionImage(session, layer) {
         const files = imagesForSession(session)
         let file = files.get(layer.imageId)
@@ -1387,15 +1500,19 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             const transitionIntent = captureSessionTransitionIntent(intentGeneration)
             let nodes
             let imageEntries
+            let maskEntries
             let committedSessionId
             try {
                 const sources = captureImageSources()
                 imageEntries = await prepareImageSources(sources)
+                const maskSources = captureMaskSources()
+                maskEntries = await prepareMaskSources(maskSources)
                 if (intentGeneration !== transitionIntentGeneration) {
                     abandonSessionTransition(layer)
                     return null
                 }
                 if (!imageSourcesUnchanged(sources)) throw new Error('Image sources changed before sharing')
+                if (!maskSourcesUnchanged(maskSources)) throw new Error('Layer masks changed before sharing')
                 const seededLayers = app._layers.map(item => {
                     const entry = imageEntries.find(candidate => candidate.layer === item)
                     return entry ? { ...item, mediaFile: entry.file } : item
@@ -1409,7 +1526,9 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                     throw new Error(`This composition cannot be shared: ${error.message.replace(/^Remote composition rejected: /, '')}`)
                 }
                 expectedSeedSnapshots.set(layer, nodes)
-                const images = [...new Map(imageEntries.map(entry => [entry.asset.id, entry.asset])).values()]
+                // Seed images and masks travel as their bytes beside the seed.
+                const images = [...new Map([...imageEntries, ...maskEntries]
+                    .map(entry => [entry.asset.id, entry.asset])).values()]
                 await layer.takeOnline({ poly: { programText: '', nodes }, images })
                 if (!isCurrentSessionTransitionIntent(transitionIntent)) {
                     abandonSessionTransition(layer)
@@ -1428,7 +1547,9 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 throw err
             }
             installImageSources(imageEntries)
-            for (const entry of imageEntries) imagesForSession(layer).set(entry.asset.id, entry.file)
+            for (const entry of [...imageEntries, ...maskEntries]) {
+                imagesForSession(layer).set(entry.asset.id, entry.file)
+            }
             activateSessionTransition(layer, nodes)
             finishSessionTransition(previous)
             bestEffortSessionEffect('Failed to remember collaboration session',

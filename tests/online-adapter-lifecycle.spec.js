@@ -1044,10 +1044,14 @@ test('remote replacement exits mask mode synchronously before a local mutation',
         const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
-        const { buildNodeModel } = await import('/js/collab/docModel.js')
+        const { buildNodeModel, rememberMaskWire } = await import('/js/collab/docModel.js')
         const { createEffectLayer } = await import('/js/layers/layer-model.js')
         await app._addLayerMask(app._layers[0].id)
         app._enterMaskEditMode(app._layers[0].id)
+        // A published mask is a session image; name it as a publish would.
+        rememberMaskWire(app._layers[0].mask, {
+            imageId: 'b'.repeat(64), width: app._layers[0].mask.width, height: app._layers[0].mask.height,
+        })
 
         const handlers = new Map()
         let status = 'offline'
@@ -1769,6 +1773,7 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
         // An apply attempt reads the node set before it validates anything, so
         // a read is the announced composition having reached the apply path.
         let nodeReads = 0
+        let imageFetches = 0
         let nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
@@ -1778,6 +1783,7 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
             getSessionId: () => 'bound1',
             getShareUrl: () => 'https://layers.test/?seance=bound1',
             getNodes: () => { nodeReads++; return nodes },
+            getImage: async () => { imageFetches++; throw new Error('image fetch attempted') },
             joinSession: async () => { status = 'online' },
             goOffline: () => { status = 'offline' },
             writeSessionToUrl: (url) => url,
@@ -1823,18 +1829,20 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
             ])
             return `data:image/png;base64,${btoa(String.fromCharCode(...bytes))}`
         }
+        // An older peer's mask arrives as base64 PNG slices in layers-mask
+        // chunk nodes. Its header is checked before anything decodes it.
         const invalidMaskLayer = createEffectLayer('synth/solid', 'Invalid mask')
         invalidMaskLayer.id = 'layer-invalid-mask'
-        invalidMaskLayer.mask = new ImageData(1, 1)
         nodes = buildNodeModel(
             [invalidMaskLayer], { width: 8192, height: 8192 })
-        const maskNode = nodes.find(node => node.kind === 'layers-mask')
-        const maskJson = JSON.parse(maskNode.text)
-        maskJson.data = pngHeader(8193, 1)
-        maskNode.text = JSON.stringify(maskJson)
+        const legacyMaskData = pngHeader(8193, 1)
+        nodes.push({
+            id: 'Llayer-invalid-mask.M0', kind: 'layers-mask', parentId: 'Llayer-invalid-mask',
+            text: JSON.stringify({ v: 1, i: 0, data: legacyMaskData }),
+        })
         const layerNode = nodes.find(node => node.id === 'Llayer-invalid-mask')
         const layerJson = JSON.parse(layerNode.text)
-        layerJson.maskMeta.hash = fnv1a(maskJson.data)
+        layerJson.maskMeta = { n: 1, hash: fnv1a(legacyMaskData) }
         layerNode.text = JSON.stringify(layerJson)
 
         const NativeImage = window.Image
@@ -1851,6 +1859,15 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
         handlers.get('remote-node')?.({})
         await waitForApply(maskReadsBefore, 'the invalid mask node set')
         window.Image = NativeImage
+
+        // A mask image reference is checked before its image is fetched.
+        layerJson.maskMeta = null
+        layerJson.maskImage = { id: 'a'.repeat(64), width: 8193, height: 1 }
+        nodes = nodes.filter(node => node.kind !== 'layers-mask')
+        nodes.find(node => node.id === 'Llayer-invalid-mask').text = JSON.stringify(layerJson)
+        const imageReadsBefore = nodeReads
+        handlers.get('remote-node')?.({})
+        await waitForApply(imageReadsBefore, 'the invalid mask image node set')
         app._renderer.stageLayerSet = stageLayerSet
 
         return {
@@ -1864,6 +1881,7 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
             oldGeneration,
             stageCalls,
             imageAllocations,
+            imageFetches,
         }
     }, IN_PAGE_UNTIL)
 
@@ -1874,6 +1892,7 @@ test('invalid remote bounds preserve live layers, resources, canvas, and generat
     expect(result.generation).toBe(result.oldGeneration)
     expect(result.stageCalls).toBe(0)
     expect(result.imageAllocations).toBe(0)
+    expect(result.imageFetches).toBe(0)
 })
 
 test('malicious remote renderer fields are rejected before resource preparation, stage, or compile', async ({ page }) => {
@@ -2080,39 +2099,38 @@ test('duplicate remote node ids are rejected before last-value reconstruction ca
     expect(result.stageCalls).toBe(0)
 })
 
-test('candidate baseline encoding failure occurs before remote app or renderer commit', async ({ page }) => {
+test('a shared mask that cannot be fetched or decoded is rejected before remote app or renderer commit', async ({ page }) => {
     await bootSolid(page)
 
     const result = await page.evaluate(async (untilSrc) => {
         const until = eval(untilSrc)
         const app = window.layersApp
         const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
-        const { buildNodeModel } = await import('/js/collab/docModel.js')
+        const { buildNodeModel, rememberMaskWire } = await import('/js/collab/docModel.js')
         const { createEffectLayer } = await import('/js/layers/layer-model.js')
         const oldLayers = app._layers
         const oldRendererLayers = app._renderer._layers
         const oldGeneration = app._replacementGeneration
         const oldUndoLength = app._undoManager._stack.length
 
-        // A mask adopted from the wire is republished as the bytes it arrived
-        // as, so it is never re-encoded and cannot fail here. The canonicalize
-        // step still runs for a mask the reader falls back to locally, which is
-        // what this drives: announce a mask whose chunk nodes are absent, so
-        // the torn read falls back to the live layer's own ImageData and the
-        // baseline has to encode it.
-        const maskedLocalLayer = app._layers[0]
+        // A mask travels as an image in the session store. The apply fetches
+        // and decodes it before anything is staged, so a missing or corrupt
+        // image must leave the live composition and renderer untouched.
         const remoteLayer = createEffectLayer('synth/gradient', 'Masked remote')
-        remoteLayer.id = maskedLocalLayer.id
+        remoteLayer.id = app._layers[0].id
         remoteLayer.mask = new ImageData(4, 4)
+        rememberMaskWire(remoteLayer.mask, { imageId: 'a'.repeat(64), width: 4, height: 4 })
         const failureNodes = buildNodeModel([remoteLayer], {
             width: app._canvas.width, height: app._canvas.height,
-        }).filter(node => node.kind !== 'layers-mask')
+        })
 
         const handlers = new Map()
         let status = 'offline'
         // An apply attempt reads the node set before it validates anything, so
         // a read is the announced composition having reached the apply path.
         let nodeReads = 0
+        let imageReads = 0
+        let imageResult = null
         let nodes = buildNodeModel(app._layers, {
             width: app._canvas.width, height: app._canvas.height,
         })
@@ -2122,6 +2140,7 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
             getSessionId: () => 'base01',
             getShareUrl: () => 'https://layers.test/?seance=base01',
             getNodes: () => { nodeReads++; return nodes },
+            getImage: async () => { imageReads++; return imageResult() },
             joinSession: async () => { status = 'online' },
             goOffline: () => { status = 'offline' },
             writeSessionToUrl: (url) => url,
@@ -2141,18 +2160,20 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
             stage.commit = () => { commitCalls++; return commit() }
             return stage
         }
-        // Only now, so the join's own model build cannot encode and cache it.
-        maskedLocalLayer.mask = new ImageData(4, 4)
-        const toDataURL = HTMLCanvasElement.prototype.toDataURL
-        HTMLCanvasElement.prototype.toDataURL = () => {
-            throw new Error('injected candidate baseline failure')
+        const failures = [
+            () => { throw new Error('injected mask fetch failure') },
+            () => new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'image/png' }),
+        ]
+        for (const failure of failures) {
+            imageResult = failure
+            nodes = failureNodes
+            const readsBefore = nodeReads
+            const imageReadsBefore = imageReads
+            handlers.get('remote-node')?.({})
+            await until(() => nodeReads > readsBefore, 'the failing node set reached an apply attempt')
+            await until(() => imageReads > imageReadsBefore, 'the apply fetched the shared mask')
+            await until(() => !adapter.isApplyingRemote(), 'the failed remote apply settled')
         }
-        nodes = failureNodes
-        const readsBefore = nodeReads
-        handlers.get('remote-node')?.({})
-        await until(() => nodeReads > readsBefore, 'the failing node set reached an apply attempt')
-        await until(() => !adapter.isApplyingRemote(), 'the failed remote apply settled')
-        HTMLCanvasElement.prototype.toDataURL = toDataURL
         app._renderer.stageLayerSet = stageLayerSet
 
         return {
@@ -2163,9 +2184,11 @@ test('candidate baseline encoding failure occurs before remote app or renderer c
             undoLength: app._undoManager._stack.length,
             oldUndoLength,
             commitCalls,
+            imageReads,
         }
     }, IN_PAGE_UNTIL)
 
+    expect(result.imageReads).toBe(2)
     expect(result.sameLayers).toBe(true)
     expect(result.sameRendererLayers).toBe(true)
     expect(result.generation).toBe(result.oldGeneration)

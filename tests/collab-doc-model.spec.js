@@ -9,7 +9,9 @@ import { test, expect } from './fixtures.js'
 test('build -> apply round-trips a representative composition', async ({ page }) => {
     await page.goto('/')
     const result = await page.evaluate(async () => {
-        const { buildNodeModel, applyNodesToComposition, fnv1a } = await import('/js/collab/docModel.js')
+        const {
+            buildNodeModel, applyNodesToComposition, rememberMaskWire, encodeMaskPng, decodeMaskPng,
+        } = await import('/js/collab/docModel.js')
 
         const mask = new ImageData(4, 4)
         for (let i = 0; i < mask.data.length; i += 4) {
@@ -51,9 +53,17 @@ test('build -> apply round-trips a representative composition', async ({ page })
         ]
         const canvas = { width: 640, height: 480 }
 
+        // The publish funnel names a mask by the SHA-256 of its PNG bytes
+        // before building the model (onlineAdapter.js prepareMaskImage).
+        const png = await encodeMaskPng(mask)
+        const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await png.arrayBuffer()))
+        const imageId = Array.from(digest, b => b.toString(16).padStart(2, '0')).join('')
+        rememberMaskWire(mask, { imageId, width: 4, height: 4 })
+
         const nodes = buildNodeModel(layers, canvas)
         const applied = applyNodesToComposition(nodes, [])
         const layerJson = JSON.parse(nodes.find(n => n.id === 'Llayer-1').text)
+        const decoded = await decodeMaskPng(png, applied.layers[1].maskImage)
 
         return {
             appliedCanvas: applied.canvas,
@@ -65,8 +75,13 @@ test('build -> apply round-trips a representative composition', async ({ page })
                 flipH: applied.layers[1].flipH,
                 effectId: applied.layers[1].effectId, effectParams: applied.layers[1].effectParams,
                 children: applied.layers[1].children,
-                maskIsString: typeof applied.layers[1].mask === 'string',
-                maskHashMatches: applied.layers[1].mask ? fnv1a(applied.layers[1].mask) === layerJson.maskMeta.hash : false
+                maskImage: applied.layers[1].maskImage,
+                wireMaskImage: layerJson.maskImage,
+                imageId,
+                pngType: png.type,
+                noMaskText: !JSON.stringify(nodes).includes('data:image') && !nodes.some(n => n.kind === 'layers-mask'),
+                decodedPixelsMatch: decoded.width === 4 && decoded.height === 4
+                    && decoded.data.every((value, index) => value === mask.data[index])
             },
             drawing: { sourceType: applied.layers[2].sourceType, strokes: applied.layers[2].strokes }
         }
@@ -88,8 +103,12 @@ test('build -> apply round-trips a representative composition', async ({ page })
         { id: 'layer-2', name: 'Sharpen', effectId: 'filter/sharpen', effectParams: { amount: 0.5 }, visible: true },
         { id: 'layer-3', name: 'Tint', effectId: 'filter/tint', effectParams: { color: [1, 0, 0] }, visible: false }
     ])
-    expect(result.middle.maskIsString).toBe(true)
-    expect(result.middle.maskHashMatches).toBe(true)
+    expect(result.middle.pngType).toBe('image/png')
+    expect(result.middle.imageId).toMatch(/^[a-f0-9]{64}$/)
+    expect(result.middle.wireMaskImage).toEqual({ id: result.middle.imageId, width: 4, height: 4 })
+    expect(result.middle.maskImage).toEqual({ id: result.middle.imageId, width: 4, height: 4 })
+    expect(result.middle.noMaskText).toBe(true)
+    expect(result.middle.decodedPixelsMatch).toBe(true)
     expect(result.drawing.sourceType).toBe('drawing')
     expect(result.drawing.strokes).toEqual([
         { id: 'stroke-0', type: 'path', color: '#ff0000', size: 5, opacity: 1, mode: 'brush', points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }
@@ -230,10 +249,10 @@ test('a single oversized stroke splits at shared point boundaries and reassemble
     expect(result.mergedMatchesOriginal).toBe(true)
 })
 
-test('mask chunk-set corruption and incompleteness both fall back to the previous mask', async ({ page }) => {
+test('legacy mask chunk-set corruption and incompleteness both fall back to the previous mask', async ({ page }) => {
     await page.goto('/')
     const result = await page.evaluate(async () => {
-        const { buildNodeModel, applyNodesToComposition } = await import('/js/collab/docModel.js')
+        const { buildNodeModel, applyNodesToComposition, fnv1a } = await import('/js/collab/docModel.js')
 
         const mask = new ImageData(8, 8)
         for (let i = 0; i < mask.data.length; i += 4) {
@@ -243,9 +262,23 @@ test('mask chunk-set corruption and incompleteness both fall back to the previou
             id: 'layer-0', name: 'Masked', visible: true, opacity: 100, blendMode: 'mix', locked: false,
             offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1, rotation: 0, flipH: false, flipV: false,
             sourceType: 'effect', mediaFile: null, mediaType: null, effectId: 'synth/solid', effectParams: {},
-            strokes: undefined, drawingCanvas: null, children: [], mask, maskEnabled: true, maskVisible: false
+            strokes: undefined, drawingCanvas: null, children: [], mask: null, maskEnabled: true, maskVisible: false
         }]
-        const nodes = buildNodeModel(layers, { width: 50, height: 50 })
+        // Older builds sent a mask as base64 PNG slices in layers-mask chunk
+        // nodes. Readers still accept that form from an older peer.
+        const maskCanvas = document.createElement('canvas')
+        maskCanvas.width = 8
+        maskCanvas.height = 8
+        maskCanvas.getContext('2d').putImageData(mask, 0, 0)
+        const legacy = maskCanvas.toDataURL('image/png')
+        const slices = [legacy.slice(0, 60), legacy.slice(60)]
+        const nodes = buildNodeModel(layers, { width: 50, height: 50 }).map(n => {
+            if (n.id !== 'Llayer-0') return n
+            return { ...n, text: JSON.stringify({ ...JSON.parse(n.text), maskMeta: { n: slices.length, hash: fnv1a(legacy) } }) }
+        })
+        slices.forEach((data, i) => nodes.push({
+            id: `Llayer-0.M${i}`, kind: 'layers-mask', text: JSON.stringify({ v: 1, i, data }), parentId: 'Llayer-0',
+        }))
         const previous = [{ id: 'layer-0', mask: 'PREVIOUS_MASK_STRING', strokes: undefined }]
 
         // Case A: corrupt a mask chunk's data so the reassembled hash won't match.
