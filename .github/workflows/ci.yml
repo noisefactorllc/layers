@@ -153,7 +153,7 @@ jobs:
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           repository: noisefactorllc/seance
-          ref: aaec82beb86cf4e100010467fc1962b5e4b4cd30
+          ref: ab95c8b150c2d0be0d697c92bac117bb88031a99
           path: seance
           persist-credentials: false
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
