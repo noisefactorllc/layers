@@ -348,3 +348,34 @@ test('retrying a canvas image after an upload failure captures its current pixel
         assert.equal(JSON.parse(h.writes.find(node => node.id === `L${image.id}`).text).imageId, await hash(pixels))
     } finally { h.adapter.goOffline() }
 }))
+
+test('restoring an image the server freed uploads its bytes again before referring to it', () => run(async () => {
+    const original = file(), replacement = file('new source')
+    const originalId = await hash(original)
+    const h = setup([createMediaLayer(original, 'image')])
+    try {
+        await h.adapter.takeOnline()
+        const restorable = h.app._layers[0]
+        h.app._layers[0] = { ...restorable, mediaFile: replacement }
+        h.adapter.schedulePublish()
+        await waitFor(() => h.writes.length > 0)
+        assert.equal(h.uploads.length, 1)
+
+        // Nothing refers to the original any more, so a full budget frees it.
+        h.assets.delete(originalId)
+        h.app._layers[0] = restorable
+        h.adapter.schedulePublish()
+        await waitFor(() => h.writes.some(node =>
+            node.kind === 'layers-layer' && JSON.parse(node.text).imageId === originalId))
+        assert.equal(h.uploads.length, 2)
+        assert.equal(await hash(h.uploads[1]), originalId)
+        assert.ok(h.assets.has(originalId))
+
+        // An edit that keeps the reference the session already holds sends no bytes.
+        const writes = h.writes.length
+        h.app._layers[0].opacity = 40
+        h.adapter.schedulePublish()
+        await waitFor(() => h.writes.length > writes)
+        assert.equal(h.uploads.length, 2)
+    } finally { h.adapter.goOffline() }
+}))

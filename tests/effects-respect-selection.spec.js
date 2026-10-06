@@ -465,7 +465,7 @@ test.describe('Effects respect selection marquee and layer mask', () => {
         expect(hasMask).toBe(false)
     })
 
-    test('child effect mask survives serialize/decode roundtrip', async ({ page }) => {
+    test('child effect mask survives a saved project roundtrip', async ({ page }) => {
         const { width, height } = await bootSolidProject(page)
 
         await page.evaluate(([w, h]) => {
@@ -479,17 +479,24 @@ test.describe('Effects respect selection marquee and layer mask', () => {
             const child = app._layers[0].children[0]
             if (!child.mask) return { hasMask: false }
 
-            const { serializeLayers, deserializeLayers, decodeMasks } =
-                await import('/js/layers/layer-model.js')
-            const json = serializeLayers(app._layers)
-            const restored = deserializeLayers(json)
+            // Saved projects keep masks as ImageData pixels in IndexedDB.
+            const { decodeMasks } = await import('/js/layers/layer-model.js')
+            const { saveProject, loadProject, deleteProject } =
+                await import('/js/utils/project-storage.js')
+            const projectId = await saveProject({
+                ...(await app._capturePersistableProject()),
+                name: `child-mask-roundtrip-${Date.now()}`,
+            })
+            const loaded = await loadProject(projectId)
+            await deleteProject(projectId)
+            const restored = structuredClone(loaded.project.layers)
             await decodeMasks(restored, {
                 expectedWidth: app._canvas.width,
                 expectedHeight: app._canvas.height,
             })
             const restoredChild = restored[0].children[0]
             const mask = restoredChild.mask
-            if (!mask || typeof mask === 'string') return { hasMask: true, decoded: false }
+            if (!(mask instanceof ImageData)) return { hasMask: true, decoded: false }
             const mid = Math.floor(mask.height / 2)
             const at = x => mask.data[(mid * mask.width + x) * 4]
             return {
@@ -503,7 +510,7 @@ test.describe('Effects respect selection marquee and layer mask', () => {
         })
 
         expect(result.hasMask, 'child effect captured no mask from selection').toBe(true)
-        expect(result.decoded, 'child mask did not decode back to ImageData').toBe(true)
+        expect(result.decoded, 'child mask did not come back as ImageData').toBe(true)
         expect(result.width).toBe(width)
         expect(result.height).toBe(height)
         expect(result.insideValue).toBe(255)

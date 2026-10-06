@@ -95,6 +95,34 @@ function layerNodeId(layerId) {
     return `L${sanitizeId(layerId)}`
 }
 
+/**
+ * The node id a layer is published under.
+ * @param {string} layerId
+ * @returns {string}
+ */
+export function layerNodeIdFor(layerId) {
+    return layerNodeId(layerId)
+}
+
+/**
+ * The session image ids each layer node in a node set refers to: an image
+ * layer's source and a layer mask.
+ * @param {Array} nodes
+ * @returns {Map<string, Set<string>>} layer node id -> image ids
+ */
+export function layerImageReferences(nodes) {
+    const refs = new Map()
+    for (const node of nodes || []) {
+        if (node?.kind !== 'layers-layer') continue
+        const parsed = safeParse(node.text)
+        const ids = new Set()
+        if (typeof parsed?.imageId === 'string') ids.add(parsed.imageId)
+        if (typeof parsed?.maskImage?.id === 'string') ids.add(parsed.maskImage.id)
+        refs.set(node.id, ids)
+    }
+    return refs
+}
+
 function childNodeId(layerId, childId) {
     return `${layerNodeId(layerId)}.C${sanitizeId(childId)}`
 }

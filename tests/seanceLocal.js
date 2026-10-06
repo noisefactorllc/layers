@@ -60,7 +60,16 @@ export async function routeSeanceSdkLocal(page) {
     })
 }
 
-export async function startSeanceServer({ origin = 'http://localhost:3002' } = {}) {
+// Servers from seance 66afef6 free unreferenced images when a session's image
+// budget is full. The spec that exercises that skips on an older harness pin.
+export function localServerPrunesImages(paths = harnessPaths, exists = existsSync, read = readFileSync) {
+    const config = resolve(paths.root, 'app/config.py')
+    if (!exists(config)) return false
+    return read(config, 'utf8').includes('image_prune_grace')
+}
+
+// `env` adds server settings for one case, such as SEANCE_LIMIT_* limits.
+export async function startSeanceServer({ origin = 'http://localhost:3002', env = {} } = {}) {
     if (!hasLocalSeanceHarness()) {
         throw new Error(
             'Layers collaboration tests require a local Seance harness; ' +
@@ -82,6 +91,7 @@ export async function startSeanceServer({ origin = 'http://localhost:3002' } = {
             SEANCE_DB: join(tmp, 'seance.db'),
             SEANCE_ALLOWED_ORIGINS: origin,
             SEANCE_TRUSTED_PROXIES: '',
+            ...env,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
     })

@@ -25,11 +25,12 @@ import {
     isLayersSession,
     overlayPendingWrites,
     rememberMaskWire,
-    maskWireOf,
     encodeMaskPng,
     decodeMaskPng,
     fnv1a,
-    rememberImageWire
+    rememberImageWire,
+    layerNodeIdFor,
+    layerImageReferences
 } from './docModel.js'
 
 export const DEFAULT_SEANCE_URL = 'https://seance.noisefactor.io'
@@ -1136,15 +1137,26 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             if (!current()) return
             const files = imagesForSession(request.layer)
             const maskSources = captureMaskSources()
-            const maskEntries = await prepareMaskSources(
-                maskSources.filter(({ mask }) => !files.has(maskWireOf(mask)?.imageId)))
+            const maskEntries = await prepareMaskSources(maskSources)
             if (!current()) return
+            // The server frees images nothing in the session refers to once its
+            // budget is full, so an image this client uploaded earlier may be
+            // gone. Upload every image a layer is about to refer to unless the
+            // session's acknowledged copy of that layer already refers to it
+            // (a referenced image is never freed). A duplicate upload of bytes
+            // the server still holds is ignored. This sends each changed image
+            // once per publish, not once per edit of an unchanged one.
+            const serverRefs = layerImageReferences(request.layer.getNodes())
+            const uploads = new Map()
             for (const entry of [...entries, ...maskEntries]) {
-                if (files.has(entry.asset.id)) continue
-                const id = await request.layer.uploadImage(entry.file)
+                if (serverRefs.get(layerNodeIdFor(entry.layer.id))?.has(entry.asset.id)) continue
+                if (!uploads.has(entry.asset.id)) uploads.set(entry.asset.id, entry.file)
+            }
+            for (const [assetId, file] of uploads) {
+                const id = await request.layer.uploadImage(file)
                 if (!current()) return
-                if (id !== entry.asset.id) throw new Error('Uploaded image identity does not match its bytes')
-                files.set(id, entry.file)
+                if (id !== assetId) throw new Error('Uploaded image identity does not match its bytes')
+                files.set(id, file)
             }
             if (!current()) return
             if (pendingSessionTransitionGeneration !== null || applyingRemote
@@ -1382,6 +1394,18 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             }
             const mask = await decodeMaskPng(file, ref)
             rememberMaskWire(mask, { imageId: ref.id, width: ref.width, height: ref.height })
+            // Keep the bytes the mask arrived as. Republishing it (after an
+            // undo, or into another session) re-sends these exact bytes,
+            // never this browser's own encoding of the same pixels.
+            const sdk = await sdkPromise
+            if (typeof sdk?.prepareImage === 'function') {
+                const pending = sdk.prepareImage(file).then(asset => {
+                    if (asset.id !== ref.id) throw new Error('Shared mask bytes do not match their image')
+                    return { file, asset }
+                })
+                pending.catch(() => { if (preparedMasks.get(mask) === pending) preparedMasks.delete(mask) })
+                preparedMasks.set(mask, pending)
+            }
             files.set(ref.id, file)
             layer.mask = mask
         }

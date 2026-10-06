@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures.js'
 import { appReady, appState, framePainted, quietWindow } from './waits.js'
-import { SEANCE_SDK_URL, hasLocalSeanceHarness, localSdkSupportsImages, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
+import { SEANCE_SDK_URL, hasLocalSeanceHarness, localServerPrunesImages, localSdkSupportsImages, routeSeanceSdkLocal, startSeanceServer } from './seanceLocal.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
 
 let seance
@@ -451,4 +451,100 @@ test('a peer edit does not throw the local user out of mask editing', async ({ p
 
     expect(await pageA.evaluate(() => window.layersApp._maskEditMode)).toBe(true)
     expect(await pageA.evaluate(() => window.layersApp._maskEditLayerId)).toBe(baseId)
+})
+
+// SHA-256 of a layer's decoded mask pixels, or null without a mask.
+async function maskDigest(page, layerId) {
+    return page.evaluate(async (id) => {
+        const mask = window.layersApp._layers.find(l => l.id === id)?.mask
+        if (!mask?.data) return null
+        const digest = await crypto.subtle.digest('SHA-256', mask.data)
+        return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')
+    }, layerId)
+}
+
+// The mask image id the session's copy of a layer refers to.
+async function sessionMaskImageId(page, layerId) {
+    return page.evaluate((id) => {
+        const node = window.layersApp._onlineAdapter.online.getNodes().find(n => n.id === `L${id}`)
+        return node ? JSON.parse(node.text).maskImage?.id ?? null : null
+    }, layerId)
+}
+
+test('undo to a mask whose image the server freed uploads it again for peers', async ({ page, context, baseURL }) => {
+    test.skip(!localServerPrunesImages(), 'requires a Seance harness at 66afef6 or later (frees unreferenced images)')
+    // A two-image budget with no grace: the third mask upload frees the first.
+    await seance.stop()
+    seance = await startSeanceServer({ origin: baseURL, env: {
+        SEANCE_LIMIT_MAX_IMAGES: '2', SEANCE_LIMIT_IMAGE_PRUNE_GRACE: '0',
+    } })
+    const pageA = page
+    const pageB = await context.newPage()
+    await preparePage(pageA)
+    await preparePage(pageB)
+
+    await gotoApp(pageA)
+    await createProject(pageA, 'solid', 128)
+    const baseId = (await layersState(pageA))[0].id
+    const paintMask = (split) => pageA.evaluate(async ({ id, split }) => {
+        const app = window.layersApp
+        const layer = app._layers.find(l => l.id === id)
+        const mask = new ImageData(app._canvas.width, app._canvas.height)
+        for (let i = 0; i < mask.data.length; i += 4) {
+            const v = (i / 4) % mask.width < mask.width * split ? 255 : 0
+            mask.data[i] = v; mask.data[i + 1] = v; mask.data[i + 2] = v; mask.data[i + 3] = 255
+        }
+        layer.mask = mask
+        app._pushUndoState()
+    }, { id: baseId, split })
+
+    await paintMask(0.25)
+    const firstDigest = await maskDigest(pageA, baseId)
+    const sessionId = await takeOnline(pageA)
+    await closeSeanceDialog(pageA)
+    const firstImageId = await sessionMaskImageId(pageA, baseId)
+    expect(firstImageId).toMatch(/^[a-f0-9]{64}$/)
+
+    await gotoApp(pageB)
+    await createProject(pageB, 'solid', 128)
+    await joinById(pageB, sessionId)
+    await expect.poll(() => maskDigest(pageB, baseId), { timeout: 60000 }).toBe(firstDigest)
+
+    // Two replacements. The second upload finds the budget full, and the
+    // server frees the first mask, which nothing refers to any more.
+    for (const split of [0.5, 0.75]) {
+        await paintMask(split)
+        const digest = await maskDigest(pageA, baseId)
+        await expect.poll(() => maskDigest(pageB, baseId), { timeout: 60000 }).toBe(digest)
+    }
+    const fetchFirst = () => pageB.evaluate(async (imageId) => {
+        try {
+            await window.layersApp._onlineAdapter.online.getImage(imageId)
+            return 'present'
+        } catch (error) {
+            return error.message
+        }
+    }, firstImageId)
+    expect(await fetchFirst()).toMatch(/404/)
+
+    // Undo back to the first mask. Its bytes must reach the session again
+    // before the layer refers to them, or B could never load it.
+    for (let step = 0; step < 4 && await maskDigest(pageA, baseId) !== firstDigest; step++) {
+        await pageA.evaluate(async () => { await window.layersApp._undo() })
+        const digest = await maskDigest(pageA, baseId)
+        await expect.poll(() => maskDigest(pageB, baseId), { timeout: 60000 }).toBe(digest)
+    }
+    expect(await maskDigest(pageA, baseId)).toBe(firstDigest)
+    await expect.poll(() => maskDigest(pageB, baseId), { timeout: 60000 }).toBe(firstDigest)
+    expect(await sessionMaskImageId(pageB, baseId)).toBe(firstImageId)
+    expect(await fetchFirst()).toBe('present')
+
+    // B may still hold the first mask's bytes from when it joined. A peer
+    // joining now has only the server to fetch them from.
+    const pageC = await context.newPage()
+    await preparePage(pageC)
+    await gotoApp(pageC)
+    await createProject(pageC, 'solid', 128)
+    await joinById(pageC, sessionId)
+    await expect.poll(() => maskDigest(pageC, baseId), { timeout: 60000 }).toBe(firstDigest)
 })

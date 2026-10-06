@@ -227,43 +227,6 @@ export function cloneLayer(layer, newName = null) {
     }
 }
 
-/** Encode a mask ImageData as a base64 PNG data URL. */
-function encodeMaskToDataUrl(mask) {
-    const canvas = document.createElement('canvas')
-    canvas.width = mask.width
-    canvas.height = mask.height
-    canvas.getContext('2d').putImageData(mask, 0, 0)
-    return canvas.toDataURL('image/png')
-}
-
-/**
- * Serialize layers for storage
- * @param {Array} layers - Layer array
- * @returns {string} JSON string
- */
-export function serializeLayers(layers) {
-    const serializableLayers = layers.map(layer => {
-        const serialized = {
-            ...layer,
-            mediaFile: null,
-            drawingCanvas: undefined
-        }
-        // Encode mask ImageData as base64 PNG. ImageData does not survive
-        // JSON.stringify (it flattens to {}), so child masks must be encoded
-        // here too, not just the layer's own mask.
-        if (layer.mask) {
-            serialized.mask = encodeMaskToDataUrl(layer.mask)
-        }
-        if ((layer.children || []).some(child => child.mask)) {
-            serialized.children = layer.children.map(child => child.mask
-                ? { ...child, mask: encodeMaskToDataUrl(child.mask) }
-                : child)
-        }
-        return serialized
-    })
-    return JSON.stringify(serializableLayers)
-}
-
 /**
  * Deserialize layers from storage
  * @param {string} json - JSON string
