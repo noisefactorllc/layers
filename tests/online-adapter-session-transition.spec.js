@@ -1120,6 +1120,43 @@ test('join asks for replacement consent before starting an uppercase session pro
     expect(await page.evaluate(() => window.__uppercaseConsentProbe.finish())).toBeNull()
 })
 
+test('a code retyped in capitals takes one lookup and joins the session by its own id', async ({ page }) => {
+    await bootSolid(page)
+
+    const result = await page.evaluate(async () => {
+        const app = window.layersApp
+        const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
+        localStorage.removeItem('layers.seance.sessionIdCaseMap')
+        const originalFetch = globalThis.fetch
+        const lookups = []
+        globalThis.fetch = async url => {
+            lookups.push(String(url))
+            return new Response(JSON.stringify({ id: 'RouFjG', open: true, dialect: 'layers' }), { status: 200 })
+        }
+        let joinedAs = null
+        const adapter = createLayersOnlineAdapter(app, {
+            location: new URL('https://layers.test/'),
+            history: { replaceState() {} }, dialog: null,
+            importSdk: async () => ({ createOnlineDslLayer: () => ({
+                on() {}, getStatus: () => (joinedAs ? 'online' : 'offline'), getSessionId: () => joinedAs,
+                getShareUrl: () => '', getNodes: () => [],
+                joinSession: async id => { joinedAs = id }, goOffline() {}, writeSessionToUrl: url => url,
+            }) }),
+        })
+        try {
+            await adapter.joinSession('ROUFJG', { skipConfirm: true })
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+        adapter.goOffline()
+        return { lookups, joinedAs }
+    })
+
+    expect(result.lookups).toHaveLength(1)
+    expect(result.lookups[0]).toMatch(/\/v1\/sessions\/ROUFJG$/)
+    expect(result.joinedAs).toBe('RouFjG')
+})
+
 test('go-offline cancels a lifecycle-queued URL join after SDK bootstrap', async ({ page }) => {
     await bootSolid(page)
 

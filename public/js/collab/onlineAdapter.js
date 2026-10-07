@@ -56,6 +56,8 @@ const MAX_PENDING_DELETE_REJECTIONS = 256
 // converges them.
 const MAX_PENDING_LOCAL_WRITES = 4096
 const SESSION_ID_CASE_STORAGE_KEY = 'layers.seance.sessionIdCaseMap'
+// A Seance session code: six letters or digits.
+const SESSION_CODE = /^[A-Za-z0-9]{6}$/
 const NOT_A_LAYERS_SESSION_MESSAGE = "This session isn't a Layers composition, so Layers can't open it."
 
 // Hosts on which the ?seanceUrl= / ?seanceSdk= overrides are honoured. The
@@ -1836,24 +1838,27 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     async function resolveJoinSessionId(sessionId) {
         const remembered = recallSessionId(sessionId)
         if (remembered) return remembered
+        if (!SESSION_CODE.test(String(sessionId || '')) || !globalThis.fetch) return sessionId
 
-        const candidates = caseCandidates(sessionId)
-        if (candidates.length <= 1 || !globalThis.fetch) return sessionId
-
-        for (const candidate of candidates) {
+        // Seance finds a session whatever the case of its code and replies with
+        // the session's own id, so a code retyped in capitals takes one lookup.
+        try {
+            const response = await globalThis.fetch(`${stripTrailingSlash(config.seanceUrl)}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+                credentials: 'include'
+            })
+            if (!response.ok) return sessionId
+            let id = sessionId
             try {
-                const response = await globalThis.fetch(`${stripTrailingSlash(config.seanceUrl)}/v1/sessions/${encodeURIComponent(candidate)}`, {
-                    credentials: 'include'
-                })
-                if (response.ok) {
-                    rememberSessionId(candidate)
-                    return candidate
-                }
+                const body = await response.json()
+                if (typeof body?.id === 'string' && body.id) id = body.id
             } catch {
-                return sessionId
+                // An unreadable reply still confirmed the code as typed.
             }
+            rememberSessionId(id)
+            return id
+        } catch {
+            return sessionId
         }
-        return sessionId
     }
 
     return {
@@ -1900,23 +1905,6 @@ function readSessionIdFromLocation(locationLike) {
 
 function stripTrailingSlash(value) {
     return String(value || '').replace(/\/+$/, '')
-}
-
-function caseCandidates(sessionId) {
-    const value = String(sessionId || '').trim()
-    if (!/^[A-Z0-9]{6}$/.test(value)) return [value]
-    const chars = [...value]
-    let variants = ['']
-    for (const ch of chars) {
-        const lower = /[A-Z]/.test(ch) ? ch.toLowerCase() : ch
-        const options = lower === ch ? [ch] : [ch, lower]
-        const next = []
-        for (const prefix of variants) {
-            for (const option of options) next.push(prefix + option)
-        }
-        variants = next
-    }
-    return [value, ...variants.filter((candidate) => candidate !== value)]
 }
 
 function rememberSessionId(sessionId) {
