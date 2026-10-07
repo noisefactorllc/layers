@@ -56,8 +56,8 @@ const MAX_PENDING_DELETE_REJECTIONS = 256
 // converges them.
 const MAX_PENDING_LOCAL_WRITES = 4096
 const SESSION_ID_CASE_STORAGE_KEY = 'layers.seance.sessionIdCaseMap'
-// A Seance session code: six letters or digits.
-const SESSION_CODE = /^[A-Za-z0-9]{6}$/
+// A Seance session code typed in capitals. Other codes are joined as typed.
+const CAPITALIZED_SESSION_CODE = /^[A-Z0-9]{6}$/
 const NOT_A_LAYERS_SESSION_MESSAGE = "This session isn't a Layers composition, so Layers can't open it."
 
 // Hosts on which the ?seanceUrl= / ?seanceSdk= overrides are honoured. The
@@ -1838,7 +1838,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     async function resolveJoinSessionId(sessionId) {
         const remembered = recallSessionId(sessionId)
         if (remembered) return remembered
-        if (!SESSION_CODE.test(String(sessionId || '')) || !globalThis.fetch) return sessionId
+        if (!CAPITALIZED_SESSION_CODE.test(String(sessionId || '')) || !globalThis.fetch) return sessionId
 
         // Seance finds a session whatever the case of its code and replies with
         // the session's own id, so a code retyped in capitals takes one lookup.
