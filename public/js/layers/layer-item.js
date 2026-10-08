@@ -10,6 +10,34 @@ import './effect-params.js'
 import { SelectDropdown, SliderValue } from 'handfish'
 
 /**
+ * The keyboard path of a layer row, documented where users look for it: the
+ * drag handle's tooltip and accessible description, and the focusable row's
+ * own accessible description and aria-keyshortcuts. The row keydown handler
+ * in _setupEventListeners implements exactly these keys, and
+ * tests/layer-keyboard-interaction.spec.js presses every documented shortcut
+ * and checks its effect, so the text cannot drift from the bindings.
+ * @param {boolean} canMove - the row can move in the stack (a top-level,
+ *   non-base layer; the base layer anchors the stack and child effects do
+ *   not take the keyboard move)
+ * @returns {{tooltip: string, description: string, keyshortcuts: string}}
+ */
+function rowKeyboardHelp(canMove) {
+    return canMove
+        ? {
+            tooltip: 'Drag to reorder \u00b7 Keys on a focused row: Enter select, F2 rename, Alt+ArrowUp/Down move',
+            description: 'Keyboard: Enter or Space selects the layer, F2 renames it, '
+                + 'Alt+Up or Alt+Down moves it in the stack, Up or Down moves between layers.',
+            keyshortcuts: 'Enter Space F2 Alt+ArrowUp Alt+ArrowDown',
+        }
+        : {
+            tooltip: 'Drag to reorder \u00b7 Keys on a focused row: Enter select, F2 rename',
+            description: 'Keyboard: Enter or Space selects the layer, F2 renames it, '
+                + 'Up or Down moves between layers.',
+            keyshortcuts: 'Enter Space F2',
+        }
+}
+
+/**
  * LayerItem - Web component for a single layer
  * @extends HTMLElement
  */
@@ -118,10 +146,13 @@ class LayerItem extends HTMLElement {
         if (this.parentElement === null && !this.hasAttribute('tabindex')) {
             this.tabIndex = 0
         }
+        const keyHelp = rowKeyboardHelp(!isBase && !this._isChild)
+        this.setAttribute('aria-keyshortcuts', keyHelp.keyshortcuts)
+        this.setAttribute('aria-description', keyHelp.description)
 
         this.innerHTML = `
             <div class="layer-row">
-                <div class="layer-drag-handle tooltip" data-title="Drag to reorder · Alt+ArrowUp/Down when the row is focused" aria-label="Drag to reorder · Alt+ArrowUp/Down when the row is focused" title="Drag to reorder · Alt+ArrowUp/Down when the row is focused">
+                <div class="layer-drag-handle tooltip" data-title="${keyHelp.tooltip}" aria-label="${keyHelp.tooltip}" title="${keyHelp.tooltip}" aria-description="${keyHelp.description}">
                     <span class="icon-material">drag_indicator</span>
                 </div>
                 <button class="layer-visibility tooltip ${isVisible ? 'visible' : ''}" data-title="Toggle visibility" aria-label="Toggle visibility" title="Toggle visibility">

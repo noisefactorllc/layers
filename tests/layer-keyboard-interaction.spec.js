@@ -378,6 +378,123 @@ test.describe('Layer keyboard interaction', () => {
         expect(order).toEqual([bottomId, topId])
     })
 
+    test('the row keyboard path is documented on the drag handle and the row, and each documented key works', async ({ page }) => {
+        await page.evaluate(async () => {
+            await window.layersApp._handleAddEffectLayer('filter/blur')
+        })
+        await layerCount(page, 3)
+        // Model order is base, gradient, blur: the middle layer can move both
+        // up and down, so every documented key has an observable effect.
+        const baseId = await rowId(page, 0)
+        const middleId = await rowId(page, 1)
+        const row = page.locator(`layer-item[data-layer-id="${middleId}"]`)
+        const handle = row.locator('.layer-drag-handle')
+
+        // The documentation users see: the handle's tooltip (title,
+        // data-title and aria-label in lockstep), its accessible
+        // description, and the focusable row's aria-keyshortcuts and
+        // accessible description.
+        const doc = await page.evaluate((id) => {
+            const item = document.querySelector(`layer-item[data-layer-id="${id}"]`)
+            const h = item.querySelector('.layer-drag-handle')
+            return {
+                title: h.getAttribute('title'),
+                dataTitle: h.getAttribute('data-title'),
+                ariaLabel: h.getAttribute('aria-label'),
+                handleDescription: h.getAttribute('aria-description'),
+                rowDescription: item.getAttribute('aria-description'),
+                keyshortcuts: item.getAttribute('aria-keyshortcuts'),
+            }
+        }, middleId)
+        expect(doc.dataTitle).toBe(doc.title)
+        expect(doc.ariaLabel).toBe(doc.title)
+        expect(doc.title).toContain('Drag to reorder')
+        for (const text of ['Enter', 'F2', 'Alt+ArrowUp/Down']) {
+            expect(doc.title, `handle tooltip names ${text}`).toContain(text)
+        }
+        expect(doc.handleDescription).toBe(doc.rowDescription)
+        for (const text of ['Enter', 'Space', 'F2', 'Alt+Up', 'Alt+Down']) {
+            expect(doc.rowDescription, `row description names ${text}`).toContain(text)
+        }
+        await expect(row).toHaveAccessibleDescription(doc.rowDescription)
+
+        // Pointer users see the same tooltip text on hover.
+        await handle.hover()
+        const tooltipLayer = page.locator('#hf-tooltip-layer')
+        await expect(tooltipLayer).toBeVisible({ timeout: 5000 })
+        await expect(tooltipLayer).toHaveText(doc.title)
+        await page.mouse.move(0, 0)
+        await expect(tooltipLayer).toBeHidden({ timeout: 5000 })
+
+        // Every documented shortcut, pressed on the focused row exactly as
+        // written in aria-keyshortcuts, must do what the text says. A key
+        // documented without an effect here, or an effect without its key
+        // documented, fails the comparison below.
+        // Selection keys start from the top layer selected (it holds the
+        // roving Tab stop) and reach the middle row with the documented
+        // plain ArrowDown, as a keyboard user would.
+        const topId = await rowId(page, 2)
+        const topRow = page.locator(`layer-item[data-layer-id="${topId}"]`)
+        const selects = async (key) => {
+            await page.evaluate((id) => {
+                window.layersApp._layerStack.selectedLayerId = id
+            }, topId)
+            await topRow.focus()
+            await page.keyboard.press('ArrowDown')
+            await expect(row).toBeFocused()
+            await page.keyboard.press(key)
+            await appState(page,
+                (id) => window.layersApp._layerStack.selectedLayerIds[0] === id, middleId)
+        }
+        const effects = {
+            Enter: () => selects('Enter'),
+            Space: () => selects('Space'),
+            F2: async () => {
+                await row.focus()
+                await page.keyboard.press('F2')
+                const nameEl = row.locator('.layer-name')
+                await expect(nameEl).toHaveAttribute('contenteditable', 'true')
+                await expect(nameEl).toBeFocused()
+                await page.keyboard.insertText('Renamed from the documented key')
+                await page.keyboard.press('Enter')
+                await appState(page,
+                    (id) => window.layersApp._layers.find(l => l.id === id).name
+                        === 'Renamed from the documented key', middleId)
+                await expect(row).toBeFocused()
+            },
+            'Alt+ArrowUp': async () => {
+                await row.focus()
+                await page.keyboard.press('Alt+ArrowUp')
+                await appState(page,
+                    (id) => window.layersApp._reorderState === 'IDLE'
+                        && window.layersApp._layers[2].id === id, middleId)
+            },
+            'Alt+ArrowDown': async () => {
+                await row.focus()
+                await page.keyboard.press('Alt+ArrowDown')
+                await appState(page,
+                    (id) => window.layersApp._reorderState === 'IDLE'
+                        && window.layersApp._layers[1].id === id, middleId)
+            },
+        }
+        const documented = (doc.keyshortcuts || '').split(/\s+/).filter(Boolean)
+        expect(documented).toEqual(Object.keys(effects))
+        for (const key of documented) await effects[key]()
+
+        // The base layer anchors the stack and cannot move, so its row
+        // documents no move keys.
+        const base = await page.evaluate((id) => {
+            const item = document.querySelector(`layer-item[data-layer-id="${id}"]`)
+            return {
+                keyshortcuts: item.getAttribute('aria-keyshortcuts'),
+                description: item.getAttribute('aria-description'),
+            }
+        }, baseId)
+        expect(base.keyshortcuts).toBe('Enter Space F2')
+        expect(base.description).toContain('F2')
+        expect(base.description).not.toContain('Alt')
+    })
+
     test('pointer selection keeps working alongside the keyboard paths', async ({ page }) => {
         const bottomId = await rowId(page, 0)
         const topId = await rowId(page, 1)
