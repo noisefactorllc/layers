@@ -131,6 +131,35 @@ test.describe('Layer keyboard interaction', () => {
         await page.keyboard.press('Escape')
     })
 
+    test('Space on the focused row selects it and enables the Layer menu items', async ({ page }) => {
+        // The acceptance names Enter OR Space; Space must leave the
+        // selection-dependent menu in the same enabled state Enter does.
+        const topId = await rowId(page, 1)
+
+        await page.evaluate(() => {
+            window.layersApp._layerStack.selectedLayerIds = []
+        })
+        await openLayerMenu(page)
+        await expect(page.locator('#menu #duplicateLayerMenuItem'))
+            .toHaveAttribute('aria-disabled', 'true')
+        await page.keyboard.press('Escape')
+
+        await page.locator(`layer-item[data-layer-id="${topId}"]`).focus()
+        await page.keyboard.press('Space')
+
+        await appState(page,
+            (id) => window.layersApp._layerStack.selectedLayerIds[0] === id, topId)
+
+        await openLayerMenu(page)
+        await expect(page.locator('#menu #duplicateLayerMenuItem'))
+            .not.toHaveAttribute('aria-disabled', 'true')
+        await expect(page.locator('#menu #deleteLayerMenuItem'))
+            .not.toHaveAttribute('aria-disabled', 'true')
+        await expect(page.locator('#menu #addLayerMaskMenuItem'))
+            .not.toHaveAttribute('aria-disabled', 'true')
+        await page.keyboard.press('Escape')
+    })
+
     test('Enter on the focused row keeps focus on that row after selecting it', async ({ page }) => {
         const topId = await rowId(page, 1)
         await page.evaluate(() => {
