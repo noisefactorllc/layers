@@ -1005,6 +1005,15 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         })
         expect(inputName).toContain('Foreground Color')
 
+        // The layer opacity slider is handfish's <slider-value>, which renders
+        // its own <input type="range"> and does not forward the host's title
+        // to it; Layers names that inner input. Playwright computes the
+        // accessible name itself, so this runs on every engine. Soft, so a
+        // failure here still lets the Chromium tree sweep below report too.
+        const opacityHosts = await page.locator('layer-item slider-value.layer-opacity').count()
+        expect(opacityHosts).toBeGreaterThanOrEqual(1)
+        await expect.soft(page.getByRole('slider', { name: 'Opacity', exact: true })).toHaveCount(opacityHosts)
+
         if (browserName !== 'chromium') return
 
         // In the engine's accessibility tree the input is the ColorWell
@@ -1015,10 +1024,13 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         await cdp.send('DOM.enable')
         const { root } = await cdp.send('DOM.getDocument', { depth: -1 })
         const domIds = new Map()
+        const domClasses = new Map()
         const walk = node => {
             if (node.backendNodeId) {
                 const i = node.attributes?.indexOf('id')
                 if (i >= 0) domIds.set(node.backendNodeId, node.attributes[i + 1])
+                const c = node.attributes?.indexOf('class')
+                if (c >= 0) domClasses.set(node.backendNodeId, node.attributes[c + 1])
             }
             for (const child of node.children || []) walk(child)
             if (node.shadowRoots) for (const shadow of node.shadowRoots) walk(shadow)
@@ -1030,7 +1042,8 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         const { nodes } = await cdp.send('Accessibility.getFullAXTree')
         const described = node => {
             const id = domIds.get(node.backendDOMNodeId)
-            return `${node.role?.value ?? '?'}${id ? `#${id}` : ''}`
+            const cls = domClasses.get(node.backendDOMNodeId)
+            return `${node.role?.value ?? '?'}${id ? `#${id}` : ''}${cls ? `.${cls.trim().split(/\s+/).join('.')}` : ''}`
         }
 
         const colorWell = nodes.filter(node => !node.ignored && node.role?.value === 'ColorWell')
@@ -1039,16 +1052,28 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
             && (node.name?.value || '').includes('Foreground Color')), described(colorWell[0])).toBe(true)
 
         // And the default boot state exposes no other interactive control
-        // without an accessible name: every non-ignored Button, Slider,
-        // TextBox and the like in the full tree carries one.
+        // without an accessible name: every non-ignored button, slider,
+        // textbox and the like in the full tree carries one. Chromium reports
+        // ARIA-mapped roles in lowercase ("button", "slider") and only its
+        // internal roles capitalized ("ColorWell"), so roles are compared
+        // case-insensitively.
         const interactiveRoles = new Set([
-            'Button', 'Slider', 'TextBox', 'CheckBox', 'Radio', 'ToggleButton',
-            'Switch', 'Link', 'MenuItem', 'MenuButton', 'ListBox', 'Option',
-            'SpinButton', 'ColorWell', 'TextField', 'SearchBox',
+            'button', 'slider', 'textbox', 'checkbox', 'radio', 'togglebutton',
+            'switch', 'link', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+            'menubutton', 'popupbutton', 'combobox', 'listbox', 'option',
+            'spinbutton', 'colorwell', 'textfield', 'searchbox', 'tab', 'treeitem',
         ])
-        const unnamed = nodes
-            .filter(node => !node.ignored && interactiveRoles.has(node.role?.value)
-                && !(node.name?.value || '').trim())
+        const roleOf = node => String(node.role?.value ?? '').toLowerCase()
+        const interactive = nodes.filter(node => !node.ignored && interactiveRoles.has(roleOf(node)))
+        // The sweep must see the controls it guards, or it passes vacuously:
+        // the boot tree holds the toolbar's buttons and the layer opacity
+        // slider.
+        expect(interactive.filter(node => roleOf(node) === 'button').length,
+            'boot-state buttons seen by the sweep').toBeGreaterThan(0)
+        expect(interactive.filter(node => roleOf(node) === 'slider').length,
+            'boot-state sliders seen by the sweep').toBeGreaterThan(0)
+        const unnamed = interactive
+            .filter(node => !(node.name?.value || '').trim())
             .map(described)
         expect(unnamed, 'accessibility-tree interactive nodes without an accessible name').toEqual([])
     })

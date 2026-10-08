@@ -156,6 +156,14 @@ class LayerItem extends HTMLElement {
             <effect-params class="layer-effect-params"></effect-params>
         `
 
+        // handfish's <slider-value> renders its own <input type="range"> and
+        // does not forward the host's title to it, so the opacity input would
+        // reach assistive technology unnamed. The input exists once the
+        // slider-value is connected; a row rendered while detached renders
+        // again on connect (connectedCallback), which names it then.
+        const opacityInput = this.querySelector('slider-value.layer-opacity input.slider')
+        if (opacityInput) opacityInput.setAttribute('aria-label', 'Opacity')
+
         // Initialize blend mode select-dropdown
         const blendSelect = this.querySelector('.layer-blend-mode')
         if (blendSelect && !this._isChild) {
