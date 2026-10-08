@@ -270,6 +270,23 @@ test.describe('Layer keyboard interaction', () => {
         await expect(nameEl).toHaveAttribute('contenteditable', 'false')
     })
 
+    test('the keyboard paths are documented in the row affordances', async ({ page }) => {
+        // The issue's expected behavior asks for a documented keyboard path:
+        // the drag handle tooltip names the Alt+Arrow reorder next to the
+        // pointer gesture, and the name field names both rename entry paths.
+        const topId = await rowId(page, 1)
+        const row = page.locator(`layer-item[data-layer-id="${topId}"]`)
+
+        const handle = row.locator('.layer-drag-handle')
+        for (const attr of ['data-title', 'title', 'aria-label']) {
+            await expect(handle).toHaveAttribute(attr, /Drag to reorder/)
+            await expect(handle).toHaveAttribute(attr, /Alt\+ArrowUp\/Down/)
+        }
+
+        await expect(row.locator('.layer-name'))
+            .toHaveAttribute('title', /Double-click or F2 to rename/)
+    })
+
     test('Alt+ArrowUp moves the focused layer toward the top of the stack', async ({ page }) => {
         const bottomId = await rowId(page, 0)
         const topId = await rowId(page, 1)

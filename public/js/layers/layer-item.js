@@ -121,7 +121,7 @@ class LayerItem extends HTMLElement {
 
         this.innerHTML = `
             <div class="layer-row">
-                <div class="layer-drag-handle tooltip" data-title="Drag to reorder" aria-label="Drag to reorder" title="Drag to reorder">
+                <div class="layer-drag-handle tooltip" data-title="Drag to reorder · Alt+ArrowUp/Down when the row is focused" aria-label="Drag to reorder · Alt+ArrowUp/Down when the row is focused" title="Drag to reorder · Alt+ArrowUp/Down when the row is focused">
                     <span class="icon-material">drag_indicator</span>
                 </div>
                 <button class="layer-visibility tooltip ${isVisible ? 'visible' : ''}" data-title="Toggle visibility" aria-label="Toggle visibility" title="Toggle visibility">
@@ -134,7 +134,7 @@ class LayerItem extends HTMLElement {
                     <canvas class="mask-thumb-canvas" width="36" height="36"></canvas>
                 </div>` : ''}
                 <div class="layer-info">
-                    <div class="layer-name" contenteditable="false" spellcheck="false">${this._escapeHtml(layer.name)}</div>
+                    <div class="layer-name" contenteditable="false" spellcheck="false" title="Double-click or F2 to rename">${this._escapeHtml(layer.name)}</div>
                     <div class="layer-type ${layer.sourceType}">${this._formatLayerType(layer)}</div>
                 </div>
                 ${!this._isChild ? `<button class="layer-add-child tooltip" data-title="Add effect" aria-label="Add effect" title="Add effect">
