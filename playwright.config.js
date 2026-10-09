@@ -8,35 +8,36 @@ import { defineConfig } from 'playwright/test'
 // spec files are split into balanced -a/-b halves at test boundaries (tests
 // unchanged), so shards can pack halves of the big files separately.
 //
-// The vectors below minimize the worst predicted test step over the six
-// green main windows measured since the file inventory settled: 37232832949
-// (e0192f5), 37235920153 (1896485), 37244120728 (ff9b97e), 37317823100
-// (576c34b), 37324449887 (7c40359) and 37378679430 (18dce1a), using the
-// per-file worker-seconds from each window's report artifacts. The fourth
-// and fifth are why they were re-derived: the previous vectors summed to
-// 1138 while the suite grew to 1140, and Playwright sizes shards as
-// floor(weight x total / weight sum), handing the remainder to the first
-// shards, so those two extra tests pulled the nine-test agent-export-image
-// (about 90 webkit worker-seconds) into webkit 1/10, which then measured
-// 1084 s and 1096 s against the 1080 s bar. These vectors sum to exactly
-// 1140 and give the leading shards one test of slack, so a one- or two-test
-// addition no longer drags a whole file across a boundary; over the six
-// windows their worst predicted steps are 1075 s (chromium 2/5, at the
-// 18dce1a window's pace), 1067 s (firefox 1/4) and 1016 s (webkit 4/10),
-// and a local search over every neighbouring split found nothing better at
-// these shard counts: the hot chromium 2/5 files (collaboration,
-// agent-masks) resist both the 512 boot trim and finer packing, so this is
-// the measured floor for 5/4/10 shards and only more shards move it.
+// The vectors below minimize the worst predicted test step over the five
+// green main windows measured since the file inventory settled: 37386200744
+// (240a1e4), 37504087393 (1040d9c), 37519142150 (4f744ce), 37704722762
+// (be79536) and 37853021413 (2b60038), using the per-file worker-seconds
+// from each window's report artifacts, scaled to each file's current test
+// count. The last three windows are why they were re-derived: the previous
+// vectors summed to 1140 while the suite grew to 1145, and Playwright sizes
+// shards as floor(weight x total / weight sum), so the consumed slack pulled
+// the collaboration cluster back into one shard — webkit 4/10 measured 1162 s
+// and 1117 s against the 1080 s bar in the two runs before the 1210 s
+// capacity kill of run 37857219344 (c7b777f), and firefox 4/4 measured
+// 1115 s. These vectors sum to exactly 1146, so shard sizes are exact at the
+// current suite and the first shards absorb the remainder when a test or two
+// is added; over the five windows their worst predicted steps are 985 s
+// (chromium 2/5, at the be79536 window's pace), 1044 s (firefox 3/4, at the
+// 1040d9c window's pace) and 998 s (webkit 3/10, at the be79536 window's
+// pace). They come from a min-max dynamic program over the exact shard
+// boundary model of Playwright 1.63 (shards are contiguous slices of the
+// suite in file order, collaboration-a/b split per test, each group placed
+// by its first test), so no split at these shard counts predicts a smaller
+// worst window.
 //
 // Step prediction: webkit runs one worker, so its step is its
 // worker-seconds plus about nine seconds of startup. chromium and firefox
 // run two workers, and their step is modeled as greedy in-order two-worker
-// scheduling over the shard's files. The model was checked against all 114
-// measured legs of those six windows (each under the vectors it ran): RMS
-// error 8.4 s, largest error 28 s, slightly conservative (actual steps come
-// in about 5 s under on average). The 512-preset boot conversions of eleven
-// more dialog-booting agent suites (six with the vector change, five since)
-// only lower the prediction further.
+// scheduling over the shard's files. The model was checked against all 95
+// measured legs of those five windows (each under the vectors it ran): RMS
+// error 20 s, largest error 70 s on the two oldest-window legs whose files
+// sat in different shards at that window's smaller suite, and roughly
+// unbiased (actual steps land about equally above and below).
 //
 // History, for why single-run splits are avoided: a first split measured
 // against a single run put webkit 8/10 and chromium 5/5 within seconds of
@@ -55,9 +56,9 @@ import { defineConfig } from 'playwright/test'
 // minimized) before
 // touching the vectors, and never hand one a shard that runs no tests.
 const shardWeights = {
-    chromium: [239, 237, 198, 239, 227],
-    firefox: [304, 253, 280, 303],
-    webkit: [102, 134, 136, 77, 100, 125, 108, 131, 118, 109],
+    chromium: [295, 210, 216, 225, 200],
+    firefox: [305, 256, 320, 265],
+    webkit: [117, 143, 146, 44, 104, 128, 108, 132, 114, 110],
 }
 
 function cliFlag(flag) {
