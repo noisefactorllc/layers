@@ -141,12 +141,20 @@ test('reused native video capture preserves original single-pixel detail and ref
             // 'seeked' can resolve before the seeked-to frame is presented, so a
             // drawImage right after it can still show the previous frame; on the
             // CI runner that once sampled frame one while expecting frame two.
-            // Wait for the presentation itself where the engine reports it.
+            // Wait for the presentation itself where the engine reports one;
+            // WebKit's GTK port has the callback but never fires it for a seek
+            // of a paused video under xvfb, so after seeked give the compositor
+            // a short grace window and proceed as before.
+            let presented = false
             if (typeof video.requestVideoFrameCallback === 'function') {
-                video.requestVideoFrameCallback(() => done())
-            } else {
-                video.addEventListener('seeked', done, { once: true })
+                video.requestVideoFrameCallback(() => { presented = true; done() })
             }
+            video.addEventListener('seeked', () => {
+                if (presented) return
+                if (typeof video.requestVideoFrameCallback === 'function') {
+                    setTimeout(done, 2000)
+                } else { done() }
+            }, { once: true })
             video.currentTime = time
         })
         if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error('Native fixture duration was not resolved')
