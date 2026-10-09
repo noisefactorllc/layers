@@ -8,25 +8,23 @@ import { defineConfig } from 'playwright/test'
 // files are split into -a/-b files at test boundaries (tests unchanged), so
 // shards can pack halves of the big files separately.
 //
-// The vectors below minimize the worst predicted test step over the eight
-// green main windows measured since the file inventory settled: 37386200744
-// (240a1e4), 37504087393 (1040d9c), 37519142150 (4f744ce), 37704722762
-// (be79536), 37853021413 (2b60038), 37872598989 (5092c00), 37883866720
-// (b1988c2) and 37887898419 (24386f5), using the per-file worker-seconds
-// from each window's report artifacts scaled to the current test counts;
-// the halves of the split files take their shares from the windows that ran
-// the split layout. The previous vectors carried firefox 1/4 at 325 tests
-// and predicted 1112 s for the b1988c2 window, which measured 1128 s
-// (firefox 1/4) and breached the 1080 s bar under ordinary runner
-// contention; the next vectors carried webkit 7/10 at 116 tests and
-// measured 1095 s (webkit 7/10 of run 37887898419) under a uniformly slow
-// window. These vectors come from an exact min-max dynamic program over
-// the exact shard boundary model of Playwright 1.63 (shards are contiguous
-// slices of the suite in file order, collaboration-a/b one group per test,
-// each group placed by its first test), so no split at these shard counts
-// predicts a smaller worst window: 981 s chromium, 1043 s firefox and
-// 1032 s webkit. The worst leg actually measured so far is 1128 s (firefox
-// 1/4 of run 37883866720, under the previous vectors).
+// The vectors below minimize the worst predicted test step over the four
+// green main windows measured since the file inventory settled and the
+// 512-preset boot trims landed: 37883866720 (b1988c2), 37887898419
+// (24386f5), 37890558307 (3912c72) and 37905322304 (4a8cf7f), using the
+// per-file worker-seconds from each window's report artifacts (all four ran
+// the current 157-file inventory, so no rescaling is applied); the halves of
+// the split files take their shares from those same windows. The previous
+// vectors carried firefox 3/4 at 323 tests and predicted 1190 s for the
+// 37905322304 window, which measured 1141 s (firefox 3/4) and breached the
+// 1080 s bar under ordinary runner contention. These vectors come from an
+// exact min-max dynamic program over the exact shard boundary model of
+// Playwright 1.63 (shards are contiguous slices of the suite in file order,
+// collaboration-a/b one group per test, each group placed by its first
+// test), checked by randomized local search, so no split at these shard
+// counts predicts a smaller worst window: 1043 s chromium, 1059 s firefox
+// and 950 s webkit. The worst leg actually measured so far is 1141 s
+// (firefox 3/4 of run 37905322304, under the previous vectors).
 //
 // Step prediction: webkit runs one worker, so its step is its
 // worker-seconds plus about nine seconds of startup. chromium and firefox
@@ -53,9 +51,9 @@ import { defineConfig } from 'playwright/test'
 // minimized) before
 // touching the vectors, and never hand one a shard that runs no tests.
 const shardWeights = {
-    chromium: [305, 200, 216, 225, 200],
-    firefox: [287, 271, 323, 265],
-    webkit: [121, 139, 127, 63, 104, 128, 108, 132, 118, 106],
+    chromium: [295, 225, 212, 227, 187],
+    firefox: [268, 310, 271, 297],
+    webkit: [103, 122, 110, 151, 92, 126, 101, 117, 114, 110],
 }
 
 function cliFlag(flag) {

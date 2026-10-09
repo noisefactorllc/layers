@@ -25,6 +25,7 @@ function setup(layers = [createEffectLayer('synth/gradient', 'Base')]) {
     let uploadGate = null
     let downloadGate = null
     let uploadError = null
+    let creationErrors = []
     const handlers = new Map(), assets = new Map(), writes = [], uploads = [], disposed = []
     const app = {
         _layers: layers, _canvas: { width: 128, height: 128 }, _replacementGeneration: 0,
@@ -57,6 +58,7 @@ function setup(layers = [createEffectLayer('synth/gradient', 'Base')]) {
         getSessionId: () => 'image1', getShareUrl: () => '', writeSessionToUrl: url => url,
         getNodes: () => nodes, getPendingNodeWrites: () => [],
         takeOnline: async seed => {
+            if (creationErrors.length) throw creationErrors.shift()
             for (const asset of seed.images || []) assets.set(asset.id, new Blob([
                 Buffer.from(asset.dataUrl.split(',')[1], 'base64')], { type: asset.mimeType }))
             nodes = seed.poly.nodes.map(node => ({ ...node, version: 1 })); status = 'online'
@@ -92,6 +94,7 @@ function setup(layers = [createEffectLayer('synth/gradient', 'Base')]) {
         holdUpload() { uploadGate = new Promise(resolve => { this.releaseUpload = resolve }) },
         holdDownload() { downloadGate = new Promise(resolve => { this.releaseDownload = resolve }) },
         failUpload(error) { uploadError = error },
+        failCreation(...errors) { creationErrors.push(...errors) },
     }
 }
 
@@ -377,5 +380,43 @@ test('restoring an image the server freed uploads its bytes again before referri
         h.adapter.schedulePublish()
         await waitFor(() => h.writes.length > writes)
         assert.equal(h.uploads.length, 2)
+    } finally { h.adapter.goOffline() }
+}))
+
+// WebKit intermittently sends the session-creation multipart POST with empty
+// part bodies (nothing in this client produces an empty part; the identical
+// request succeeds on a later attempt), so the server answers 400 and the SDK
+// surfaces "failed to create seance session (400)". The adapter retries that
+// one class of creation failure once.
+test('a rejected session creation is retried once and goes online', () => run(async () => {
+    const h = setup([createMediaLayer(file(), 'image')])
+    try {
+        h.failCreation(new Error('failed to create seance session (400)'))
+        assert.equal(await h.adapter.takeOnline(), 'image1')
+        assert.equal(h.adapter.isOnline(), true)
+        assert.ok(h.assets.size > 0)
+    } finally { h.adapter.goOffline() }
+}))
+
+test('a creation failure that survives its one retry still surfaces', () => run(async () => {
+    const h = setup([createMediaLayer(file(), 'image')])
+    try {
+        h.failCreation(new Error('failed to create seance session (400)'),
+            new Error('failed to create seance session (400)'))
+        await assert.rejects(h.adapter.takeOnline(), /failed to create seance session \(400\)/)
+        assert.equal(h.adapter.isOnline(), false)
+        // A later attempt with the same fault succeeds on its own retry.
+        h.failCreation(new Error('failed to create seance session (400)'))
+        assert.equal(await h.adapter.takeOnline(), 'image1')
+    } finally { h.adapter.goOffline() }
+}))
+
+test('a non-creation take-online failure is rethrown without a retry', () => run(async () => {
+    const h = setup([createMediaLayer(file(), 'image')])
+    try {
+        h.failCreation(new Error('session write access denied'))
+        await assert.rejects(h.adapter.takeOnline(), /session write access denied/)
+        assert.equal(h.adapter.isOnline(), false)
+        assert.equal(h.sdk.getStatus(), 'offline')
     } finally { h.adapter.goOffline() }
 }))
