@@ -1552,13 +1552,40 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                     throw new Error(`This composition cannot be shared: ${error.message.replace(/^Remote composition rejected: /, '')}`)
                 }
                 expectedSeedSnapshots.set(layer, nodes)
-                // Seed images and masks travel as their bytes beside the seed.
-                const images = [...new Map([...imageEntries, ...maskEntries]
-                    .map(entry => [entry.asset.id, entry.asset])).values()]
-                await takeOnlineWithCreationRetry(layer, { poly: { programText: '', nodes }, images })
+                // The seed bytes must exist under the ids the nodes reference
+                // before peers render, but they must not travel beside the
+                // seed: the SDK's multipart creation POST breaks on WebKit
+                // (empty part bodies). Create the session without image
+                // bytes, then upload each distinct asset through the same
+                // per-image upload the publish path uses, before the session
+                // is reported online. The server registers a connection in
+                // takeOnline, so the uploads are authorized, and an upload
+                // failure cleans up like a rejected creation.
+                await takeOnlineWithCreationRetry(layer, { poly: { programText: '', nodes } })
                 if (!isCurrentSessionTransitionIntent(transitionIntent)) {
                     abandonSessionTransition(layer)
                     return null
+                }
+                const seedUploads = new Map()
+                for (const entry of [...imageEntries, ...maskEntries]) {
+                    if (!seedUploads.has(entry.asset.id)) seedUploads.set(entry.asset.id, entry.file)
+                }
+                for (const [assetId, file] of seedUploads) {
+                    let uploadedId
+                    try {
+                        uploadedId = await layer.uploadImage(file)
+                    } catch (error) {
+                        if (!isCurrentSessionTransitionIntent(transitionIntent)) {
+                            abandonSessionTransition(layer)
+                            return null
+                        }
+                        throw error
+                    }
+                    if (!isCurrentSessionTransitionIntent(transitionIntent)) {
+                        abandonSessionTransition(layer)
+                        return null
+                    }
+                    if (uploadedId !== assetId) throw new Error('Uploaded image identity does not match its bytes')
                 }
                 committedSessionId = layer.getSessionId()
             } catch (err) {
@@ -1882,15 +1909,18 @@ export function createLayersOnlineAdapter(app, deps = {}) {
 // module-level helpers (no closure state)
 // ---------------------------------------------------------------------
 
-// The collaboration SDK creates a session with one multipart POST whenever
-// the seed carries images. WebKit intermittently sends that request with
-// empty part bodies — nothing in this client produces an empty seed or
-// image, and the identical request succeeds on a later attempt — so the
-// server answers 400 "invalid json" and take-online fails with
-// "failed to create seance session (400)". Retry the creation once before
-// surfacing the failure: a rejected creation leaves no session behind, so
-// the retry cannot orphan one, and a genuine payload rejection fails the
-// second attempt too and still surfaces.
+// The collaboration SDK creates a session with one POST. When the seed
+// carries image bytes the SDK sends them as multipart form parts, and
+// WebKit intermittently sends that request with empty part bodies —
+// nothing in this client produces an empty seed or image — so the server
+// answers 400 "invalid json" and take-online fails with "failed to create
+// seance session (400)". Take online without image bytes instead: the
+// plain JSON creation never touches FormData, and the seed bytes are
+// uploaded right after creation through the same per-image upload the
+// publish path uses, before the session is reported online. The creation
+// itself is still retried once on a rejection: a rejected creation leaves
+// no session behind, so the retry cannot orphan one, and a genuine
+// payload rejection fails the second attempt too and still surfaces.
 const SEANCE_CREATION_FAILURE = /^failed to create seance session \(\d+\)$/
 
 async function takeOnlineWithCreationRetry(layer, seed) {

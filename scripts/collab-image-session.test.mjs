@@ -27,6 +27,7 @@ function setup(layers = [createEffectLayer('synth/gradient', 'Base')]) {
     let uploadError = null
     let creationErrors = []
     const handlers = new Map(), assets = new Map(), writes = [], uploads = [], disposed = []
+    const creationSeeds = []
     const app = {
         _layers: layers, _canvas: { width: 128, height: 128 }, _replacementGeneration: 0,
         _renderer: {
@@ -58,6 +59,7 @@ function setup(layers = [createEffectLayer('synth/gradient', 'Base')]) {
         getSessionId: () => 'image1', getShareUrl: () => '', writeSessionToUrl: url => url,
         getNodes: () => nodes, getPendingNodeWrites: () => [],
         takeOnline: async seed => {
+            creationSeeds.push(seed)
             if (creationErrors.length) throw creationErrors.shift()
             for (const asset of seed.images || []) assets.set(asset.id, new Blob([
                 Buffer.from(asset.dataUrl.split(',')[1], 'base64')], { type: asset.mimeType }))
@@ -89,7 +91,7 @@ function setup(layers = [createEffectLayer('synth/gradient', 'Base')]) {
         importSdk: async () => ({ createOnlineDslLayer: () => sdk, prepareImage }),
     })
     app._onlineAdapter = adapter
-    return { app, adapter, sdk, assets, writes, uploads, disposed,
+    return { app, adapter, sdk, assets, writes, uploads, disposed, creationSeeds,
         peer(next) { nodes = next; handlers.get('remote-node')?.({}) },
         holdUpload() { uploadGate = new Promise(resolve => { this.releaseUpload = resolve }) },
         holdDownload() { downloadGate = new Promise(resolve => { this.releaseDownload = resolve }) },
@@ -109,12 +111,26 @@ test('taking an image online seeds original bytes outside the node doc', () => r
     const h = setup([createMediaLayer(original, 'image')])
     try {
         assert.equal(await h.adapter.takeOnline(), 'image1')
+        assert.equal(h.creationSeeds.length, 1)
+        assert.equal(h.creationSeeds[0].images, undefined)
         const layer = JSON.parse(h.sdk.getNodes().find(node => node.kind === 'layers-layer').text)
         assert.equal(layer.imageId, await hash(original))
         assert.equal(layer.imageWidth, 1)
         assert.deepEqual(new Uint8Array(await h.assets.get(layer.imageId).arrayBuffer()), new Uint8Array(await original.arrayBuffer()))
         assert.equal(h.app._layers[0].mediaFile, original)
         assert.ok(JSON.stringify(h.sdk.getNodes()).length < 1500)
+    } finally { h.adapter.goOffline() }
+}))
+
+test('a seed upload failure takes the session offline without leaving assets', () => run(async () => {
+    const original = file()
+    const h = setup([createMediaLayer(original, 'image')])
+    try {
+        h.failUpload(new Error('seed upload failed'))
+        await assert.rejects(h.adapter.takeOnline(), /seed upload failed/)
+        assert.equal(h.sdk.getStatus(), 'offline')
+        assert.equal(h.assets.size, 0)
+        assert.equal(h.uploads.length, 1)
     } finally { h.adapter.goOffline() }
 }))
 
@@ -145,7 +161,8 @@ test('replacing image bytes uploads a new reference even when old metadata was c
         h.app._layers[0].opacity = 52
         h.adapter.schedulePublish()
         await waitFor(() => h.writes.length > 1)
-        assert.equal(h.uploads.length, 1)
+        // One upload took the image online, the replacement is the second.
+        assert.equal(h.uploads.length, 2)
     } finally { h.adapter.goOffline() }
 }))
 
@@ -362,7 +379,8 @@ test('restoring an image the server freed uploads its bytes again before referri
         h.app._layers[0] = { ...restorable, mediaFile: replacement }
         h.adapter.schedulePublish()
         await waitFor(() => h.writes.length > 0)
-        assert.equal(h.uploads.length, 1)
+        // One seed upload took the image online; the replacement is the second.
+        assert.equal(h.uploads.length, 2)
 
         // Nothing refers to the original any more, so a full budget frees it.
         h.assets.delete(originalId)
@@ -370,8 +388,8 @@ test('restoring an image the server freed uploads its bytes again before referri
         h.adapter.schedulePublish()
         await waitFor(() => h.writes.some(node =>
             node.kind === 'layers-layer' && JSON.parse(node.text).imageId === originalId))
-        assert.equal(h.uploads.length, 2)
-        assert.equal(await hash(h.uploads[1]), originalId)
+        assert.equal(h.uploads.length, 3)
+        assert.equal(await hash(h.uploads[2]), originalId)
         assert.ok(h.assets.has(originalId))
 
         // An edit that keeps the reference the session already holds sends no bytes.
@@ -379,15 +397,17 @@ test('restoring an image the server freed uploads its bytes again before referri
         h.app._layers[0].opacity = 40
         h.adapter.schedulePublish()
         await waitFor(() => h.writes.length > writes)
-        assert.equal(h.uploads.length, 2)
+        assert.equal(h.uploads.length, 3)
     } finally { h.adapter.goOffline() }
 }))
 
 // WebKit intermittently sends the session-creation multipart POST with empty
 // part bodies (nothing in this client produces an empty part; the identical
 // request succeeds on a later attempt), so the server answers 400 and the SDK
-// surfaces "failed to create seance session (400)". The adapter retries that
-// one class of creation failure once.
+// surfaces "failed to create seance session (400)". Take online creates the
+// session without image bytes and uploads them after, so the creation POST is
+// plain JSON, but the adapter still retries that one class of creation failure
+// once.
 test('a rejected session creation is retried once and goes online', () => run(async () => {
     const h = setup([createMediaLayer(file(), 'image')])
     try {
