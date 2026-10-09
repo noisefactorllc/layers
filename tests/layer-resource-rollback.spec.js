@@ -2,6 +2,11 @@ import { test, expect } from './fixtures.js'
 import { readFileSync } from 'node:fs'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 const videoBase64 = readFileSync(new URL('./fixtures/native-video-detail.webm', import.meta.url)).toString('base64')
 
 async function bootSolid(page) {

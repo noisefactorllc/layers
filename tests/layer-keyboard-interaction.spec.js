@@ -11,6 +11,11 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 // Alt+ArrowUp/Down moves the layer in the stack through the same reorder FSM
 // the drag gesture uses. The pointer paths keep working untouched.
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 async function bootTwoLayerProject(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
