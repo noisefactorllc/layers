@@ -1,0 +1,540 @@
+import { test, expect } from './fixtures.js'
+import { appReady } from './waits.js'
+import { reopenNewProjectDialog } from './helpers/new-project.js'
+
+const EXPECTED_GROUPS = [
+    {
+        menuId: 'imageMenu',
+        submenuId: 'tone',
+        curatedId: 'tone',
+        label: 'tone',
+        effects: [
+            ['filter/adjust', 'brightness/contrast'],
+            ['filter/smoothstep', 'levels'],
+            ['filter/posterize', 'posterize'],
+            ['filter/threshold', 'threshold'],
+        ],
+    },
+    {
+        menuId: 'imageMenu',
+        submenuId: 'color',
+        curatedId: 'color',
+        label: 'color',
+        effects: [
+            ['filter/adjust', 'hue/saturation'],
+            ['filter/grade', 'color grading'],
+            ['filter/tint', 'tint'],
+            ['filter/colorReplace', 'color replace'],
+            ['filter/invert', 'invert'],
+            ['filter/tetraColorArray', 'gradient palette'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'blur',
+        curatedId: 'blur',
+        label: 'blur',
+        effects: [
+            ['filter/blur', 'blur'],
+            ['filter/directionalBlur', 'motion blur'],
+            ['filter/zoomBlur', 'zoom blur'],
+            ['filter/spinBlur', 'spin blur'],
+            ['filter/median', 'median'],
+            ['filter/vaseline', 'soft focus'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'sharpen',
+        curatedId: 'sharpen',
+        label: 'sharpen',
+        effects: [
+            ['filter/sharpen', 'sharpen'],
+            ['filter/unsharpMask', 'unsharp mask'],
+            ['filter/highPass', 'high pass'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'pixelate',
+        curatedId: 'pixelate',
+        label: 'pixelate',
+        effects: [
+            ['filter/pixels', 'pixelate'],
+            ['filter/halftone', 'halftone'],
+            ['filter/dither', 'dither'],
+            ['filter/lowPoly', 'low poly'],
+            ['filter/glyphMap', 'glyph map'],
+            ['filter/stipple', 'stipple'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'distort',
+        curatedId: 'distort',
+        label: 'distort',
+        effects: [
+            ['filter/warp', 'warp'],
+            ['filter/bulge', 'bulge'],
+            ['filter/pinch', 'pinch'],
+            ['filter/skew', 'skew'],
+            ['filter/waves', 'waves'],
+            ['filter/pondRipples', 'ripples'],
+            ['filter/spiral', 'twirl'],
+            ['filter/polar', 'polar coordinates'],
+            ['filter/tunnel', 'tunnel'],
+            ['filter/wormhole', 'wormhole'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'glitch',
+        curatedId: 'glitch',
+        label: 'glitch',
+        effects: [
+            ['classicNoisedeck/glitch', 'glitch', { glitchiness: 50, aberration: 30 }],
+            ['filter/corrupt', 'corrupt'],
+            ['filter/pixelSort', 'pixel sort'],
+            ['filter/scanlineError', 'scanline error'],
+            ['filter/crt', 'crt'],
+            ['filter/snow', 'tv snow'],
+            ['filter/degauss', 'degauss'],
+            ['filter/chromaticAberration', 'chromatic aberration'],
+            ['filter/convolutionFeedback', 'feedback'],
+            ['filter/reverb', 'echo trails'],
+            ['filter/feedback', 'video feedback', { mix: 50, scaleAmt: 97, rotation: 2 }],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'stylize',
+        curatedId: 'stylize',
+        label: 'stylize',
+        effects: [
+            ['filter/edge', 'edge detect'],
+            ['filter/glowingEdge', 'glowing edge'],
+            ['filter/emboss', 'emboss'],
+            ['filter/extrude', 'extrude'],
+            ['filter/celShading', 'cel shading'],
+            ['filter/oilPaint', 'oil paint'],
+            ['filter/wind', 'wind'],
+            ['filter/scatter', 'scatter'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'sketch',
+        curatedId: 'sketch',
+        label: 'sketch',
+        effects: [
+            ['filter/chrome', 'chrome'],
+            ['filter/photocopy', 'photocopy'],
+            ['filter/stamp', 'stamp'],
+            ['filter/relief', 'relief'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'brush-strokes',
+        curatedId: 'brushStrokes',
+        label: 'brush strokes',
+        effects: [
+            ['filter/hatch', 'hatch'],
+            ['filter/strokes', 'strokes'],
+            ['filter/spatter', 'spatter'],
+            ['filter/outline', 'outline'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'artistic',
+        curatedId: 'artistic',
+        label: 'artistic',
+        effects: [
+            ['filter/watercolor', 'watercolor'],
+            ['filter/plasticWrap', 'plastic wrap'],
+            ['filter/historicPalette', 'historic palette'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'texture',
+        curatedId: 'texture',
+        label: 'texture',
+        effects: [
+            ['filter/grain', 'grain'],
+            ['filter/craquelure', 'craquelure'],
+            ['filter/mosaicTiles', 'mosaic tiles'],
+            ['filter/patchwork', 'patchwork'],
+            ['filter/texture', 'texturizer'],
+            ['filter/grime', 'grime'],
+            ['filter/fibers', 'fibers'],
+            ['filter/scratches', 'scratches'],
+            ['filter/strayHair', 'stray hair'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'light-lens',
+        curatedId: 'lightLens',
+        label: 'light & lens',
+        effects: [
+            ['filter/bloom', 'bloom'],
+            ['filter/vignette', 'vignette'],
+            ['filter/lensFlare', 'lens flare'],
+            ['filter/lightLeak', 'light leak'],
+            ['filter/lighting', 'lighting'],
+            ['filter/lens', 'lens distortion', { displacement: 0.3 }],
+            ['filter/clouds', 'clouds'],
+        ],
+    },
+    {
+        menuId: 'filterMenu',
+        submenuId: 'tile',
+        curatedId: 'tile',
+        label: 'tile',
+        effects: [
+            ['filter/tile', 'kaleidoscope'],
+            ['filter/repeat', 'repeat'],
+            ['filter/seamless', 'seamless'],
+            ['filter/flipMirror', 'flip mirror'],
+        ],
+    },
+]
+
+// Menu geometry, input, and model checks retain real rendering on a small
+// document. Native image dimensions have dedicated full-resolution tests.
+async function bootBlank(page) {
+    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+    await reopenNewProjectDialog(page)
+    await page.click('.media-option[data-type="solid"]')
+    await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    await page.locator('#canvas-width').fill('128')
+    await page.locator('#canvas-height').fill('128')
+    await page.click('.canvas-size-dialog .action-btn.primary')
+    await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
+    await appReady(page)
+    // The confirm click leaves the pointer where the Filter panel's lower rows
+    // open on small viewports. WebKit reports a panel appearing under a still
+    // pointer as a hover, which opens that row's submenu mid keyboard walk.
+    // Menus drop from the top and submenus stop at the toolbar inset, so the
+    // bottom-left corner stays clear of both.
+    const { height } = page.viewportSize()
+    await page.mouse.move(2, height - 2)
+}
+
+test.describe('Filter menu', () => {
+    test('every menu data-effect resolves in the engine manifest', async ({ page }) => {
+        await bootBlank(page)
+        const res = await page.evaluate(() => {
+            const manifest = window.layersApp._renderer.manifest || {}
+            const ids = [...document.querySelectorAll('#imageMenu [data-effect], #filterMenu [data-effect]')]
+                .map(el => el.dataset.effect)
+            return { count: ids.length, missing: ids.filter(id => !(id in manifest)) }
+        })
+        expect(res.count).toBeGreaterThan(20)
+        expect(res.missing).toEqual([])
+    })
+
+    test('filter menu exposes the exact ordered taxonomy', async ({ page }) => {
+        await bootBlank(page)
+        const actual = await page.evaluate(() => {
+            const menu = document.getElementById('filterMenu')
+            return [...menu.querySelectorAll('.hf-menubar-panel .hf-menubar-has-submenu')].map(trigger => {
+                const submenuId = trigger.dataset.submenu
+                const submenu = document.getElementById(trigger.getAttribute('aria-controls'))
+                return {
+                    submenuId,
+                    effectIds: [...submenu.querySelectorAll('[data-effect]')]
+                        .map(item => item.dataset.effect),
+                }
+            })
+        })
+
+        expect(actual).toEqual(EXPECTED_GROUPS.slice(2).map(group => ({
+            submenuId: group.submenuId,
+            effectIds: group.effects.map(([effectId]) => effectId),
+        })))
+    })
+
+    test('keeps the complete menu bar inside a narrow viewport', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+
+        const controls = await page.locator(
+            '#menu .hf-menubar-trigger, #playPauseBtn').evaluateAll(elements =>
+            elements.map(element => {
+                const rect = element.getBoundingClientRect()
+                return {
+                    label: element.textContent.trim() || element.getAttribute('title'),
+                    left: rect.left,
+                    right: rect.right,
+                    top: rect.top,
+                    bottom: rect.bottom,
+                }
+            }))
+
+        for (const control of controls) {
+            expect(control.left, `${control.label} left edge`).toBeGreaterThanOrEqual(0)
+            expect(control.right, `${control.label} right edge`).toBeLessThanOrEqual(390)
+            expect(control.top, `${control.label} top edge`).toBeGreaterThanOrEqual(0)
+            expect(control.bottom, `${control.label} bottom edge`).toBeLessThanOrEqual(320)
+        }
+    })
+
+    for (const width of [390, 320]) {
+        test(`keeps top-menu hit targets and toolbar controls usable at ${width}x320`, async ({ page }) => {
+            await page.setViewportSize({ width, height: 320 })
+            // Preserve the real viewport geometry without a full-size GPU
+            // document whose displayed canvas is only a few CSS pixels.
+            await bootBlank(page)
+
+            const blockedControls = await page.locator(
+                '#menu .hf-menubar-trigger, #playPauseBtn').evaluateAll(elements =>
+                elements.flatMap(element => {
+                    const rect = element.getBoundingClientRect()
+                    const hit = document.elementFromPoint(
+                        rect.left + rect.width / 2, rect.top + rect.height / 2)
+                    return element.contains(hit)
+                        ? []
+                        : [element.textContent.trim() || element.getAttribute('title') || 'logo']
+                }))
+            expect(blockedControls).toEqual([])
+
+            const fileTitle = page.locator('#menu .hf-menubar-trigger', { hasText: 'file' })
+            await fileTitle.click()
+            await expect(page.locator('#newMenuItem')).toBeVisible()
+            // The open dropdown stacks above the toolbar, so close it before
+            // probing the toolbar's own hit targets.
+            await page.keyboard.press('Escape')
+            await expect(page.locator('#newMenuItem')).toBeHidden()
+
+            const toolbar = page.locator('#toolbar')
+            const toolbarRect = await toolbar.boundingBox()
+            const titlebarBottom = await page.locator('#menu').evaluate(element =>
+                element.getBoundingClientRect().bottom)
+            expect(toolbarRect.y).toBeGreaterThanOrEqual(titlebarBottom)
+            expect(toolbarRect.y + toolbarRect.height).toBeLessThanOrEqual(320)
+
+            const toolbarControls = toolbar.locator('.menu-icon-btn, .tool-caret, #colorWell')
+            for (let index = 0; index < await toolbarControls.count(); index += 1) {
+                const control = toolbarControls.nth(index)
+                await control.scrollIntoViewIfNeeded()
+                const reachable = await control.evaluate(element => {
+                    const rect = element.getBoundingClientRect()
+                    const hit = document.elementFromPoint(
+                        rect.left + rect.width / 2, rect.top + rect.height / 2)
+                    const toolbarRect = element.closest('#toolbar').getBoundingClientRect()
+                    return rect.top >= toolbarRect.top
+                        && rect.bottom <= toolbarRect.bottom + 1
+                        && element.contains(hit)
+                })
+                const label = await control.getAttribute('id') || await control.textContent()
+                expect(reachable, label.trim()).toBe(true)
+            }
+
+            await page.locator('.toast-visible').waitFor({ state: 'hidden' })
+
+            const chooseFlyoutOption = async (menuId, optionSelector) => {
+                const menu = page.locator(`#${menuId}`)
+                const caret = menu.locator(':scope > .tool-caret')
+                await caret.scrollIntoViewIfNeeded()
+                await caret.click()
+
+                const flyout = menu.locator(':scope > .menu-items')
+                await expect(flyout).toBeVisible()
+                const flyoutRect = await flyout.boundingBox()
+                expect(flyoutRect.x).toBeGreaterThanOrEqual(toolbarRect.x + toolbarRect.width)
+                expect(flyoutRect.x + flyoutRect.width).toBeLessThanOrEqual(width)
+                expect(flyoutRect.y).toBeGreaterThanOrEqual(8)
+                expect(flyoutRect.y + flyoutRect.height).toBeLessThanOrEqual(312)
+
+                const option = flyout.locator(optionSelector)
+                const optionHit = await option.evaluate(element => {
+                    const rect = element.getBoundingClientRect()
+                    const hit = document.elementFromPoint(
+                        rect.left + rect.width / 2, rect.top + rect.height / 2)
+                    return element.contains(hit)
+                })
+                expect(optionHit).toBe(true)
+                await option.click()
+                await expect(option).toHaveClass(/checked/)
+            }
+
+            await chooseFlyoutOption('selectionMenu', '[data-shape="oval"]')
+            await expect(page.locator('#selectionToolIcon ellipse')).toHaveCount(1)
+
+            await chooseFlyoutOption(
+                'shapeMenu', '[data-shape="ellipse"][data-filled="true"]')
+            await expect(page.locator('#shapeToolBtn .icon-material')).toHaveText('lens')
+            await expect.poll(() => page.evaluate(() => ({
+                shapeType: window.layersApp._shapeTool.shapeType,
+                filled: window.layersApp._shapeTool.filled,
+            }))).toEqual({ shapeType: 'ellipse', filled: true })
+        })
+    }
+
+    test('repositions an open toolbar flyout when the viewport shrinks', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+        await page.locator('.toast-visible').waitFor({ state: 'hidden' })
+
+        const shapeMenu = page.locator('#shapeMenu')
+        const caret = shapeMenu.locator(':scope > .tool-caret')
+        await caret.scrollIntoViewIfNeeded()
+        await caret.click()
+        const flyout = shapeMenu.locator(':scope > .menu-items')
+        await expect(flyout).toBeVisible()
+
+        await page.setViewportSize({ width: 390, height: 240 })
+        await expect.poll(async () => {
+            const rect = await flyout.boundingBox()
+            return rect.y >= 8 && rect.y + rect.height <= 232
+        }).toBe(true)
+        const flyoutRect = await flyout.boundingBox()
+        expect(flyoutRect.y).toBeGreaterThanOrEqual(8)
+        expect(flyoutRect.y + flyoutRect.height).toBeLessThanOrEqual(232)
+
+        const filledOval = flyout.locator('[data-shape="ellipse"][data-filled="true"]')
+        await expect.poll(() => filledOval.evaluate(element => {
+            const rect = element.getBoundingClientRect()
+            const hit = document.elementFromPoint(
+                rect.left + rect.width / 2, rect.top + rect.height / 2)
+            return element.contains(hit)
+        })).toBe(true)
+        await filledOval.click()
+        await expect(filledOval).toHaveClass(/checked/)
+        await expect.poll(() => page.evaluate(() => ({
+            shapeType: window.layersApp._shapeTool.shapeType,
+            filled: window.layersApp._shapeTool.filled,
+        }))).toEqual({ shapeType: 'ellipse', filled: true })
+    })
+
+    test('reclamps an open Filter dropdown when the viewport narrows', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+
+        await page.getByRole('menuitem', { name: 'filter', exact: true }).click()
+        const dropdown = page.locator('#filterMenu .hf-menubar-panel')
+        await expect(dropdown).toBeVisible()
+
+        await page.setViewportSize({ width: 320, height: 320 })
+        await expect.poll(async () => {
+            const rect = await dropdown.boundingBox()
+            return rect.x >= 0 && rect.x + rect.width <= 320
+        }, { timeout: 20000 }).toBe(true)
+        await expect(page.getByRole('menuitem', { name: 'filter', exact: true }))
+            .toHaveAttribute('aria-expanded', 'true')
+    })
+
+    test('repositions an open Filter submenu when the viewport shortens', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+        await page.locator('.toast-visible').waitFor({ state: 'hidden' })
+
+        const title = page.getByRole('menuitem', { name: 'filter', exact: true })
+        await title.focus()
+        // The first key opens the panel and the rest walk it, so wait for the
+        // panel in between. A press delivered while it is still opening is
+        // dropped, and the walk then ends one row short, which surfaces later
+        // as a missing element rather than as the lost keystroke it was.
+        await page.keyboard.press('ArrowDown')
+        await expect(page.locator('#filterMenu .hf-menubar-panel')).toBeVisible()
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowDown')
+        await page.keyboard.press('ArrowDown')
+        const distort = page.locator('#filterMenu [data-submenu="distort"]')
+        await expect(distort).toBeFocused()
+        await page.keyboard.press('ArrowRight')
+
+        const submenu = page.locator('#filterMenu .hf-menubar-subpanel', {
+            has: page.locator('[data-effect="filter/warp"]'),
+        })
+        const wormhole = submenu.getByRole('menuitem', { name: 'wormhole', exact: true })
+        await expect(submenu).toBeVisible()
+        await page.keyboard.press('ArrowUp')
+        await expect(wormhole).toBeFocused()
+        await expect(distort).toHaveAttribute('aria-expanded', 'true')
+
+        await page.setViewportSize({ width: 390, height: 240 })
+        await expect.poll(async () => {
+            const rect = await submenu.boundingBox()
+            return Boolean(rect && rect.y >= 8 && rect.y + rect.height <= 232)
+        }, { timeout: 20000 }).toBe(true)
+        await expect(distort).toHaveAttribute('aria-expanded', 'true')
+        await expect(wormhole).toBeFocused()
+
+        const optionHit = await wormhole.evaluate(element => {
+            const rect = element.getBoundingClientRect()
+            const hit = document.elementFromPoint(
+                rect.left + rect.width / 2, rect.top + rect.height / 2)
+            return element.contains(hit)
+        })
+        expect(optionHit).toBe(true)
+        const before = await page.evaluate(() => window.layersApp._layers.length)
+        await wormhole.click()
+        await expect.poll(() => page.evaluate(() => ({
+            count: window.layersApp._layers.length,
+            effectId: window.layersApp._layers.at(-1)?.effectId,
+        }))).toEqual({ count: before + 1, effectId: 'filter/wormhole' })
+    })
+
+    test('clamps the filter dropdown and keeps every submenu effect reachable', async ({ page }) => {
+        // Sweeps all 12 submenus (hover + geometry each); parallel-worker
+        // contention can push it past the default 30s budget.
+        test.slow()
+        await page.setViewportSize({ width: 390, height: 320 })
+        await bootBlank(page)
+
+        await page.locator('#filterMenu .hf-menubar-trigger').click()
+        const dropdown = page.locator('#filterMenu .hf-menubar-panel')
+        await expect(dropdown).toBeVisible()
+        const dropdownRect = await dropdown.boundingBox()
+        expect(dropdownRect.x).toBeGreaterThanOrEqual(0)
+        expect(dropdownRect.x + dropdownRect.width).toBeLessThanOrEqual(390)
+        const toolbarRight = await page.locator('#toolbar').evaluate(element =>
+            element.getBoundingClientRect().right)
+
+        for (const group of EXPECTED_GROUPS.slice(2)) {
+            await page.locator(`#filterMenu [data-submenu="${group.submenuId}"]`).hover()
+            const submenu = page.locator('#filterMenu .hf-menubar-subpanel', {
+                has: page.locator(`[data-effect="${group.effects[0][0]}"]`),
+            })
+            await expect(submenu).toBeVisible()
+            const geometry = await submenu.evaluate((element, effectIds) => {
+                const submenuRect = element.getBoundingClientRect()
+                const effects = effectIds.map(effectId => {
+                    const effect = element.querySelector(`[data-effect="${effectId}"]`)
+                    effect.scrollIntoView({ block: 'nearest' })
+                    const rect = effect.getBoundingClientRect()
+                    return { effectId, top: rect.top, bottom: rect.bottom }
+                })
+                return {
+                    submenu: {
+                        left: submenuRect.left,
+                        right: submenuRect.right,
+                        top: submenuRect.top,
+                        bottom: submenuRect.bottom,
+                    },
+                    effects,
+                }
+            }, group.effects.map(([effectId]) => effectId))
+
+            expect(geometry.submenu.left, `${group.label} left edge`)
+                .toBeGreaterThanOrEqual(toolbarRight)
+            expect(geometry.submenu.right, `${group.label} right edge`).toBeLessThanOrEqual(390)
+            expect(geometry.submenu.top, `${group.label} top edge`).toBeGreaterThanOrEqual(0)
+            expect(geometry.submenu.bottom, `${group.label} bottom edge`).toBeLessThanOrEqual(320)
+
+            for (const effect of geometry.effects) {
+                const label = group.effects.find(([effectId]) => effectId === effect.effectId)[1]
+                // Fractional layout arithmetic can differ by a few millionths
+                // of a CSS pixel. One layout unit still rejects a clipped pixel.
+                const layoutUnit = 1 / 64
+                expect(effect.top, `${label} top edge`).toBeGreaterThanOrEqual(geometry.submenu.top - layoutUnit)
+                expect(effect.bottom, `${label} bottom edge`).toBeLessThanOrEqual(geometry.submenu.bottom + layoutUnit)
+            }
+        }
+    })
+})
