@@ -1555,7 +1555,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 // Seed images and masks travel as their bytes beside the seed.
                 const images = [...new Map([...imageEntries, ...maskEntries]
                     .map(entry => [entry.asset.id, entry.asset])).values()]
-                await layer.takeOnline({ poly: { programText: '', nodes }, images })
+                await takeOnlineWithCreationRetry(layer, { poly: { programText: '', nodes }, images })
                 if (!isCurrentSessionTransitionIntent(transitionIntent)) {
                     abandonSessionTransition(layer)
                     return null
@@ -1881,6 +1881,26 @@ export function createLayersOnlineAdapter(app, deps = {}) {
 // ---------------------------------------------------------------------
 // module-level helpers (no closure state)
 // ---------------------------------------------------------------------
+
+// The collaboration SDK creates a session with one multipart POST whenever
+// the seed carries images. WebKit intermittently sends that request with
+// empty part bodies — nothing in this client produces an empty seed or
+// image, and the identical request succeeds on a later attempt — so the
+// server answers 400 "invalid json" and take-online fails with
+// "failed to create seance session (400)". Retry the creation once before
+// surfacing the failure: a rejected creation leaves no session behind, so
+// the retry cannot orphan one, and a genuine payload rejection fails the
+// second attempt too and still surfaces.
+const SEANCE_CREATION_FAILURE = /^failed to create seance session \(\d+\)$/
+
+async function takeOnlineWithCreationRetry(layer, seed) {
+    try {
+        await layer.takeOnline(seed)
+    } catch (err) {
+        if (!SEANCE_CREATION_FAILURE.test(String(err?.message || ''))) throw err
+        await layer.takeOnline(seed)
+    }
+}
 
 function urlFrom(locationLike) {
     if (typeof locationLike === 'string') return new URL(locationLike, 'http://localhost/')
