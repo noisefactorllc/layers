@@ -9,6 +9,11 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 //  2. an emptied subtract nulled _selectionPath but still started the
 //     marching-ants rAF loop, leaving a permanent 60fps no-op.
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 async function bootSolid(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })

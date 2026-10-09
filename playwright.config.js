@@ -21,10 +21,17 @@ import { defineConfig } from 'playwright/test'
 // over the exact shard boundary model of Playwright 1.63 (shards are
 // contiguous slices of the suite in group order, each group placed by its
 // first test), checked by randomized local search, so no split at these
-// shard counts predicts a smaller worst window: 1001 s chromium, 1067 s
-// firefox and 1004 s webkit. The previous vectors predicted
-// 1007/1059/995 s over the first five windows and measured firefox 4/4 at
-// 1095 s in run 37943363028, above the 1080 s bar with every leg green.
+// shard counts predicts a smaller worst window: 989 s chromium, 1092 s
+// firefox and 1002 s webkit over the seven-window envelope. The firefox
+// floor is set by the suite's unsplittable single cases (the two
+// collaboration-images imports at up to 94 worker-seconds apiece and the
+// filter sweep at 72 s) plus the granularity loss that remains even with
+// every parallel-mode file at per-case grain - a 1084 s floor with all
+// tests at per-case grain - so a firefox leg at or over the 1080 s bar in
+// a slow window is now a property of the four-shard layout, and the shard
+// count is the lever that remains. The previous vectors predicted
+// 1001/1067/1004 s and their run measured firefox 2/4 at 1201 s, killed at
+// the globalTimeout with no failing test.
 //
 // Step prediction: webkit runs one worker, so its step is its
 // worker-seconds plus about nine seconds of startup. chromium and firefox
@@ -56,9 +63,9 @@ import { defineConfig } from 'playwright/test'
 // minimized) before
 // touching the vectors, and never hand one a shard that runs no tests.
 const shardWeights = {
-    chromium: [295, 182, 205, 222, 242],
-    firefox: [303, 255, 291, 297],
-    webkit: [108, 129, 138, 55, 111, 127, 103, 136, 122, 117],
+    chromium: [297, 186, 199, 222, 242],
+    firefox: [314, 221, 301, 310],
+    webkit: [114, 129, 135, 55, 110, 126, 103, 135, 121, 118],
 }
 
 function cliFlag(flag) {

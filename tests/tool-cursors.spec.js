@@ -4,6 +4,11 @@ import { appReady } from './waits.js'
 // Cursor fidelity per active tool: the #selectionOverlay carries the active
 // tool class and the cursor a painter sees over the canvas. Load-only — the
 // default boot project is enough, no explicit project setup.
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 test.describe('Per-tool canvas cursor', () => {
     test.beforeEach(async ({ page }) => {
         await page.goto('/', { waitUntil: 'networkidle' })

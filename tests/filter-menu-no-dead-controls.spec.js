@@ -22,6 +22,11 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 //  - t=0.37 rather than 0 because some time-seeded overlays are degenerate
 //    at exactly t=0
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 const FROZEN_TIME = 0.37
 
 test('every filter menu entry visibly changes the render', async ({ page }) => {

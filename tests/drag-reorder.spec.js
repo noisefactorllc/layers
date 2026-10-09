@@ -2,6 +2,11 @@ import { test, expect } from './fixtures.js'
 import { appReady, appState } from './waits.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 async function createTransparentProject(page) {
     await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="transparent"]')

@@ -6,6 +6,11 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 // it added a correction layer, "No correction needed" when the image already
 // measures flat. The assertions below accept either outcome, so this is the one
 // signal that covers both, and it is emitted after the layer commit lands.
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 function autoCorrectionReported(page) {
     return page.locator('#toast-container .toast-message')
         .filter({ hasText: /Applied:|No correction needed/ })

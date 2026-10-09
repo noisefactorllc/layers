@@ -1,5 +1,10 @@
 import { test, expect } from './fixtures.js'
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 test('media cleanup cannot delete a project committed after the reference scan', async ({ page }) => {
     await page.goto('/js/utils/project-storage.js')
     const result = await page.evaluate(async () => {

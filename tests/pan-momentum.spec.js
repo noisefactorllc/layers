@@ -2,6 +2,11 @@ import { test, expect } from './fixtures.js'
 import { defaultProjectReady } from './waits.js'
 import { pausePlayback } from './helpers/new-project.js'
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 /**
  * Momentum (inertia) pan glide. A fast pan drag that ends with pointer
  * velocity hands off to an exponentially decaying scroll glide; any new

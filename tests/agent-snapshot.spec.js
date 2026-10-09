@@ -2,6 +2,11 @@ import { test, expect } from './fixtures.js'
 import { appState, layerCount } from './waits.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 async function bootApp(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })

@@ -14,6 +14,11 @@ import { PNG } from 'pngjs'
 // the same depth with text overlays, a layer mask and a child effect renders
 // without an error toast; the emitted DSL never references a surface above o7.
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 const MAX_SURFACE = 7
 
 // Collect every o<N> surface reference from the DSL text.

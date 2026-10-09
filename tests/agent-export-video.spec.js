@@ -1,6 +1,11 @@
 import { test, expect } from './fixtures.js'
 import { IN_PAGE_UNTIL, quietWindow } from './waits.js'
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 test.describe('agent: exportVideo', () => {
     test.beforeEach(async ({ page }) => {
         await page.goto('/')

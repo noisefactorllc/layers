@@ -12,6 +12,11 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 //     textures (unlike undo's _restoreState), so drawings/masks went blank
 //     after a load on a fresh renderer.
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 async function waitReady(page) {
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
