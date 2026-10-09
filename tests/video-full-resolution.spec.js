@@ -136,22 +136,7 @@ test('reused native video capture preserves original single-pixel detail and ref
         const video = media.videoElement; video.pause()
         const seek = time => new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('Native fixture seek timed out')), 10000)
-            const done = () => { clearTimeout(timer); resolve() }
-            if (Math.abs(video.currentTime - time) < 0.000001 && !video.seeking) { done(); return }
-            // 'seeked' can precede presentation of the seeked-to frame, and a
-            // drawImage right after it can still show the previous frame; on
-            // the CI runner that once sampled frame one while expecting frame
-            // two. Once the seek completes, wait for the presentation callback
-            // registered here, so any callback it fires is for a frame
-            // presented after seeked. WebKit's GTK port never fires the
-            // callback for a seek of a paused video under xvfb, so proceed
-            // after a short grace window as before.
-            video.addEventListener('seeked', () => {
-                if (typeof video.requestVideoFrameCallback !== 'function') { done(); return }
-                let presented = false
-                video.requestVideoFrameCallback(() => { presented = true; done() })
-                setTimeout(() => { if (!presented) done() }, 2000)
-            }, { once: true })
+            video.addEventListener('seeked', () => { clearTimeout(timer); resolve() }, { once: true })
             video.currentTime = time
         })
         if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error('Native fixture duration was not resolved')
@@ -162,10 +147,28 @@ test('reused native video capture preserves original single-pixel detail and ref
         const session = await app._renderer.createFullResolutionCapture()
         const samples = []
         try {
+            // A drawImage right after seeked can still show the previous
+            // frame: the seeked event precedes presentation, and the CI
+            // chromium runner once drew frame one while expecting frame two.
+            // Draw the reference from a frame that matches the fixture
+            // geometry (the dark line at x=900 in frame one, x=901 in frame
+            // two), redrawing briefly until that frame is presented; the
+            // drawn row is then used as the reference unchanged.
+            const darkAt = (row, i) => row[i] < 50 && row[i + 1] < 50 && row[i + 2] < 50
+            const brightAt = (row, i) => row[i] > 200 && row[i + 1] > 200 && row[i + 2] > 200
             for (const time of [0.2, 0.9]) {
                 await seek(time)
-                ctx.clearRect(0, 0, 1800, 1200); ctx.drawImage(video, 0, 0)
-                const expected = [...ctx.getImageData(899, 600, 4, 1).data]
+                const darkIndex = time < 0.55 ? 4 : 8
+                let expected = null
+                for (let attempt = 0; attempt < 50 && !expected; attempt++) {
+                    ctx.clearRect(0, 0, 1800, 1200); ctx.drawImage(video, 0, 0)
+                    const row = [...ctx.getImageData(899, 600, 4, 1).data]
+                    if (darkIndex === 4
+                        ? darkAt(row, 4) && brightAt(row, 0) && brightAt(row, 8)
+                        : darkAt(row, 8) && brightAt(row, 0) && brightAt(row, 4)) expected = row
+                    else await new Promise(resolve => setTimeout(resolve, 100))
+                }
+                if (!expected) throw new Error('Native fixture reference frame was not presented after seek')
                 const output = await session.render(time / video.duration)
                 samples.push({ expected, actual: [...output.getContext('2d').getImageData(899, 600, 4, 1).data] })
             }
