@@ -135,9 +135,18 @@ test('reused native video capture preserves original single-pixel detail and ref
         const media = app._renderer.getMediaInfo(app._layers[0].id)
         const video = media.videoElement; video.pause()
         const seek = time => new Promise((resolve, reject) => {
-            if (Math.abs(video.currentTime - time) < 0.000001 && !video.seeking) { resolve(); return }
             const timer = setTimeout(() => reject(new Error('Native fixture seek timed out')), 10000)
-            video.addEventListener('seeked', () => { clearTimeout(timer); resolve() }, { once: true })
+            const done = () => { clearTimeout(timer); resolve() }
+            if (Math.abs(video.currentTime - time) < 0.000001 && !video.seeking) { done(); return }
+            // 'seeked' can resolve before the seeked-to frame is presented, so a
+            // drawImage right after it can still show the previous frame; on the
+            // CI runner that once sampled frame one while expecting frame two.
+            // Wait for the presentation itself where the engine reports it.
+            if (typeof video.requestVideoFrameCallback === 'function') {
+                video.requestVideoFrameCallback(() => done())
+            } else {
+                video.addEventListener('seeked', done, { once: true })
+            }
             video.currentTime = time
         })
         if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error('Native fixture duration was not resolved')
