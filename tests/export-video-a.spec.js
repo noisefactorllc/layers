@@ -2,6 +2,11 @@ import { test, expect } from './fixtures.js'
 import { appReady } from './waits.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 async function beginTinyZipExport(page) {
     await page.fill('#exportWidth', '64')
     await page.fill('#exportHeight', '64')

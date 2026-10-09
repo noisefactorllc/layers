@@ -5,6 +5,11 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 

@@ -6,6 +6,11 @@ import { test, expect } from './fixtures.js'
 // standalone via dynamic import, matching the repo's existing convention
 // for unit-testing plain modules (e.g. tests/canvas-readback.spec.js).
 
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 test('build -> apply round-trips a representative composition', async ({ page }) => {
     await page.goto('/')
     const result = await page.evaluate(async () => {

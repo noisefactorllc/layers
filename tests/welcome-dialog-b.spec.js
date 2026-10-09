@@ -5,6 +5,11 @@ import { pausePlayback } from './helpers/new-project.js'
 import path from 'node:path'
 
 // Boot's default canvas is clean, so tile clicks skip the discard guard; guard tests below use a real dirty project.
+// Parallel mode makes each case its own sharding unit: every case here boots
+// its own app and shares no state with its siblings, so shards can split this
+// file instead of pinning all of it to one runner.
+test.describe.configure({ mode: 'parallel' })
+
 async function boot(page) {
     await page.goto('/', { waitUntil: 'networkidle' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
