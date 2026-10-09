@@ -17,7 +17,14 @@ async function createProjectFromWelcome(page, type = 'solid', size) {
     await page.locator('.welcome-tile[data-action="new"]').click()
     await page.locator('.open-dialog-backdrop.visible').waitFor()
     await page.locator(`.media-option[data-type="${type}"]`).click()
-    if (size) {
+    // 512 preset: quarters the composited frame cost on software-rendered CI
+    // shards (same capacity trim as the other dialog-booting suites). Used only
+    // when the test gives no explicit size: nothing below asserts a canvas
+    // dimension, and the two asserted widths (333 and 40) come from tests that
+    // type or derive their own sizes.
+    if (!size) {
+        await page.locator('.size-preset[data-width="512"]').click()
+    } else {
         await page.locator('#canvas-width').fill(String(size))
         await page.locator('#canvas-height').fill(String(size))
     }

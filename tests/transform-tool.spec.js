@@ -6,6 +6,12 @@ async function createTransparentProject(page) {
     await reopenNewProjectDialog(page)
     await page.click('.media-option[data-type="transparent"]')
     await page.waitForSelector('.canvas-size-dialog', { timeout: 5000 })
+    // 512 preset: quarters the composited frame cost on software-rendered CI
+    // shards (same capacity trim as the other dialog-booting suites). The drag
+    // tests convert between overlay and canvas pixels via the live rect ratio,
+    // so every assertion stays dimension-relative, and the one explicit 1024
+    // below is a media layer's own bitmap size, not the project canvas.
+    await page.click('.size-preset[data-width="512"]')
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
     await appReady(page)
@@ -127,8 +133,13 @@ test.describe('Transform tool', () => {
             }
             app._setToolMode('transform')
             const before = state()
-            fireMouse('mousedown', 512, 512)
-            fireMouse('mousemove', 562, 537)
+            // Canvas-center drag start: fireMouse maps canvas to client pixels
+            // via the overlay's live rect, so these stay valid at any canvas
+            // size (the 512-boot shard trim included).
+            fireMouse('mousedown',
+                app._selectionOverlay.width / 2, app._selectionOverlay.height / 2)
+            fireMouse('mousemove',
+                app._selectionOverlay.width / 2 + 50, app._selectionOverlay.height / 2 + 25)
             const during = state()
             document.dispatchEvent(new KeyboardEvent('keydown', {
                 key: 'Escape', bubbles: true,
