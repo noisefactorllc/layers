@@ -8,42 +8,50 @@ import { defineConfig } from 'playwright/test'
 // files are split into -a/-b files at test boundaries (tests unchanged), so
 // shards can pack halves of the big files separately.
 //
-// The vectors below minimize the worst predicted test step over the six
-// green main windows measured since the file inventory settled: 37883866720
-// (b1988c2), 37887898419 (24386f5), 37890558307 (3912c72), 37905322304
-// (4a8cf7f), 37912810115 (b3cdab8) and 37943363028 (20f24d5), using the
-// per-file worker-seconds from each window's report artifacts. The first
-// three windows ran the heavier pre-trim boot of the 512-preset files, so
-// keeping their shares as measured is conservative. 41 heavy spec files
-// declare parallel mode (their cases boot their own app
-// and share no state, like collaboration-a/b), so each of their cases is its
-// own shard group. These vectors come from an exact min-max dynamic program
-// over the exact shard boundary model of Playwright 1.63 (shards are
-// contiguous slices of the suite in group order, each group placed by its
-// first test), checked by randomized local search, so no split at these
-// shard counts predicts a smaller worst window: 989 s chromium, 1092 s
-// firefox and 1002 s webkit over the seven-window envelope. The firefox
-// floor is set by the suite's unsplittable single cases (the two
-// collaboration-images imports at up to 94 worker-seconds apiece and the
-// filter sweep at 72 s) plus the granularity loss that remains even with
-// every parallel-mode file at per-case grain - a 1084 s floor with all
-// tests at per-case grain - so a firefox leg at or over the 1080 s bar in
-// a slow window is now a property of the four-shard layout, and the shard
-// count is the lever that remains. The previous vectors predicted
-// 1001/1067/1004 s and their run measured firefox 2/4 at 1201 s, killed at
-// the globalTimeout with no failing test.
+// The vectors below minimize the worst predicted test step over the measured
+// main windows since the file inventory settled: 37883866720 (b1988c2),
+// 37887898419 (24386f5), 37890558307 (3912c72), 37905322304 (4a8cf7f),
+// 37912810115 (b3cdab8) and 37943363028 (20f24d5) plus 37996597100
+// (0e70aa9) - seven windows for chromium and firefox, six for webkit
+// (b3cdab8's webkit 8/10 leg was killed by the globalTimeout before its
+// report was written, so that window has no webkit data) - using the per-test
+// worker-seconds from each window's report artifacts. The first three windows
+// ran the heavier pre-trim boot of the 512-preset files, and all six
+// pre-0e70aa9 windows ran the heavier pre-take-online image-session path, so
+// keeping their shares as measured is conservative. 85 of the suite's 157
+// spec files declare parallel mode (their cases boot their own app and share
+// no state, like collaboration-a/b), so each of their cases is its own shard
+// group and the suite is 998 groups over 1146 tests per engine. These
+// vectors come from an exact min-max search over the exact shard boundary
+// model of Playwright 1.63 (shards are contiguous slices of the suite in
+// group order, each group placed by its first test), so no split at these
+// shard counts predicts a smaller worst window: 967 s chromium, 1040 s
+// firefox and 994 s webkit over this envelope, where the previous vectors
+// predicted 1046/1077/1009 s. The firefox floor is set by the suite's
+// unsplittable single cases (the two collaboration-images imports at up to
+// 77 worker-seconds apiece and the filter sweep at 72 s) plus the granularity
+// loss that remains even with every parallel-mode file at per-case grain -
+// a 1040 s floor at the current envelope - so a firefox leg near the 1080 s
+// bar in a slow window is a property of the four-shard layout, and the shard
+// count is the lever that remains. For scale: the vectors published before
+// the six-window re-derivation predicted 1001/1067/1004 s and their run
+// measured firefox 2/4 at 1201 s, killed at the globalTimeout with no
+// failing test; the 0e70aa9 vectors these replace predicted 1046/1077/1009 s
+// over this envelope and their run 37996597100 measured a worst leg of
+// 996 s (webkit 5/10).
 //
 // Step prediction: webkit runs one worker, so its step is its
 // worker-seconds plus about nine seconds of startup. chromium and firefox
 // run two workers, and their step is modeled as greedy in-order two-worker
-// scheduling over the shard's groups. Checked against all 56 measured legs
-// of the three most recent windows (each under the vectors it ran): webkit
-// is near-exact (RMS 4 s), but the two-worker model underestimates real
-// steps on a contended runner - median +46 s firefox, +72 s chromium (RMS
-// 49 s overall, model always optimistic there). The bias comes from the
-// serial in-order file schedule a single large group forces on one worker;
-// the parallel-mode files above break exactly that pattern, since their
-// cases interleave across both workers with only a single case as the
+// scheduling over the shard's groups. The shard model was checked against all
+// 133 measured shards of the seven windows (each under the vectors it ran;
+// membership reproduced exactly); the step model against the 76 legs of the
+// four most recent windows: webkit is near-exact (RMS 4 s), but the
+// two-worker model underestimates real steps on a contended runner - median
+// +15 s chromium and +18 s firefox, up to +47 s (RMS 21/25 s). The bias
+// comes from the serial in-order file schedule a single large group forces on
+// one worker; the parallel-mode files above break exactly that pattern, since
+// their cases interleave across both workers with only a single case as the
 // tail.
 //
 // History, for why single-run splits are avoided: a first split measured
@@ -63,9 +71,9 @@ import { defineConfig } from 'playwright/test'
 // minimized) before
 // touching the vectors, and never hand one a shard that runs no tests.
 const shardWeights = {
-    chromium: [297, 186, 199, 222, 242],
-    firefox: [314, 221, 301, 310],
-    webkit: [114, 129, 135, 55, 110, 126, 103, 135, 121, 118],
+    chromium: [294, 204, 212, 237, 199],
+    firefox: [303, 258, 299, 286],
+    webkit: [113, 128, 135, 54, 111, 130, 102, 134, 123, 116],
 }
 
 function cliFlag(flag) {
