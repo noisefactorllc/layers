@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { test, expect } from './fixtures.js'
 import { appReady, appState } from './waits.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
@@ -538,5 +540,92 @@ test.describe('Select Menu', () => {
         await setRectSelection(page, 10, 10, 100, 100)
         await page.evaluate(() => window.layersApp._selectionManager.setSelection({ type: 'unknown_type' }))
         expect(await page.evaluate(() => window.layersApp._selectionManager.hasSelection())).toBe(false)
+    })
+})
+
+test.describe('Menu accelerator text', () => {
+    // app.js builds every menu shortcut through handfish formatShortcut('Mod+…'),
+    // so each platform reads its real modifier instead of a Mac-only ⌘ glyph.
+
+    test('menu accelerators render the platform modifier text', async ({ page }) => {
+        await setupApp(page)
+
+        // Menu items render lazily behind their trigger, so open each menu
+        // before reading its shortcut spans.
+        await page.locator('#menu .hf-menubar-trigger', { hasText: 'edit' }).click()
+        await page.locator('#undoMenuItem').waitFor({ state: 'visible' })
+        await page.locator('#menu .hf-menubar-trigger', { hasText: 'layer' }).click()
+        await page.locator('#duplicateLayerMenuItem').waitFor({ state: 'visible' })
+
+        const rendered = await page.evaluate(() => {
+            const text = (id) =>
+                document.getElementById(id)?.querySelector('.hf-menu-shortcut')?.textContent ?? null
+            return {
+                undo: text('undoMenuItem'),
+                paste: text('pasteImageMenuItem'),
+                duplicateLayer: text('duplicateLayerMenuItem'),
+            }
+        })
+
+        // The config builds accelerator text through handfish formatShortcut,
+        // so off-Mac platforms read Ctrl instead of the Mac-only ⌘ glyph.
+        const isMac = await page.evaluate(() =>
+            /Mac|iPhone|iPad|iPod/.test(navigator.platform) || /Mac OS X/.test(navigator.userAgent))
+        const ctrl = (key) => (isMac ? `⌘${key}` : `Ctrl+${key}`)
+        expect(rendered).toEqual({
+            undo: ctrl('Z'),
+            paste: ctrl('V'),
+            duplicateLayer: ctrl('J'),
+        })
+    })
+
+    test('menu config matches formatShortcut and keeps the Mac glyph rendering', async ({ page }) => {
+        await setupApp(page)
+
+        const result = await page.evaluate(() => {
+            const specs = {
+                undoMenuItem: 'Mod+Z',
+                redoMenuItem: 'Mod+Shift+Z',
+                pasteImageMenuItem: 'Mod+V',
+                duplicateLayerMenuItem: 'Mod+J',
+                selectAllMenuItem: 'Mod+A',
+                selectNoneMenuItem: 'Mod+D',
+                selectInverseMenuItem: 'Mod+Shift+I',
+                zoomInMenuItem: 'Mod+=',
+                zoomOutMenuItem: 'Mod+-',
+                fitInWindowMenuItem: 'Mod+0',
+                zoom100MenuItem: 'Mod+1',
+            }
+            const menus = window.layersApp._menuBar?.config?.regions?.left || []
+            const configShortcut = {}
+            for (const menu of menus) {
+                for (const item of menu.items || []) {
+                    if (specs[item.id]) configShortcut[item.id] = item.shortcut
+                }
+            }
+            return import('handfish').then(({ formatShortcut }) => ({
+                macRendering: {
+                    undo: formatShortcut(specs.undoMenuItem, { mac: true }),
+                    redo: formatShortcut(specs.redoMenuItem, { mac: true }),
+                },
+                configShortcut,
+                expectedShortcut: Object.fromEntries(
+                    Object.entries(specs).map(([id, spec]) => [id, formatShortcut(spec)])
+                ),
+            }))
+        })
+
+        // Mac rendering keeps the modifier glyphs (canonical ⌃⌥⇧⌘ order).
+        expect(result.macRendering.undo).toBe('⌘Z')
+        expect(result.macRendering.redo).toBe('⇧⌘Z')
+        // Every menu item's shortcut is the platform-appropriate formatShortcut
+        // output, not a hardcoded string.
+        expect(result.configShortcut).toEqual(result.expectedShortcut)
+    })
+
+    test('no hardcoded ⌘ shortcut string remains in the menu config source', () => {
+        const appSource = readFileSync(
+            fileURLToPath(new URL('../public/js/app.js', import.meta.url)), 'utf8')
+        expect(appSource).not.toMatch(/['"`]⌘/)
     })
 })

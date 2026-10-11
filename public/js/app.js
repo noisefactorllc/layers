@@ -59,7 +59,7 @@ import { StrokeRenderer } from './drawing/stroke-renderer.js'
 import { autoLevels, autoContrast, autoWhiteBalance } from './utils/auto-adjust.js'
 import { bootstrapAgent } from './agent/index.js'
 import { captureProjectSnapshotOverride } from './agent/snapshot.js'
-import { SeanceDialog, initEscapeHandler, initializeTooltips } from 'handfish'  // Register <seance-dialog> custom element
+import { SeanceDialog, formatShortcut, initEscapeHandler, initializeTooltips } from 'handfish'  // Register <seance-dialog> custom element
 import { LOGO_SVG, IMAGE_SUBMENUS, FILTER_CATEGORIES } from './menuData.js'
 import { createLayersOnlineAdapter } from './collab/onlineAdapter.js'
 import { assertRemoteNodeSemantics } from './collab/docModel.js'
@@ -4425,7 +4425,7 @@ class LayersApp {
                             {
                                 id: 'undoMenuItem',
                                 label: 'undo',
-                                shortcut: '⌘Z',
+                                shortcut: formatShortcut('Mod+Z'),
                                 // Pending debounce timer or gesture means uncommitted changes exist that _undo() can finalize
                                 disabled: () => !(this._undoManager.canUndo() || this._undoDebounceTimer !== null || this._undoPending),
                                 onSelect: () => { this._runPointerMutation(() => this._undo()) },
@@ -4433,13 +4433,13 @@ class LayersApp {
                             {
                                 id: 'redoMenuItem',
                                 label: 'redo',
-                                shortcut: '⌘⇧Z',
+                                shortcut: formatShortcut('Mod+Shift+Z'),
                                 disabled: () => !this._undoManager.canRedo(),
                                 onSelect: () => { this._runPointerMutation(() => this._redo()) },
                             },
                             { type: 'separator' },
                             { id: 'copyImageMenuItem', label: 'copy image', onSelect: async () => { await this._runPointerMutation(() => this._handleCopyImage()) } },
-                            { id: 'pasteImageMenuItem', label: 'paste image', shortcut: '⌘V', onSelect: () => { this._runPointerMutation(() => this._handlePaste()) } },
+                            { id: 'pasteImageMenuItem', label: 'paste image', shortcut: formatShortcut('Mod+V'), onSelect: () => { this._runPointerMutation(() => this._handlePaste()) } },
                         ],
                     },
                     {
@@ -4477,7 +4477,7 @@ class LayersApp {
                             {
                                 id: 'duplicateLayerMenuItem',
                                 label: 'duplicate layer',
-                                shortcut: '⌘J',
+                                shortcut: formatShortcut('Mod+J'),
                                 disabled: () => selectedLayerIds().length !== 1,
                                 onSelect: () => { this._runPointerMutation(() => this._duplicateActiveLayer()) },
                             },
@@ -4568,7 +4568,7 @@ class LayersApp {
                             {
                                 id: 'selectAllMenuItem',
                                 label: 'select all',
-                                shortcut: '⌘A',
+                                shortcut: formatShortcut('Mod+A'),
                                 onSelect: () => {
                                     this._runPointerMutation(() => {
                                         const { width, height } = this._canvas
@@ -4581,14 +4581,14 @@ class LayersApp {
                             {
                                 id: 'selectNoneMenuItem',
                                 label: 'select none',
-                                shortcut: '⌘D',
+                                shortcut: formatShortcut('Mod+D'),
                                 disabled: () => !hasSelection(),
                                 onSelect: () => { this._runPointerMutation(() => this._selectionManager.clearSelection()) },
                             },
                             {
                                 id: 'selectInverseMenuItem',
                                 label: 'select inverse',
-                                shortcut: '⌘⇧I',
+                                shortcut: formatShortcut('Mod+Shift+I'),
                                 disabled: () => !hasSelection(),
                                 onSelect: () => { this._selectInverse() },
                             },
@@ -4635,13 +4635,13 @@ class LayersApp {
                         type: 'menu',
                         trigger: { label: 'view' },
                         items: [
-                            { id: 'zoomInMenuItem', label: 'zoom in', shortcut: '⌘+', onSelect: () => { this._zoomIn() } },
-                            { id: 'zoomOutMenuItem', label: 'zoom out', shortcut: '⌘-', onSelect: () => { this._zoomOut() } },
+                            { id: 'zoomInMenuItem', label: 'zoom in', shortcut: formatShortcut('Mod+='), onSelect: () => { this._zoomIn() } },
+                            { id: 'zoomOutMenuItem', label: 'zoom out', shortcut: formatShortcut('Mod+-'), onSelect: () => { this._zoomOut() } },
                             { type: 'separator' },
-                            zoomRadio('fitInWindowMenuItem', 'fit in window', 'fit', '⌘0'),
+                            zoomRadio('fitInWindowMenuItem', 'fit in window', 'fit', formatShortcut('Mod+0')),
                             { type: 'separator' },
                             zoomRadio('zoom50MenuItem', '50%', '50'),
-                            zoomRadio('zoom100MenuItem', '100% (actual size)', '100', '⌘1'),
+                            zoomRadio('zoom100MenuItem', '100% (actual size)', '100', formatShortcut('Mod+1')),
                             zoomRadio('zoom200MenuItem', '200%', '200'),
                         ],
                     },

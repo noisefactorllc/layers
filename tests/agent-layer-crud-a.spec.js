@@ -174,7 +174,7 @@ test.describe('duplicateLayer', () => {
         expect(finalCount).toBe(initialCount)
     })
 
-    test('duplicateLayer menu item displays ⌘J shortcut accelerator', async ({ page }) => {
+    test('duplicateLayer menu item displays the platform shortcut accelerator', async ({ page }) => {
         await bootApp(page)
         const shortcut = await page.evaluate(() => {
             const menus = window.layersApp._menuBar?.config?.regions?.left || []
@@ -184,7 +184,11 @@ test.describe('duplicateLayer', () => {
             }
             return null
         })
-        expect(shortcut).toBe('⌘J')
+        // The menu builds its accelerator text through handfish formatShortcut,
+        // so the value tracks the platform the app runs on.
+        const isMac = await page.evaluate(() =>
+            /Mac|iPhone|iPad|iPod/.test(navigator.platform) || /Mac OS X/.test(navigator.userAgent))
+        expect(shortcut).toBe(isMac ? '⌘J' : 'Ctrl+J')
     })
 })
 
