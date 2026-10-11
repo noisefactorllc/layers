@@ -102,17 +102,15 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      # This 5/4/10 matrix runs the 1138-test suite once per engine. The seven
-      # heaviest spec files are split into balanced -a/-b files so Playwright
-      # can place their halves in different shards. playwright.config.js sets
-      # one PWTEST_SHARD_WEIGHTS vector per engine from per-file worker-seconds
-      # in eleven green main runs (37097762272 through 37217268294), minimizing
-      # the worst predicted test step across those measured windows. The
-      # resulting worst-window predictions are 1118 s chromium, 1087 s firefox
-      # and 1035 s webkit; exact-source run 37232832949 measured a 1069 s
-      # maximum. Keep the matrix and those vectors aligned, and re-measure
-      # after a file split or test addition. The 19 legs fit below the public
-      # repository's 20 concurrent-job limit; globalTimeout remains 20 minutes.
+      # The 5/8/20 matrix covers every test once per engine. Recent green
+      # runs 38069362590, 38099015213 and 38104236503 measured maxima of
+      # 998/1125/1088 seconds for chromium/firefox/webkit; Firefox and WebKit
+      # exceeded GAP-002's 1080-second margin. playwright.config.js splits
+      # each Firefox/WebKit range from 5e4bbc5 into two adjacent shards,
+      # preserving the prior membership across each pair at 1150 tests.
+      # The 33 jobs may queue behind the runner concurrency limit. Queue time
+      # does not consume a shard's unchanged 20-minute Playwright timeout.
+      # Verify complete shard coverage and re-measure after test additions.
       matrix:
         include:
           - { browser: chromium, shard: 1, shards: 5 }
@@ -120,20 +118,34 @@ jobs:
           - { browser: chromium, shard: 3, shards: 5 }
           - { browser: chromium, shard: 4, shards: 5 }
           - { browser: chromium, shard: 5, shards: 5 }
-          - { browser: firefox, shard: 1, shards: 4 }
-          - { browser: firefox, shard: 2, shards: 4 }
-          - { browser: firefox, shard: 3, shards: 4 }
-          - { browser: firefox, shard: 4, shards: 4 }
-          - { browser: webkit, shard: 1, shards: 10 }
-          - { browser: webkit, shard: 2, shards: 10 }
-          - { browser: webkit, shard: 3, shards: 10 }
-          - { browser: webkit, shard: 4, shards: 10 }
-          - { browser: webkit, shard: 5, shards: 10 }
-          - { browser: webkit, shard: 6, shards: 10 }
-          - { browser: webkit, shard: 7, shards: 10 }
-          - { browser: webkit, shard: 8, shards: 10 }
-          - { browser: webkit, shard: 9, shards: 10 }
-          - { browser: webkit, shard: 10, shards: 10 }
+          - { browser: firefox, shard: 1, shards: 8 }
+          - { browser: firefox, shard: 2, shards: 8 }
+          - { browser: firefox, shard: 3, shards: 8 }
+          - { browser: firefox, shard: 4, shards: 8 }
+          - { browser: firefox, shard: 5, shards: 8 }
+          - { browser: firefox, shard: 6, shards: 8 }
+          - { browser: firefox, shard: 7, shards: 8 }
+          - { browser: firefox, shard: 8, shards: 8 }
+          - { browser: webkit, shard: 1, shards: 20 }
+          - { browser: webkit, shard: 2, shards: 20 }
+          - { browser: webkit, shard: 3, shards: 20 }
+          - { browser: webkit, shard: 4, shards: 20 }
+          - { browser: webkit, shard: 5, shards: 20 }
+          - { browser: webkit, shard: 6, shards: 20 }
+          - { browser: webkit, shard: 7, shards: 20 }
+          - { browser: webkit, shard: 8, shards: 20 }
+          - { browser: webkit, shard: 9, shards: 20 }
+          - { browser: webkit, shard: 10, shards: 20 }
+          - { browser: webkit, shard: 11, shards: 20 }
+          - { browser: webkit, shard: 12, shards: 20 }
+          - { browser: webkit, shard: 13, shards: 20 }
+          - { browser: webkit, shard: 14, shards: 20 }
+          - { browser: webkit, shard: 15, shards: 20 }
+          - { browser: webkit, shard: 16, shards: 20 }
+          - { browser: webkit, shard: 17, shards: 20 }
+          - { browser: webkit, shard: 18, shards: 20 }
+          - { browser: webkit, shard: 19, shards: 20 }
+          - { browser: webkit, shard: 20, shards: 20 }
     defaults:
       run:
         working-directory: layers
