@@ -1,6 +1,7 @@
 import { test, expect } from './fixtures.js'
 import { appReady, defaultProjectReady } from './waits.js'
 import { reopenNewProjectDialog } from './helpers/new-project.js'
+import { seedClipboardRead } from './helpers/clipboard.js'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -1081,5 +1082,116 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
             .filter(node => !(node.name?.value || '').trim())
             .map(described)
         expect(unnamed, 'accessibility-tree interactive nodes without an accessible name').toEqual([])
+    })
+
+    test('toasts announce as live regions', async ({ page, browserName }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await defaultProjectReady(page)
+        await page.locator('.layer-item').first().waitFor({ state: 'visible', timeout: 10000 })
+
+        // The engine's accessibility tree, read the same way as the color-well
+        // case above: Chromium only (other engines' snapshots are not
+        // portable). The first fetch turns Chromium's accessibility engine on
+        // and returns a placeholder tree, so warm it up before any toast
+        // exists; the toasts auto-dismiss after 3s and each later check is a
+        // single fast fetch. A toast counts as announced when a non-ignored
+        // status/alert live region carries its message in its subtree — not
+        // bare generic text.
+        const cdp = await page.context().newCDPSession(page)
+        await cdp.send('Accessibility.enable')
+        await cdp.send('Accessibility.getFullAXTree')
+        const announcedToastRoles = async (message) => {
+            const { nodes } = await cdp.send('Accessibility.getFullAXTree')
+            const byId = new Map(nodes.map(node => [node.nodeId, node]))
+            const subtreeHasText = (node, text) => {
+                const stack = [node]
+                while (stack.length) {
+                    const current = stack.pop()
+                    if ((current.name?.value || '').includes(text)) return true
+                    for (const childId of current.childIds || []) {
+                        const child = byId.get(childId)
+                        if (child) stack.push(child)
+                    }
+                }
+                return false
+            }
+            return nodes
+                .filter(node => !node.ignored
+                    && ['status', 'alert'].includes(String(node.role?.value ?? '').toLowerCase()))
+                .filter(node => subtreeHasText(node, message))
+                .map(node => String(node.role?.value).toLowerCase())
+        }
+
+        // A real success toast through the real UI: Layer menu → Add Layer
+        // Mask (agent commands suppress toasts, so the menu is the path a
+        // screen-reader user drives). The base layer is the one layer the
+        // default project boots with.
+        const baseId = await page.evaluate(() => window.layersApp._layers[0].id)
+        await page.click(`layer-item[data-layer-id="${baseId}"] .layer-name`)
+        await page.locator('#menu .hf-menubar-trigger', { hasText: 'layer' }).click()
+        const addMaskItem = page.locator('#menu #addLayerMaskMenuItem')
+        await addMaskItem.waitFor({ state: 'visible' })
+        await expect(addMaskItem).not.toHaveAttribute('aria-disabled', 'true')
+        await addMaskItem.click()
+
+        // One snapshot read: the toast auto-dismisses after 3s, and separate
+        // assertion roundtrips can outlive it on a software-rendered runner.
+        const successToast = page.locator('#toast-container .toast.toast-success')
+        await expect(successToast).toBeVisible({ timeout: 5000 })
+
+        // In the engine's accessibility tree the toast is a status live
+        // region, not bare generic text — that is what screen readers
+        // announce. Fetched first: the runner's action tracing makes even a
+        // single page.evaluate take seconds, and the toast auto-dismisses at
+        // 3s.
+        if (browserName === 'chromium') {
+            const roles = await announcedToastRoles('Layer mask added')
+            expect(roles, 'success toast live region in the accessibility tree').toEqual(['status'])
+        }
+
+        const success = await successToast.evaluate(el => ({
+            message: el.querySelector('.toast-message')?.textContent ?? '',
+            role: el.getAttribute('role'),
+            live: el.getAttribute('aria-live'),
+            atomic: el.getAttribute('aria-atomic'),
+            closeName: el.querySelector('.toast-close')?.getAttribute('aria-label') ?? null,
+        }))
+        expect(success.message).toContain('Layer mask added')
+        expect(success.role).toBe('status')
+        expect(success.live).toBe('polite')
+        expect(success.atomic).toBe('true')
+        // The close button keeps its accessible name.
+        expect(success.closeName).toBe('Close')
+
+        // Leave mask edit mode (the toast's own advice) and let the success
+        // toast expire, then raise a real error toast: New Project → Paste
+        // from Clipboard with an empty clipboard.
+        await page.keyboard.press('Escape')
+        await expect(successToast).toBeHidden({ timeout: 10000 })
+
+        await seedClipboardRead(page)
+        await reopenNewProjectDialog(page)
+        await page.click('.media-option[data-type="media"]')
+        await page.click('#open-clipboard-btn')
+
+        const errorToast = page.locator('#toast-container .toast.toast-error')
+        await expect(errorToast).toBeVisible({ timeout: 5000 })
+        if (browserName === 'chromium') {
+            const roles = await announcedToastRoles('No image found in clipboard')
+            expect(roles, 'error toast live region in the accessibility tree').toEqual(['alert'])
+        }
+
+        const failure = await errorToast.evaluate(el => ({
+            message: el.querySelector('.toast-message')?.textContent ?? '',
+            role: el.getAttribute('role'),
+            live: el.getAttribute('aria-live'),
+            atomic: el.getAttribute('aria-atomic'),
+            closeName: el.querySelector('.toast-close')?.getAttribute('aria-label') ?? null,
+        }))
+        expect(failure.message).toContain('No image found in clipboard')
+        expect(failure.role).toBe('alert')
+        expect(failure.live).toBe('assertive')
+        expect(failure.atomic).toBe('true')
+        expect(failure.closeName).toBe('Close')
     })
 })

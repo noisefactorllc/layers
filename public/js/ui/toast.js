@@ -83,6 +83,14 @@ class ToastManager {
         const toast = document.createElement('div')
         toast.className = `toast toast-${type}`
 
+        // Live-region semantics so screen readers announce the message while
+        // it is on screen: success/info/warning as a polite status, errors as
+        // an assertive alert. aria-atomic keeps re-reads to the whole toast.
+        const assertive = type === 'error'
+        toast.setAttribute('role', assertive ? 'alert' : 'status')
+        toast.setAttribute('aria-live', assertive ? 'assertive' : 'polite')
+        toast.setAttribute('aria-atomic', 'true')
+
         // Icon based on type
         const icons = {
             info: 'info',
