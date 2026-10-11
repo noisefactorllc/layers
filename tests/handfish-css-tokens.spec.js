@@ -1091,15 +1091,18 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
 
         // The engine's accessibility tree, read the same way as the color-well
         // case above: Chromium only (other engines' snapshots are not
-        // portable). The first fetch turns Chromium's accessibility engine on
-        // and returns a placeholder tree, so warm it up before any toast
-        // exists; the toasts auto-dismiss after 3s and each later check is a
-        // single fast fetch. A toast counts as announced when a non-ignored
-        // status/alert live region carries its message in its subtree — not
-        // bare generic text.
-        const cdp = await page.context().newCDPSession(page)
-        await cdp.send('Accessibility.enable')
-        await cdp.send('Accessibility.getFullAXTree')
+        // portable, and only Chromium exposes CDP). The first fetch turns
+        // Chromium's accessibility engine on and returns a placeholder tree,
+        // so warm it up before any toast exists; the toasts auto-dismiss
+        // after 3s and each later check is a single fast fetch. A toast
+        // counts as announced when a non-ignored status/alert live region
+        // carries its message in its subtree — not bare generic text.
+        let cdp = null
+        if (browserName === 'chromium') {
+            cdp = await page.context().newCDPSession(page)
+            await cdp.send('Accessibility.enable')
+            await cdp.send('Accessibility.getFullAXTree')
+        }
         const announcedToastRoles = async (message) => {
             const { nodes } = await cdp.send('Accessibility.getFullAXTree')
             const byId = new Map(nodes.map(node => [node.nodeId, node]))
