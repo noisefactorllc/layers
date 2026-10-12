@@ -49,6 +49,8 @@ test('llms.txt names every error and warning code that the agent API returns', a
     for (const code of ['JOB_FAILED', 'VIDEO_EXPORT_ENCODE_FAILED', 'UNKNOWN_SETTING_KEY']) {
         assert.ok(codes.has(code), `the code scan no longer finds ${code}`)
     }
+    // Error codes are table rows. Warning codes are list items in Warnings.
     const llms = await readFile(LLMS_PATH, 'utf8')
-    assert.deepEqual([...codes].filter(code => !llms.includes(`\`${code}\``)).sort(), [])
+    const listed = code => new RegExp(`^(?:\\| |- )\`${code}\``, 'm').test(llms)
+    assert.deepEqual([...codes].filter(code => !listed(code)).sort(), [])
 })

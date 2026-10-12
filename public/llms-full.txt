@@ -1046,7 +1046,7 @@ Arguments:
 
 #### `saveProject`
 
-Saves the open project. `name` renames it. When no project is open, `name` is necessary and it saves a new project.
+Saves the current project. `name` renames it. When the project has no name yet, `name` is necessary.
 
 Arguments:
 
@@ -1163,10 +1163,10 @@ Arguments: none.
 
 Returns the state of the font bundle: installed, version, count, and each font as id, family and category.
 
-Arguments: none.
+Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.
 
 #### `installFontBundle`
 
 Starts a job that downloads the font bundle (about 140 MB) into browser storage. Returns its `jobId`.
 
-Arguments: none.
+Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.

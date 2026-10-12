@@ -130,7 +130,7 @@ export const COMMAND_GROUPS = [
         commands: {
             newProject: 'Starts a new empty project at the given size. It discards unsaved changes without a warning.',
             openProject: 'Opens a saved project in place of the current project.',
-            saveProject: 'Saves the open project. `name` renames it. When no project is open, `name` is necessary and it saves a new project.',
+            saveProject: 'Saves the current project. `name` renames it. When the project has no name yet, `name` is necessary.',
             saveProjectAs: 'Saves the current state as a new project named `name` and returns its id.',
             deleteProject: 'Deletes a saved project. When it is the open project, the canvas keeps its content.',
             undo: 'Undoes the last change. When `canUndo` is false, nothing changes.',

@@ -72,7 +72,9 @@ function commandSection(name, description) {
     const fields = schema ? fieldLines(schema, 0) : []
     const lines = [`#### ${code(name)}`, '', description, '']
     if (fields.length === 0) {
-        lines.push('Arguments: none.')
+        lines.push(schema?.additionalProperties === false
+            ? 'Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.'
+            : 'Arguments: none.')
     } else {
         lines.push('Arguments:', '', ...fields)
         if (schema.additionalProperties === false) {
