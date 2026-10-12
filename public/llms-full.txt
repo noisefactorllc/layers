@@ -25,7 +25,7 @@ const v = window.LayersAgent.version                  // current API version (e.
 const env = await window.LayersAgent.getState({})     // any command
 ```
 
-The document is in that page. To keep your work, call `saveProject`.
+The document is in that page. To keep your work, call `saveProject({ name })`.
 `saveProject` writes the project to the storage of that browser.
 
 ---
@@ -39,6 +39,7 @@ A large result uses a large part of your context.
 - Every envelope includes the full `state`. Remove it when you do not need it.
 - `exportImage` always returns the full image as base64 in `result.bytes`.
   Remove `bytes` before you return the envelope, unless you need the bytes.
+  To get only the bytes, without a download, pass `triggerDownload: false`.
 - To look at the canvas, call `getThumbnail`. By default, its longest side is 256 pixels.
 
 ```js
@@ -155,8 +156,11 @@ console.log(SCHEMAS.addLayer)
 // -> { type:'object', properties:{ kind:{type:'string', enum:[...]}, ... }, required:['kind'] }
 ```
 
-A command that is not in `SCHEMAS` takes no arguments.
+A command whose `SCHEMAS` entry is null takes no arguments.
 Skip `_`-prefixed names. They are not public commands.
+
+Most commands ignore fields that their schema does not declare, without an error.
+Check the spelling of each field: a misspelled field has no effect.
 
 The commands cover these operations:
 
@@ -177,16 +181,16 @@ The commands cover these operations:
 |---|---|
 | `INVALID_ARGS_TYPE` | wrong type |
 | `INVALID_ARGS_REQUIRED` | missing required field |
-| `INVALID_ARGS_RANGE` | numeric out of range |
+| `INVALID_ARGS_RANGE` | number, string length or item count out of range |
 | `INVALID_ARGS_ENUM` | not in allowed enum |
-| `INVALID_ARGS_UNKNOWN` | a field that the schema does not declare, or an effect parameter that the effect does not declare |
+| `INVALID_ARGS_UNKNOWN` | an undeclared field on a strict command (llms-full.txt names them), or an effect parameter that the effect does not declare |
 | `NOT_FOUND_LAYER` | unknown layer id or child effect id |
 | `NOT_FOUND_STROKE` | unknown stroke id on a drawing layer (`eraseStroke`) |
-| `NOT_FOUND_EFFECT` | unknown effect id (response includes `didYouMean`) |
+| `NOT_FOUND_EFFECT` | unknown effect id (from `getEffectDefinition`, `details` includes `didYouMean`) |
 | `NOT_FOUND_JOB` | unknown job id |
 | `NOT_FOUND_PROJECT` | unknown project id |
 | `NOT_FOUND_EXPORT` | `releaseExport` got an id that has no `captureOnly` video URL |
-| `CONFLICT_BASE_LAYER` | `reorderLayer` tried to move the base layer, or to move a layer to index 0 |
+| `CONFLICT_BASE_LAYER` | `deleteLayer` or `reorderLayer` tried to change the base layer, or to move a layer to index 0 |
 | `CONFLICT_DUPLICATE_FAILED` | the app could not duplicate the layer |
 | `CONFLICT_TOOL_BLOCKED_FOR_TYPE` | the command does not support this layer type (`flipLayer` on a layer that is not media) |
 | `CONFLICT_NOT_TRANSFORMABLE_LAYER` | the layer has no raster source to transform |
@@ -196,7 +200,7 @@ The commands cover these operations:
 | `CONFLICT_LAYER_HAS_MASK` | the layer already has a mask |
 | `CONFLICT_NO_MASK` | the layer has no mask |
 | `CONFLICT_MEDIA_BLOCKED_ONLINE` | a video layer while a collaboration session is online |
-| `CONFLICT_PROJECT_REPLACEMENT` | another project change cancelled `newProject` or `openProject` |
+| `CONFLICT_PROJECT_REPLACEMENT` | `newProject` or `openProject` did not complete (`details.status` gives the reason) |
 | `CONFLICT_JOB_IN_PROGRESS` | a duplicate job is already running (e.g. installFontBundle) |
 | `JOB_LIMIT_EXCEEDED` | too many active jobs (cap = 20) |
 | `JOB_CANCELLED` | the job was cancelled (terminal state, not an error per se) |
@@ -204,9 +208,9 @@ The commands cover these operations:
 | `RENDER_LAYER_COMPOSITE_FAILED` | the renderer could not isolate the layer (`getLayerThumbnail`) |
 | `INTERNAL_ERROR` | unexpected handler throw |
 
-`details` always includes the field/value that caused the error. For
-`NOT_FOUND_EFFECT`, `details.didYouMean` is the 3 closest effect ids by
-Levenshtein distance.
+`details` usually names the field or value that caused the error. Some conflict
+errors send an empty `details`. From `getEffectDefinition`, `NOT_FOUND_EFFECT`
+also gives `details.didYouMean`: the 3 closest effect ids by Levenshtein distance.
 
 ---
 
@@ -243,7 +247,21 @@ Without `timeoutMs`, or with `timeoutMs: 0`, `waitForJob` waits with no limit.
 
 Your browser tool can stop a script that runs too long.
 For a long job, call `waitForJob` with a short `timeoutMs`.
-Repeat the call until `timedOut` is false.
+Repeat the call while the result has `timedOut: true`.
+A settled job has no `timedOut` field.
+
+A failed job has `status: 'failed'` and `error: { code, message, details }`.
+These codes appear in `error.code`:
+
+| Code | When |
+|---|---|
+| `JOB_FAILED` | the job failed, and no specific code applies |
+| `VIDEO_EXPORT_ENCODE_FAILED` | the MP4 encoder failed. Try a lower resolution or `format: 'zip'` |
+| `VIDEO_EXPORT_EMPTY` | the MP4 export produced no video data |
+| `VIDEO_DURATION_UNAVAILABLE` | a video layer has no finite duration |
+| `CONFLICT_EXPORT_IN_PROGRESS` | a video export from the editor dialog is running |
+
+A cancelled job has `status: 'cancelled'` and `error.code` `JOB_CANCELLED`.
 
 `JOB_KINDS` is exported from `/js/agent/jobs.js`:
 
@@ -273,6 +291,9 @@ Cancellation during that call may take several seconds.
 
 By default, both commands start a browser download.
 The browser puts the file in its download folder.
+A downloaded image uses the `filename` of its export entry.
+Layers names a downloaded video `layers-<time>.mp4` or `layers-<time>.zip`.
+Its export entry `filename` applies only to a `captureOnly` export.
 
 `exportImage` also returns the image as base64 in `result.bytes`, with or
 without the download. `triggerDownload: false` skips the download.
@@ -292,7 +313,8 @@ Otherwise, the Blob remains in memory for the rest of the page's lifetime.
 
 ```js
 const env = await LayersAgent.exportVideo({ format: 'mp4', captureOnly: true, ... })
-const settled = await LayersAgent.waitForJob({ jobId: env.result.jobId })
+const settled = await LayersAgent.waitForJob({ jobId: env.result.jobId, timeoutMs: 60000 })
+// Repeat waitForJob while settled.result.timedOut is true.
 const { blobUrl, exportId } = settled.result.result
 const bytes = await (await fetch(blobUrl)).arrayBuffer()
 await LayersAgent.releaseExport({ exportId })   // frees the Blob
@@ -319,7 +341,7 @@ const newLayerId = env.result.layerId
 const env = await LayersAgent.searchEffects({ query: 'noise' })
 // env.result.effects is a list of { effectId, namespace, name, description, tags, ... }
 const def = (await LayersAgent.getEffectDefinition({ effectId: 'synth/gradient' })).result
-// def includes param spec, defaults, name, category
+// def is { effectId, name, namespace, description, tags, params }
 ```
 
 **Show a layer only inside a rectangle:**
@@ -366,7 +388,7 @@ Alternatively, wait for one or two `getThumbnail` calls before reading bytes.
 ## Command reference
 
 Layers has 87 public commands. Call a command as `await window.LayersAgent.<name>(args)`.
-A command with no arguments also accepts no argument.
+You can omit the argument object: `getState()` is the same as `getState({})`.
 
 ### Read state
 
@@ -416,7 +438,7 @@ Arguments: none.
 
 #### `getForegroundColor`
 
-Returns the foreground color as a `#rrggbb` string.
+Returns `{color}`, where `color` is a `#rrggbb` string.
 
 Arguments: none.
 
@@ -498,7 +520,7 @@ Arguments:
 
 #### `deleteLayer`
 
-Deletes a layer.
+Deletes a layer. The base layer at index 0 cannot be deleted.
 
 Arguments:
 
@@ -584,7 +606,7 @@ Arguments:
 
 #### `setLayerTransform`
 
-Sets the offset, scale, rotation or flip of a layer. The layer must have a raster source.
+Sets the offset, scale, rotation or flip of a layer. Only media and drawing layers accept a transform.
 
 Arguments:
 
@@ -696,7 +718,7 @@ Arguments:
 
 #### `exportImage`
 
-Exports the canvas as an image and starts a browser download. The result always includes the image as base64 in `bytes`.
+Exports the canvas as an image. By default, it starts a browser download. The result always includes the image as base64 in `bytes`.
 
 Arguments:
 
@@ -710,7 +732,7 @@ Arguments:
 
 #### `pasteImageFromBytes`
 
-Adds an image as a new media layer. `source` is `{kind: "base64", data, mimeType?}` or `{kind: "url", value}`.
+Adds an image as a new media layer. `source` is `{kind: "base64", data, mimeType?}` or `{kind: "url", value}`. `data` is raw base64, without a `data:` prefix.
 
 Arguments:
 
@@ -790,7 +812,7 @@ Arguments:
 
 #### `setPolygonSelection`
 
-Selects a polygon or lasso shape from 3 or more points. Each point is `[x, y]` or `{x, y}`.
+Selects a polygon or lasso shape from 3 or more points. Each point is `[x, y]`.
 
 Arguments:
 
@@ -946,7 +968,7 @@ Arguments:
 
 #### `paintStroke`
 
-Paints a stroke through 2 or more `points` (`[x, y]` or `{x, y}`) on a drawing layer. With `mode: "eraser"`, the stroke paints transparency.
+Paints a stroke through 2 or more `points` (`[x, y]` or `{x, y}`) on a drawing layer. With `mode: "eraser"`, the stroke paints transparency. Without `layerId`, see drawShape.
 
 Arguments:
 
@@ -976,7 +998,7 @@ Arguments:
 
 #### `drawShape`
 
-Draws a rectangle or ellipse, filled or outlined, on a drawing layer.
+Draws a rectangle or ellipse, filled or outlined, on a drawing layer. Without `layerId`, it uses the active layer if that is a drawing layer. Otherwise it adds a drawing layer above the active layer.
 
 Arguments:
 
@@ -993,7 +1015,7 @@ Arguments:
 
 #### `fillRegion`
 
-Adds a media layer of `color`, masked to the connected area with a color near the color at (x, y).
+Adds a media layer of `color` in the shape of the connected area with a color near the color at (x, y). The new layer has no mask.
 
 Arguments:
 
@@ -1024,7 +1046,7 @@ Arguments:
 
 #### `saveProject`
 
-Saves the open project. When no project is open, it saves a new project named `name`.
+Saves the open project. `name` renames it. When no project is open, `name` is necessary and it saves a new project.
 
 Arguments:
 
@@ -1100,7 +1122,7 @@ Arguments:
 
 #### `resizeImage`
 
-Resamples the image and all layers to a new size. It clears the selection.
+Resamples the image and all layers to a new size. The selection does not change. Call `selectNone` to clear it.
 
 Arguments:
 

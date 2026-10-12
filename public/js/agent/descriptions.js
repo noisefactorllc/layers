@@ -22,7 +22,7 @@ export const COMMAND_GROUPS = [
             getProjectInfo: 'Returns the project part of the snapshot: id, name, isDirty, canUndo, canRedo and canSaveAs.',
             listProjects: 'Lists the projects saved in this browser, with id, name, createdAt and modifiedAt.',
             getSettings: 'Returns the theme and export presets that this browser stores.',
-            getForegroundColor: 'Returns the foreground color as a `#rrggbb` string.',
+            getForegroundColor: 'Returns `{color}`, where `color` is a `#rrggbb` string.',
         },
     },
     {
@@ -46,7 +46,7 @@ export const COMMAND_GROUPS = [
         title: 'Layers',
         commands: {
             addLayer: 'Adds a layer and returns its id. `kind` is effect (needs `effectId`), drawing, media (needs `source` and `mediaType`) or text (needs `text`). `source` has the same shape as in pasteImageFromBytes.',
-            deleteLayer: 'Deletes a layer.',
+            deleteLayer: 'Deletes a layer. The base layer at index 0 cannot be deleted.',
             duplicateLayer: 'Duplicates a layer, selects the copy, and returns its id.',
             reorderLayer: 'Moves a layer to `toIndex`. Index 0 is the base layer at the bottom. The base layer cannot move, and no layer can move to index 0.',
             selectLayer: 'Makes one layer the active layer.',
@@ -56,7 +56,7 @@ export const COMMAND_GROUPS = [
             rasterizeLayer: 'Changes an effect or drawing layer into a media layer with its current pixels. The layer loses its effect parameters or strokes.',
             flipLayer: 'Flips a media layer horizontally (`h`) or vertically (`v`). Other layer types are not supported.',
             setLayerProps: 'Sets the name, visible, opacity, blendMode or locked property of a layer.',
-            setLayerTransform: 'Sets the offset, scale, rotation or flip of a layer. The layer must have a raster source.',
+            setLayerTransform: 'Sets the offset, scale, rotation or flip of a layer. Only media and drawing layers accept a transform.',
         },
     },
     {
@@ -76,8 +76,8 @@ export const COMMAND_GROUPS = [
             getCanvasImageBytes: 'Returns the full-size canvas as base64 image data. No download starts.',
             getThumbnail: 'Returns a small canvas image as base64 data. The longest side is `maxDimension` (default 256).',
             getLayerThumbnail: 'Returns a small image of one layer, with its child effects and mask, as base64 data.',
-            exportImage: 'Exports the canvas as an image and starts a browser download. The result always includes the image as base64 in `bytes`.',
-            pasteImageFromBytes: 'Adds an image as a new media layer. `source` is `{kind: "base64", data, mimeType?}` or `{kind: "url", value}`.',
+            exportImage: 'Exports the canvas as an image. By default, it starts a browser download. The result always includes the image as base64 in `bytes`.',
+            pasteImageFromBytes: 'Adds an image as a new media layer. `source` is `{kind: "base64", data, mimeType?}` or `{kind: "url", value}`. `data` is raw base64, without a `data:` prefix.',
             exportVideo: 'Starts a video export job (MP4, or a ZIP of PNG frames) and returns its `jobId`. The file downloads when the job succeeds.',
             releaseExport: 'Frees the blob URL of a `captureOnly` video export. Call it after you read the bytes.',
         },
@@ -90,7 +90,7 @@ export const COMMAND_GROUPS = [
             selectInverse: 'Inverts the selection. A selection must be active.',
             setRectangleSelection: 'Selects a rectangle from its top-left corner, width and height.',
             setOvalSelection: 'Selects the oval inside the given rectangle.',
-            setPolygonSelection: 'Selects a polygon or lasso shape from 3 or more points. Each point is `[x, y]` or `{x, y}`.',
+            setPolygonSelection: 'Selects a polygon or lasso shape from 3 or more points. Each point is `[x, y]`.',
             setMagicWandSelection: 'Selects the connected pixels with a color near the color at (x, y). `tolerance` is 0 to 255 (default 32).',
             selectColorRange: 'Selects every pixel with a color near the color at (x, y), connected or not. `tolerance` defaults to 32.',
             expandSelection: 'Grows the selection by `pixels`.',
@@ -118,11 +118,11 @@ export const COMMAND_GROUPS = [
     {
         title: 'Drawing',
         commands: {
-            paintStroke: 'Paints a stroke through 2 or more `points` (`[x, y]` or `{x, y}`) on a drawing layer. With `mode: "eraser"`, the stroke paints transparency.',
+            paintStroke: 'Paints a stroke through 2 or more `points` (`[x, y]` or `{x, y}`) on a drawing layer. With `mode: "eraser"`, the stroke paints transparency. Without `layerId`, see drawShape.',
             eraseStroke: 'Removes one stroke, by its `strokeId`, from a drawing layer.',
             clearDrawingLayer: 'Removes all strokes from a drawing layer and returns the number it removed.',
-            drawShape: 'Draws a rectangle or ellipse, filled or outlined, on a drawing layer.',
-            fillRegion: 'Adds a media layer of `color`, masked to the connected area with a color near the color at (x, y).',
+            drawShape: 'Draws a rectangle or ellipse, filled or outlined, on a drawing layer. Without `layerId`, it uses the active layer if that is a drawing layer. Otherwise it adds a drawing layer above the active layer.',
+            fillRegion: 'Adds a media layer of `color` in the shape of the connected area with a color near the color at (x, y). The new layer has no mask.',
         },
     },
     {
@@ -130,7 +130,7 @@ export const COMMAND_GROUPS = [
         commands: {
             newProject: 'Starts a new empty project at the given size. It discards unsaved changes without a warning.',
             openProject: 'Opens a saved project in place of the current project.',
-            saveProject: 'Saves the open project. When no project is open, it saves a new project named `name`.',
+            saveProject: 'Saves the open project. `name` renames it. When no project is open, `name` is necessary and it saves a new project.',
             saveProjectAs: 'Saves the current state as a new project named `name` and returns its id.',
             deleteProject: 'Deletes a saved project. When it is the open project, the canvas keeps its content.',
             undo: 'Undoes the last change. When `canUndo` is false, nothing changes.',
@@ -150,7 +150,7 @@ export const COMMAND_GROUPS = [
     {
         title: 'Canvas and adjustments',
         commands: {
-            resizeImage: 'Resamples the image and all layers to a new size. It clears the selection.',
+            resizeImage: 'Resamples the image and all layers to a new size. The selection does not change. Call `selectNone` to clear it.',
             resizeCanvas: 'Changes the canvas size without resampling. `anchor` (default center) sets the position of the layers.',
             autoLevels: 'Adds an adjustment layer that stretches the tonal range. Returns `applied: false` when no change is necessary.',
             autoContrast: 'Adds an adjustment layer that stretches luminance to the full range. Returns `applied: false` when no change is necessary.',

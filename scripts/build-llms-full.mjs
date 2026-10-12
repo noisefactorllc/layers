@@ -39,7 +39,9 @@ function describeType(schema) {
     if (schema.type === 'array' && schema.items) {
         const item = describeType(schema.items)
         parts[0] = schema.items.type === 'object' && schema.items.properties
-            ? 'array of objects with these fields'
+            ? (schema.items.additionalProperties === false
+                ? 'array of objects with only these fields'
+                : 'array of objects with these fields')
             : item === schema.items.type ? `array of ${item}s` : `array, each item ${item}`
     }
     if (schema.type === 'object' && schema.properties && Object.keys(schema.properties).length > 0) {
@@ -87,7 +89,7 @@ export function renderReference() {
         '## Command reference',
         '',
         `Layers has ${total} public commands. Call a command as \`await window.LayersAgent.<name>(args)\`.`,
-        'A command with no arguments also accepts no argument.',
+        'You can omit the argument object: `getState()` is the same as `getState({})`.',
         '',
     ]
     for (const group of COMMAND_GROUPS) {

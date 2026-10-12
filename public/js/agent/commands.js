@@ -683,7 +683,13 @@ async function sourceToFile(source, defaultName) {
             throw commandError('INVALID_ARGS_TYPE', 'source.data must be a base64 string',
                 { field: 'source.data', expected: 'string' })
         }
-        return base64ToFile(source.data, source.mimeType, defaultName)
+        try {
+            return base64ToFile(source.data, source.mimeType, defaultName)
+        } catch (err) {
+            throw commandError('RESOURCE_DECODE_FAILED',
+                `source.data is not valid base64: ${err.message || err}`,
+                { field: 'source.data' })
+        }
     }
     if (source.kind === 'url') {
         if (typeof source.value !== 'string') {
@@ -1578,9 +1584,9 @@ export async function setOvalSelection({ x, y, width, height }, app) {
 /**
  * Set a polygon or lasso selection from a points list. `kind` is 'polygon'
  * (closed straight-edge) or 'lasso' (closed free-form, same data shape).
- * Points may be `[x, y]` tuples (normalized to `{x, y}` internally).
+ * Each point is an `[x, y]` tuple (normalized to `{x, y}` internally).
  *
- * @param {{kind: 'polygon'|'lasso', points: Array<[number, number]|{x:number,y:number}>}} args
+ * @param {{kind: 'polygon'|'lasso', points: Array<[number, number]>}} args
  * @returns {Promise<{result: {ok: true}}>}
  * @throws INTERNAL_ERROR — when the selection manager isn't initialized.
  * @throws INVALID_ARGS_RANGE — when fewer than 3 points supplied.

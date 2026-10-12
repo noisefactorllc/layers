@@ -33,16 +33,22 @@ test('public/llms-full.txt matches a fresh render (run npm run build:llms)', asy
     assert.equal(await readFile(LLMS_FULL_PATH, 'utf8'), await renderLlmsFull())
 })
 
-test('llms.txt lists every error code that the agent API returns', async () => {
+// The agent modules, plus the job runners whose error codes reach a job's
+// `error.code` through jobs.js.
+const JOB_RUNNERS = ['../ui/video-exporter.js', '../utils/files.js', '../layers/fontaine-loader.js']
+
+test('llms.txt names every error and warning code that the agent API returns', async () => {
+    const files = (await readdir(AGENT_DIR)).filter(name => name.endsWith('.js')).concat(JOB_RUNNERS)
     const codes = new Set()
-    for (const name of await readdir(AGENT_DIR)) {
-        if (!name.endsWith('.js')) continue
+    for (const name of files) {
         const source = await readFile(new URL(name, AGENT_DIR), 'utf8')
-        for (const match of source.matchAll(/(?:commandError|fail)\(\s*'([A-Z_]+)'|\.code = '([A-Z_]+)'/g)) {
-            codes.add(match[1] || match[2])
-        }
+        // commandError('X'), fail('X'), err.code = 'X', code: 'X', code: err?.code || 'X'
+        const pattern = /(?:commandError|fail)\(\s*'([A-Z][A-Z_]+)'|\bcode\s*[:=]\s*(?:[\w?.]+\s*\|\|\s*)?'([A-Z][A-Z_]+)'/g
+        for (const match of source.matchAll(pattern)) codes.add(match[1] || match[2])
     }
-    assert.ok(codes.size > 10, `expected the agent API to define error codes, found ${codes.size}`)
+    for (const code of ['JOB_FAILED', 'VIDEO_EXPORT_ENCODE_FAILED', 'UNKNOWN_SETTING_KEY']) {
+        assert.ok(codes.has(code), `the code scan no longer finds ${code}`)
+    }
     const llms = await readFile(LLMS_PATH, 'utf8')
-    assert.deepEqual([...codes].filter(code => !llms.includes(`| \`${code}\` |`)).sort(), [])
+    assert.deepEqual([...codes].filter(code => !llms.includes(`\`${code}\``)).sort(), [])
 })

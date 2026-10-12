@@ -213,6 +213,28 @@ test.describe('LayersAgent.addLayer — media kind', () => {
         expect(result.afterIds).toEqual(result.beforeIds)
     })
 
+    test('invalid base64 returns RESOURCE_DECODE_FAILED without a ghost layer', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async (data) => {
+            const app = window.layersApp
+            const beforeIds = app._layers.map(layer => layer.id)
+            // A data: URL is not raw base64: atob rejects its prefix.
+            const envelope = await window.LayersAgent.pasteImageFromBytes({
+                source: { kind: 'base64', data: `data:image/png;base64,${data}`, mimeType: 'image/png' }
+            })
+            return {
+                envelope,
+                beforeIds,
+                afterIds: app._layers.map(layer => layer.id),
+            }
+        }, TINY_PNG_B64)
+
+        expect(result.envelope.ok).toBe(false)
+        expect(result.envelope.error.code).toBe('RESOURCE_DECODE_FAILED')
+        expect(result.envelope.error.details.field).toBe('source.data')
+        expect(result.afterIds).toEqual(result.beforeIds)
+    })
+
     test('an online transition during source fetch still allows an image layer', async ({ page }) => {
         await bootApp(page)
         const result = await page.evaluate(async () => {
