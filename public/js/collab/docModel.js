@@ -36,6 +36,8 @@
  * @module collab/docModel
  */
 
+import { migrateRetiredParams } from '../noisemaker/retired-params.js'
+
 export const NODE_VERSION = 1
 // Older readers reject this version before substituting a transparent media
 // placeholder and republishing a layer without its image reference.
@@ -1139,7 +1141,8 @@ export async function assertRemoteNodeSemantics(nodes, options = {}) {
         if (!isPlainObject(params)) {
             throw remoteBoundsError(`${field} effectParams must be an object`)
         }
-        for (const [key, value] of Object.entries(params)) {
+        // A document saved before Noisemaker 1.0.289 can hold retired names.
+        for (const [key, value] of Object.entries(migrateRetiredParams(effectId, params))) {
             if (!paramNamePattern.test(key)) {
                 throw remoteBoundsError(`${field} parameter key is not a safe identifier`)
             }
@@ -1305,7 +1308,7 @@ export function applyNodesToComposition(nodes, previousLayers = []) {
                 id: childIdFromNodeId(cid),
                 name: cparsed.name,
                 effectId: cparsed.effectId,
-                effectParams: cparsed.effectParams || {},
+                effectParams: migrateRetiredParams(cparsed.effectId, cparsed.effectParams || {}),
                 visible: cparsed.visible !== false
             })
         }
@@ -1357,7 +1360,7 @@ export function applyNodesToComposition(nodes, previousLayers = []) {
             mediaFile: null,
             mediaType: parsed.mediaType ?? null,
             effectId: parsed.effectId ?? null,
-            effectParams: parsed.effectParams || {},
+            effectParams: migrateRetiredParams(parsed.effectId ?? null, parsed.effectParams || {}),
             strokes,
             drawingCanvas: null,
             children,

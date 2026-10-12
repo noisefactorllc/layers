@@ -139,6 +139,34 @@ test.describe('saveProject / openProject / deleteProject', () => {
         expect(env.state.project.name).toBe('open-target')
     })
 
+    test('openProject renames parameters that Noisemaker retired', async ({ page }) => {
+        await bootApp(page)
+        const out = await page.evaluate(async () => {
+            const A = window.LayersAgent
+            const added = await A.addLayer({ kind: 'text', text: 'old', params: { matteOpacity: 0.5 } })
+            const projectId = (await A.saveProjectAs({ name: 'retired-names' })).result.projectId
+            // Rewrite the stored layer the way a project saved before
+            // Noisemaker 1.0.289 holds it: under the retired name bgOpacity.
+            const storage = await import('/js/utils/project-storage.js')
+            const record = await storage.getProject(projectId)
+            for (const layer of record.layers) {
+                if (layer.id !== added.result.layerId) continue
+                const { matteOpacity, ...rest } = layer.effectParams
+                layer.effectParams = { ...rest, bgOpacity: matteOpacity }
+            }
+            await storage.saveProject(record, projectId)
+            await A.newProject({ width: 100, height: 100 })
+            const opened = await A.openProject({ projectId })
+            const layer = opened.state?.layers.find(l => l.id === added.result.layerId)
+            const more = await A.addLayer({ kind: 'effect', effectId: 'synth/gradient' })
+            return { opened: opened.ok, params: layer?.effect?.params, more: more.ok, error: more.error?.code }
+        })
+        expect(out.opened).toBe(true)
+        expect(out.params).toMatchObject({ matteOpacity: 0.5 })
+        expect(out.params).not.toHaveProperty('bgOpacity')
+        expect(out.more).toBe(true)
+    })
+
     test('openProject NOT_FOUND_PROJECT for unknown id', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() =>

@@ -6,6 +6,7 @@
  */
 
 import { LayersRenderer } from './noisemaker/renderer.js'
+import { migrateRetiredParams } from './noisemaker/retired-params.js'
 import {
     createMediaLayer,
     createEffectLayer,
@@ -1945,6 +1946,8 @@ class LayersApp {
             if (typeof owner.effectParams !== 'object' || Array.isArray(owner.effectParams)) {
                 throw new Error(`Saved layer "${owner.id}" has invalid effect parameters`)
             }
+            // Projects saved before Noisemaker 1.0.289 can hold retired names.
+            owner.effectParams = migrateRetiredParams(owner.effectId, owner.effectParams)
         }
 
         for (const layer of layers) {

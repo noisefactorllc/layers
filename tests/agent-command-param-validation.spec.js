@@ -577,25 +577,34 @@ test.describe('agent effect parameter command boundary', () => {
                 text: 'canonical',
                 params: { matteOpacity: 0.25 },
             })
+            const addedParams = added.state.layers.find(
+                candidate => candidate.id === added.result.layerId).effect.params
             const updated = await window.LayersAgent.setLayerEffectParams({
                 layerId: added.result.layerId,
                 params: { matteOpacity: 0.5 },
             })
-            const retired = await window.LayersAgent.setLayerEffectParams({
+            const app = window.layersApp
+            const modelBefore = JSON.stringify(app._layers)
+            const dslBefore = app._renderer.currentDsl
+            const envelope = await window.LayersAgent.setLayerEffectParams({
                 layerId: added.result.layerId,
                 params: { bgAlpha: 0.75 },
             })
-            return { added, updated, retired }
+            return {
+                added, addedParams, updated, envelope,
+                modelBefore, dslBefore,
+                modelAfter: JSON.stringify(app._layers),
+                dslAfter: app._renderer.currentDsl,
+            }
         })
 
         expect(result.added.ok).toBe(true)
+        expect(result.addedParams).toMatchObject({ matteOpacity: 0.25 })
         expect(result.updated.ok).toBe(true)
         const layer = result.updated.state.layers.find(
             candidate => candidate.id === result.added.result.layerId)
         expect(layer.effect.params).toMatchObject({ matteOpacity: 0.5 })
-        expect(result.retired.ok).toBe(false)
-        expect(result.retired.error.code).toBe('INVALID_ARGS_UNKNOWN')
-        expect(result.retired.error.details.field).toBe('params.bgAlpha')
+        expectRejectedWithoutMutation(result, 'INVALID_ARGS_UNKNOWN', 'params.bgAlpha')
     })
 })
 
