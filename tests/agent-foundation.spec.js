@@ -22,6 +22,20 @@ test.describe('LayersAgent foundation', () => {
         })
         expect(ready).toBe(true)
     })
+
+    test('describes every public command for llms-full.txt', async ({ page }) => {
+        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
+        const { live, described } = await page.evaluate(async () => {
+            await window.LayersAgent.ready
+            const agent = window.LayersAgent
+            const live = Object.keys(agent)
+                .filter(k => typeof agent[k] === 'function' && !k.startsWith('_'))
+            const { COMMAND_GROUPS } = await import('/js/agent/descriptions.js')
+            return { live, described: COMMAND_GROUPS.flatMap(g => Object.keys(g.commands)) }
+        })
+        expect([...described].sort()).toEqual([...live].sort())
+    })
 })
 
 test.describe('LayersAgent envelopes', () => {

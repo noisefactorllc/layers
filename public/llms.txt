@@ -5,12 +5,19 @@
 > strokes, setting selections, and exporting images. This file is the contract
 > for software agents that control Layers.
 
-There are two ways to use it.
+The full contract adds a reference for every command and its arguments:
+https://layers.noisefactor.io/llms-full.txt
 
-## 1. In-page (direct)
+## Connect
 
-Layers attaches `window.LayersAgent` after the app initializes.
-Every command is an async method that returns an envelope.
+Layers runs in the browser. Its API exists only in the page.
+You need a browser tool that can run JavaScript in a page.
+A tool that only fetches HTML cannot use Layers.
+You do not need other software.
+
+1. Open https://layers.noisefactor.io in your browser tool.
+2. Run JavaScript in the page. Wait for `window.LayersAgent.ready`.
+3. Call commands. Every command is an async method that returns an envelope.
 
 ```js
 await window.LayersAgent.ready                       // resolves once bootstrap is done
@@ -18,22 +25,27 @@ const v = window.LayersAgent.version                  // current API version (e.
 const env = await window.LayersAgent.getState({})     // any command
 ```
 
-Use this path from headless browsers, Playwright tests, or DevTools.
+The document is in that page. To keep your work, call `saveProject`.
+`saveProject` writes the project to the storage of that browser.
 
-## 2. Via the layers-mcp sidecar (recommended for agents)
+---
 
-`layers-mcp` is a Model Context Protocol server (stdio) that controls
-Layers in headless Chromium. Every LayersAgent command becomes an MCP tool.
-The server writes image and video exports to a configurable directory.
-It returns the file path in the envelope.
+## Keep results small
 
-- Repo: `https://github.com/noisefactorllc/layers-mcp`
-- Configure with `LAYERS_URL`, `LAYERS_MCP_OUTPUT_DIR`, `LAYERS_MCP_PROFILE_DIR`
-- Example client config: `examples/claude-code.json` in the repo
+Your browser tool sends each script result back to you.
+A large result uses a large part of your context.
 
-Agents using an MCP client speak normal `tools/list` and `tools/call`. The
-underlying envelope shape is the same as the in-page API. The MCP server
-wraps the envelope in a content block.
+- Return only the fields that you need from each script.
+- Every envelope includes the full `state`. Remove it when you do not need it.
+- `exportImage` always returns the full image as base64 in `result.bytes`.
+  Remove `bytes` before you return the envelope, unless you need the bytes.
+- To look at the canvas, call `getThumbnail`. By default, its longest side is 256 pixels.
+
+```js
+const env = await LayersAgent.exportImage({ format: 'png' })   // starts the download
+const { bytes, ...result } = env.result
+return { ok: env.ok, result }
+```
 
 ---
 
@@ -126,27 +138,31 @@ state: {
 
 ## Tool discovery
 
-Don't hard-code command names. Discover them at runtime:
+llms-full.txt lists every command with a description and its arguments.
+You can also read the same data from the page:
 
 ```js
-// In-page: enumerate live LayersAgent
+// Every public command
 const commands = Object.keys(window.LayersAgent)
     .filter(k => typeof window.LayersAgent[k] === 'function' && !k.startsWith('_'))
 
-// Fetch the JSON-Schema-like map for each
+// A one-line description of each command, in groups
+const { COMMAND_GROUPS } = await import('/js/agent/descriptions.js')
+
+// The argument schema of each command that takes arguments
 const { SCHEMAS } = await import('/js/agent/schemas.js')
 console.log(SCHEMAS.addLayer)
 // -> { type:'object', properties:{ kind:{type:'string', enum:[...]}, ... }, required:['kind'] }
 ```
 
-`_`-prefixed commands (`_ping`, `_echoNumber`, `_echoEnum`, `_echoNested`,
-`_sleep`) are test/diagnostic only. Skip them.
+A command that is not in `SCHEMAS` takes no arguments.
+Skip `_`-prefixed names. They are not public commands.
 
-About 80 commands cover these operations:
+The commands cover these operations:
 
 - Create, read, update, and delete layers. Set layer properties and transforms.
 - Set effect parameters and child effects.
-- Draw with `paintStroke`, `drawShape`, and `fillRegion`. Edit masks.
+- Draw with `paintStroke` and `drawShape`. Fill an area with `fillRegion`. Edit masks.
 - Create and modify rectangle, oval, polygon, lasso, wand, and color-range selections.
 - Manage projects, undo, and redo.
 - Control the view, foreground, settings, zoom, and playback.
@@ -163,24 +179,30 @@ About 80 commands cover these operations:
 | `INVALID_ARGS_REQUIRED` | missing required field |
 | `INVALID_ARGS_RANGE` | numeric out of range |
 | `INVALID_ARGS_ENUM` | not in allowed enum |
+| `INVALID_ARGS_UNKNOWN` | a field that the schema does not declare, or an effect parameter that the effect does not declare |
 | `NOT_FOUND_LAYER` | unknown layer id or child effect id |
 | `NOT_FOUND_STROKE` | unknown stroke id on a drawing layer (`eraseStroke`) |
 | `NOT_FOUND_EFFECT` | unknown effect id (response includes `didYouMean`) |
 | `NOT_FOUND_JOB` | unknown job id |
+| `NOT_FOUND_PROJECT` | unknown project id |
+| `NOT_FOUND_EXPORT` | `releaseExport` got an id that has no `captureOnly` video URL |
+| `CONFLICT_BASE_LAYER` | `reorderLayer` tried to move the base layer, or to move a layer to index 0 |
+| `CONFLICT_DUPLICATE_FAILED` | the app could not duplicate the layer |
+| `CONFLICT_TOOL_BLOCKED_FOR_TYPE` | the command does not support this layer type (`flipLayer` on a layer that is not media) |
+| `CONFLICT_NOT_TRANSFORMABLE_LAYER` | the layer has no raster source to transform |
+| `CONFLICT_NOT_EFFECT_LAYER` | the layer is not an effect layer |
+| `CONFLICT_NOT_DRAWING_LAYER` | the layer is not a drawing layer |
+| `CONFLICT_NO_SELECTION` | the command needs an active selection |
+| `CONFLICT_LAYER_HAS_MASK` | the layer already has a mask |
+| `CONFLICT_NO_MASK` | the layer has no mask |
+| `CONFLICT_MEDIA_BLOCKED_ONLINE` | a video layer while a collaboration session is online |
+| `CONFLICT_PROJECT_REPLACEMENT` | another project change cancelled `newProject` or `openProject` |
 | `CONFLICT_JOB_IN_PROGRESS` | a duplicate job is already running (e.g. installFontBundle) |
 | `JOB_LIMIT_EXCEEDED` | too many active jobs (cap = 20) |
 | `JOB_CANCELLED` | the job was cancelled (terminal state, not an error per se) |
 | `RESOURCE_DECODE_FAILED` | base64 / URL fetch / image decode failed |
+| `RENDER_LAYER_COMPOSITE_FAILED` | the renderer could not isolate the layer (`getLayerThumbnail`) |
 | `INTERNAL_ERROR` | unexpected handler throw |
-
-MCP-only:
-
-| Code | When |
-|---|---|
-| `JOB_TIMEOUT` | `waitForJob` timed out (sidecar default 120s for export, 600s for fonts) |
-| `JOB_NOT_SUCCEEDED` | job settled `failed` or `cancelled` |
-| `UNKNOWN_TOOL` | unrecognized MCP tool name |
-| `HANDLER_THREW` | sidecar handler threw outside the normal envelope |
 
 `details` always includes the field/value that caused the error. For
 `NOT_FOUND_EFFECT`, `details.didYouMean` is the 3 closest effect ids by
@@ -215,6 +237,14 @@ const settled = (await LayersAgent.waitForJob({ jobId, timeoutMs: 120000 })).res
 await LayersAgent.cancelJob({ jobId })
 ```
 
+A timeout is not a failure. `waitForJob` then returns `ok: true` and the job
+with `timedOut: true`. Check `timedOut` before you read `status`.
+Without `timeoutMs`, or with `timeoutMs: 0`, `waitForJob` waits with no limit.
+
+Your browser tool can stop a script that runs too long.
+For a long job, call `waitForJob` with a short `timeoutMs`.
+Repeat the call until `timedOut` is false.
+
 `JOB_KINDS` is exported from `/js/agent/jobs.js`:
 
 ```js
@@ -231,12 +261,6 @@ Cancellation during that call may take several seconds.
 
 `exportVideo` checks for cancellation at every frame boundary and before encoder finalization.
 
-**Via the MCP sidecar**, `tools/call` waits for `installFontBundle` and
-`exportVideo` to finish. The response envelope contains the completed job.
-Agents do not need to call `waitForJob` themselves.
-On timeout, the wrapper returns `ok:false` with `JOB_TIMEOUT`.
-For other unsuccessful job outcomes, it returns `ok:false` with `JOB_NOT_SUCCEEDED`.
-
 ---
 
 ## Exports & downloads
@@ -247,28 +271,24 @@ For other unsuccessful job outcomes, it returns `ok:false` with `JOB_NOT_SUCCEED
 { id, kind: 'image'|'video', filename, mimeType, sizeBytes, createdAt }
 ```
 
-In the **in-page** path, exports trigger a browser download (`<a download>`).
-The agent doesn't get bytes directly except via `exportImage`'s `bytes`
-field (base64 PNG/JPEG/WebP).
+By default, both commands start a browser download.
+The browser puts the file in its download folder.
 
-Via the **MCP sidecar**, the Playwright runtime captures the download and
-writes it to `LAYERS_MCP_OUTPUT_DIR`. The envelope's `result.filePath` is
-the absolute path. For `exportVideo` it's nested as `result.result.filePath`
-because the envelope wraps the settled-job state.
+`exportImage` also returns the image as base64 in `result.bytes`, with or
+without the download. `triggerDownload: false` skips the download.
 
 ### captureOnly + releaseExport
 
-`exportVideo({captureOnly: true})` skips the browser download.
-The completed job provides `result.result.blobUrl` and an `exportId`.
-The `blobUrl` remains valid until the page unloads or the agent calls `releaseExport({exportId})`.
-After reading each video's bytes, call `releaseExport({exportId})` to free its memory.
-Otherwise, the Blob remains in memory for the rest of the page's lifetime.
+`captureOnly: true` skips the browser download on both commands.
 
 In captureOnly mode, `exportImage` returns `result.bytes` as a base64-encoded
-image, plus an `exportId`. `exportVideo` returns `result.result.blobUrl`,
-an object URL that the caller can fetch.
+image, plus an `exportId`. There is no blob URL to release.
+
+`exportVideo({captureOnly: true})` gives a completed job with `result.result.blobUrl` and an `exportId`.
 The envelope omits the raw Blob because envelopes must be JSON-serializable.
-Call `releaseExport({ exportId })` after reading the video to revoke its URL.
+The `blobUrl` remains valid until the page unloads or the agent calls `releaseExport({exportId})`.
+After you read the video bytes, call `releaseExport({exportId})` to free its memory.
+Otherwise, the Blob remains in memory for the rest of the page's lifetime.
 
 ```js
 const env = await LayersAgent.exportVideo({ format: 'mp4', captureOnly: true, ... })
@@ -278,9 +298,7 @@ const bytes = await (await fetch(blobUrl)).arrayBuffer()
 await LayersAgent.releaseExport({ exportId })   // frees the Blob
 ```
 
-`exportImage`'s captureOnly path returns base64 bytes inline.
-There is no blob URL to release.
-Calling `releaseExport` with an image `exportId` throws `NOT_FOUND_EXPORT`.
+`releaseExport` with an image `exportId` fails with `NOT_FOUND_EXPORT`.
 
 ---
 
@@ -289,7 +307,7 @@ Calling `releaseExport` with an image `exportId` throws `NOT_FOUND_EXPORT`.
 **Run a command and react to state:**
 
 ```js
-const env = await LayersAgent.addLayer({ kind: 'effect', effectId: 'NM/perlin' })
+const env = await LayersAgent.addLayer({ kind: 'effect', effectId: 'synth/gradient' })
 if (!env.ok) throw new Error(`${env.error.code}: ${env.error.message}`)
 const newLayerId = env.result.layerId
 // `env.state.layers` already includes the new layer; no extra getState call.
@@ -299,23 +317,23 @@ const newLayerId = env.result.layerId
 
 ```js
 const env = await LayersAgent.searchEffects({ query: 'noise' })
-// env.result is a list of { effectId, name, category, ... }
-const def = (await LayersAgent.getEffectDefinition({ effectId: 'NM/perlin' })).result
+// env.result.effects is a list of { effectId, namespace, name, description, tags, ... }
+const def = (await LayersAgent.getEffectDefinition({ effectId: 'synth/gradient' })).result
 // def includes param spec, defaults, name, category
 ```
 
-**Make a rectangular selection and apply a fill:**
+**Show a layer only inside a rectangle:**
 
 ```js
 await LayersAgent.setRectangleSelection({ x: 50, y: 50, width: 200, height: 200 })
-await LayersAgent.fillRegion({ layerId: '...', color: '#ff0000' })
+await LayersAgent.addMaskFromSelection({ layerId: '...' })
 ```
 
-**Export and locate the file (via MCP sidecar):**
+**Look at the canvas:**
 
 ```js
-const env = await LayersAgent.exportImage({ format: 'png' })
-console.log(env.result.filePath)   // /Users/you/layers-mcp-exports/layers-2026-...-png
+const env = await LayersAgent.getThumbnail({ maxDimension: 512, format: 'png' })
+return env.result   // { bytes, mimeType, format, width, height, sizeBytes }
 ```
 
 ---
@@ -335,12 +353,10 @@ Alternatively, wait for one or two `getThumbnail` calls before reading bytes.
 
 ## Pointers
 
+- Full command reference: https://layers.noisefactor.io/llms-full.txt
 - Source of truth: `/js/agent/index.js` (registration), `/js/agent/commands.js`
-  (handlers), `/js/agent/schemas.js` (input schemas), `/js/agent/jobs.js`
-  (job registry + `JOB_KINDS`), `/js/agent/snapshot.js` (state builder)
+  (handlers), `/js/agent/schemas.js` (input schemas), `/js/agent/descriptions.js`
+  (command descriptions), `/js/agent/jobs.js` (job registry + `JOB_KINDS`),
+  `/js/agent/snapshot.js` (state builder)
 - Test/diagnostic back door: `window.__LAYERS_TEST_HOOKS.jobs` (Playwright
   specs only -- NOT a public API)
-- MCP sidecar: `https://github.com/noisefactorllc/layers-mcp`. See its
-  `README.md` for config and `examples/claude-code.json` for client wiring.
-- Commands return an MCP-content block when called via the sidecar.
-  The inner JSON is the envelope described above.

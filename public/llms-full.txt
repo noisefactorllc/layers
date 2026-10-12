@@ -1,0 +1,1150 @@
+# Layers -- Agent API
+
+> Layers is a browser-based image/video editor. Its `window.LayersAgent` API
+> exposes UI operations as JSON commands. These include adding layers, painting
+> strokes, setting selections, and exporting images. This file is the contract
+> for software agents that control Layers.
+
+The full contract adds a reference for every command and its arguments:
+https://layers.noisefactor.io/llms-full.txt
+
+## Connect
+
+Layers runs in the browser. Its API exists only in the page.
+You need a browser tool that can run JavaScript in a page.
+A tool that only fetches HTML cannot use Layers.
+You do not need other software.
+
+1. Open https://layers.noisefactor.io in your browser tool.
+2. Run JavaScript in the page. Wait for `window.LayersAgent.ready`.
+3. Call commands. Every command is an async method that returns an envelope.
+
+```js
+await window.LayersAgent.ready                       // resolves once bootstrap is done
+const v = window.LayersAgent.version                  // current API version (e.g. "1.0")
+const env = await window.LayersAgent.getState({})     // any command
+```
+
+The document is in that page. To keep your work, call `saveProject`.
+`saveProject` writes the project to the storage of that browser.
+
+---
+
+## Keep results small
+
+Your browser tool sends each script result back to you.
+A large result uses a large part of your context.
+
+- Return only the fields that you need from each script.
+- Every envelope includes the full `state`. Remove it when you do not need it.
+- `exportImage` always returns the full image as base64 in `result.bytes`.
+  Remove `bytes` before you return the envelope, unless you need the bytes.
+- To look at the canvas, call `getThumbnail`. By default, its longest side is 256 pixels.
+
+```js
+const env = await LayersAgent.exportImage({ format: 'png' })   // starts the download
+const { bytes, ...result } = env.result
+return { ok: env.ok, result }
+```
+
+---
+
+## The envelope
+
+Every command response -- success or failure -- has this shape:
+
+```js
+// success
+{
+    ok: true,
+    command: "getState",
+    apiVersion: "1.0",
+    result: { /* command-specific */ },
+    state: { /* full state snapshot */ },
+    warnings: [{ code: "...", message: "..." }]  // optional
+}
+
+// failure
+{
+    ok: false,
+    command: "addLayer",
+    apiVersion: "1.0",
+    error: {
+        code: "INVALID_ARGS_ENUM",
+        message: "Unknown kind: ...",
+        details: { field: "kind", got: "foo" }
+    },
+    state: { /* full state snapshot */ }
+}
+```
+
+**Every response includes state, whether the command succeeds or fails.**
+Read `env.state` after each mutation. A separate `getState` call is unnecessary.
+
+---
+
+## Warnings
+
+`env.warnings`, when present on a success envelope, is an array of structured
+objects (not plain strings):
+
+```js
+{
+    code:    "UNKNOWN_SETTING_KEY",     // stable identifier; agents can switch on this
+    key:     "foo",                      // optional; the offending field if applicable
+    message: "unknown setting key: foo (ignored)"  // human-readable
+}
+```
+
+The response includes `warnings` only when the array is non-empty.
+Handle unknown warning codes. New codes may appear without an `apiVersion` change.
+
+Examples:
+- `UNKNOWN_SETTING_KEY` from `setSettings` -- the key was ignored
+- `THEME_PERSIST_FAILED` from `setSettings` -- localStorage write threw
+- `PROJECT_STORAGE_ERROR` from `listProjects` -- the storage layer threw an exception.
+  The command returned the available result, usually an empty list.
+- `SESSION_TAKEN_OFFLINE` from `newProject`/`openProject` -- an online Seance
+  session went offline first. These commands replace the whole composition,
+  which a shared session cannot represent.
+
+---
+
+## State snapshot shape
+
+```
+state: {
+    apiVersion, schemaVersion,
+    project:        { id, name, isDirty, canUndo, canRedo, canSaveAs },
+    canvas:         { width, height },
+    view:           { zoomMode, isPlaying, loopDuration },
+    foreground:     { color },
+    selection:      null | { kind, bounds, isEmpty, polygonPoints? },
+    layers:         [{ id, name, sourceType, visible, opacity, blendMode,
+                       locked, transform, media, effect, drawing, children, mask }],
+    selectedLayerIds, activeLayerId,
+    jobs:           [{ id, kind, status, startedAt, updatedAt, completedAt,
+                       progress, result, error }],   // most recent 20
+    recentExports:  [{ id, kind, filename, mimeType, sizeBytes, createdAt }],
+    settings:       { theme?, exportImage?, exportVideo? }
+}
+```
+
+`sourceType` is one of `effect | drawing | media | text`. `selection.kind` is
+`rectangle | oval | lasso | polygon | wand | color-range`. `jobs.status` is
+`queued | running | succeeded | failed | cancelled`.
+
+---
+
+## Tool discovery
+
+llms-full.txt lists every command with a description and its arguments.
+You can also read the same data from the page:
+
+```js
+// Every public command
+const commands = Object.keys(window.LayersAgent)
+    .filter(k => typeof window.LayersAgent[k] === 'function' && !k.startsWith('_'))
+
+// A one-line description of each command, in groups
+const { COMMAND_GROUPS } = await import('/js/agent/descriptions.js')
+
+// The argument schema of each command that takes arguments
+const { SCHEMAS } = await import('/js/agent/schemas.js')
+console.log(SCHEMAS.addLayer)
+// -> { type:'object', properties:{ kind:{type:'string', enum:[...]}, ... }, required:['kind'] }
+```
+
+A command that is not in `SCHEMAS` takes no arguments.
+Skip `_`-prefixed names. They are not public commands.
+
+The commands cover these operations:
+
+- Create, read, update, and delete layers. Set layer properties and transforms.
+- Set effect parameters and child effects.
+- Draw with `paintStroke` and `drawShape`. Fill an area with `fillRegion`. Edit masks.
+- Create and modify rectangle, oval, polygon, lasso, wand, and color-range selections.
+- Manage projects, undo, and redo.
+- Control the view, foreground, settings, zoom, and playback.
+- Resize the canvas or image. Adjust levels, contrast, and white balance automatically.
+- Export images and videos. Install and list fonts. Manage jobs.
+
+---
+
+## Error codes
+
+| Code | When |
+|---|---|
+| `INVALID_ARGS_TYPE` | wrong type |
+| `INVALID_ARGS_REQUIRED` | missing required field |
+| `INVALID_ARGS_RANGE` | numeric out of range |
+| `INVALID_ARGS_ENUM` | not in allowed enum |
+| `INVALID_ARGS_UNKNOWN` | a field that the schema does not declare, or an effect parameter that the effect does not declare |
+| `NOT_FOUND_LAYER` | unknown layer id or child effect id |
+| `NOT_FOUND_STROKE` | unknown stroke id on a drawing layer (`eraseStroke`) |
+| `NOT_FOUND_EFFECT` | unknown effect id (response includes `didYouMean`) |
+| `NOT_FOUND_JOB` | unknown job id |
+| `NOT_FOUND_PROJECT` | unknown project id |
+| `NOT_FOUND_EXPORT` | `releaseExport` got an id that has no `captureOnly` video URL |
+| `CONFLICT_BASE_LAYER` | `reorderLayer` tried to move the base layer, or to move a layer to index 0 |
+| `CONFLICT_DUPLICATE_FAILED` | the app could not duplicate the layer |
+| `CONFLICT_TOOL_BLOCKED_FOR_TYPE` | the command does not support this layer type (`flipLayer` on a layer that is not media) |
+| `CONFLICT_NOT_TRANSFORMABLE_LAYER` | the layer has no raster source to transform |
+| `CONFLICT_NOT_EFFECT_LAYER` | the layer is not an effect layer |
+| `CONFLICT_NOT_DRAWING_LAYER` | the layer is not a drawing layer |
+| `CONFLICT_NO_SELECTION` | the command needs an active selection |
+| `CONFLICT_LAYER_HAS_MASK` | the layer already has a mask |
+| `CONFLICT_NO_MASK` | the layer has no mask |
+| `CONFLICT_MEDIA_BLOCKED_ONLINE` | a video layer while a collaboration session is online |
+| `CONFLICT_PROJECT_REPLACEMENT` | another project change cancelled `newProject` or `openProject` |
+| `CONFLICT_JOB_IN_PROGRESS` | a duplicate job is already running (e.g. installFontBundle) |
+| `JOB_LIMIT_EXCEEDED` | too many active jobs (cap = 20) |
+| `JOB_CANCELLED` | the job was cancelled (terminal state, not an error per se) |
+| `RESOURCE_DECODE_FAILED` | base64 / URL fetch / image decode failed |
+| `RENDER_LAYER_COMPOSITE_FAILED` | the renderer could not isolate the layer (`getLayerThumbnail`) |
+| `INTERNAL_ERROR` | unexpected handler throw |
+
+`details` always includes the field/value that caused the error. For
+`NOT_FOUND_EFFECT`, `details.didYouMean` is the 3 closest effect ids by
+Levenshtein distance.
+
+---
+
+## Jobs (long-running operations)
+
+Some commands return immediately with a `jobId` and run in the background:
+
+- `installFontBundle` -- downloads ~140 MB font bundle into IndexedDB
+- `exportVideo` -- frame-by-frame video encode (can take minutes for long clips)
+
+Pattern (in-page):
+
+```js
+const { result: { jobId } } = await LayersAgent.exportVideo({
+    width: 1024, height: 1024, framerate: 30, duration: 5,
+    format: 'mp4', quality: 'high'
+})
+
+// Poll
+const job = (await LayersAgent.getJob({ jobId })).result
+// { id, kind, status, progress:{phase, current, total, message}, result, error }
+
+// Or block
+const settled = (await LayersAgent.waitForJob({ jobId, timeoutMs: 120000 })).result
+// settled.status === 'succeeded' | 'failed' | 'cancelled', plus settled.timedOut if applicable
+
+// Cancel
+await LayersAgent.cancelJob({ jobId })
+```
+
+A timeout is not a failure. `waitForJob` then returns `ok: true` and the job
+with `timedOut: true`. Check `timedOut` before you read `status`.
+Without `timeoutMs`, or with `timeoutMs: 0`, `waitForJob` waits with no limit.
+
+Your browser tool can stop a script that runs too long.
+For a long job, call `waitForJob` with a short `timeoutMs`.
+Repeat the call until `timedOut` is false.
+
+`JOB_KINDS` is exported from `/js/agent/jobs.js`:
+
+```js
+import { JOB_KINDS } from '/js/agent/jobs.js'
+// JOB_KINDS.INSTALL_FONT_BUNDLE === 'install-font-bundle'
+// JOB_KINDS.EXPORT_VIDEO === 'export-video'
+```
+
+`installFontBundle` passes AbortSignal to the loader's fetch and extraction calls.
+Cancellation takes effect at chunk or font boundaries.
+A single font extraction cannot be interrupted.
+JSZip extracts a variable font of 5+ MB in one call.
+Cancellation during that call may take several seconds.
+
+`exportVideo` checks for cancellation at every frame boundary and before encoder finalization.
+
+---
+
+## Exports & downloads
+
+`exportImage` and `exportVideo` both record an entry into `state.recentExports`:
+
+```js
+{ id, kind: 'image'|'video', filename, mimeType, sizeBytes, createdAt }
+```
+
+By default, both commands start a browser download.
+The browser puts the file in its download folder.
+
+`exportImage` also returns the image as base64 in `result.bytes`, with or
+without the download. `triggerDownload: false` skips the download.
+
+### captureOnly + releaseExport
+
+`captureOnly: true` skips the browser download on both commands.
+
+In captureOnly mode, `exportImage` returns `result.bytes` as a base64-encoded
+image, plus an `exportId`. There is no blob URL to release.
+
+`exportVideo({captureOnly: true})` gives a completed job with `result.result.blobUrl` and an `exportId`.
+The envelope omits the raw Blob because envelopes must be JSON-serializable.
+The `blobUrl` remains valid until the page unloads or the agent calls `releaseExport({exportId})`.
+After you read the video bytes, call `releaseExport({exportId})` to free its memory.
+Otherwise, the Blob remains in memory for the rest of the page's lifetime.
+
+```js
+const env = await LayersAgent.exportVideo({ format: 'mp4', captureOnly: true, ... })
+const settled = await LayersAgent.waitForJob({ jobId: env.result.jobId })
+const { blobUrl, exportId } = settled.result.result
+const bytes = await (await fetch(blobUrl)).arrayBuffer()
+await LayersAgent.releaseExport({ exportId })   // frees the Blob
+```
+
+`releaseExport` with an image `exportId` fails with `NOT_FOUND_EXPORT`.
+
+---
+
+## Patterns
+
+**Run a command and react to state:**
+
+```js
+const env = await LayersAgent.addLayer({ kind: 'effect', effectId: 'synth/gradient' })
+if (!env.ok) throw new Error(`${env.error.code}: ${env.error.message}`)
+const newLayerId = env.result.layerId
+// `env.state.layers` already includes the new layer; no extra getState call.
+```
+
+**Discover an effect:**
+
+```js
+const env = await LayersAgent.searchEffects({ query: 'noise' })
+// env.result.effects is a list of { effectId, namespace, name, description, tags, ... }
+const def = (await LayersAgent.getEffectDefinition({ effectId: 'synth/gradient' })).result
+// def includes param spec, defaults, name, category
+```
+
+**Show a layer only inside a rectangle:**
+
+```js
+await LayersAgent.setRectangleSelection({ x: 50, y: 50, width: 200, height: 200 })
+await LayersAgent.addMaskFromSelection({ layerId: '...' })
+```
+
+**Look at the canvas:**
+
+```js
+const env = await LayersAgent.getThumbnail({ maxDimension: 512, format: 'png' })
+return env.result   // { bytes, mimeType, format, width, height, sizeBytes }
+```
+
+---
+
+## Caveats
+
+**Font registration is async.** If a layer's requested `font` is not registered
+in the browser, the first render uses Nunito as the fallback.
+Layers renders again after the font loads.
+The agent's snapshot reports the requested font immediately.
+The rendered pixels still use the fallback for at least one frame.
+
+To read output with the requested font, first call `installFontBundle` if the font is in the fontaine bundle.
+Alternatively, wait for one or two `getThumbnail` calls before reading bytes.
+
+---
+
+## Pointers
+
+- Full command reference: https://layers.noisefactor.io/llms-full.txt
+- Source of truth: `/js/agent/index.js` (registration), `/js/agent/commands.js`
+  (handlers), `/js/agent/schemas.js` (input schemas), `/js/agent/descriptions.js`
+  (command descriptions), `/js/agent/jobs.js` (job registry + `JOB_KINDS`),
+  `/js/agent/snapshot.js` (state builder)
+- Test/diagnostic back door: `window.__LAYERS_TEST_HOOKS.jobs` (Playwright
+  specs only -- NOT a public API)
+
+---
+
+## Command reference
+
+Layers has 87 public commands. Call a command as `await window.LayersAgent.<name>(args)`.
+A command with no arguments also accepts no argument.
+
+### Read state
+
+#### `getState`
+
+Returns the full state snapshot. Every envelope already includes it in `state`.
+
+Arguments: none.
+
+#### `getLayer`
+
+Returns the snapshot of one layer.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `getCanvasSize`
+
+Returns the canvas width and height in pixels.
+
+Arguments: none.
+
+#### `getSelection`
+
+Returns the active selection (kind, bounds, optional polygon points), or null when there is no selection.
+
+Arguments: none.
+
+#### `getProjectInfo`
+
+Returns the project part of the snapshot: id, name, isDirty, canUndo, canRedo and canSaveAs.
+
+Arguments: none.
+
+#### `listProjects`
+
+Lists the projects saved in this browser, with id, name, createdAt and modifiedAt.
+
+Arguments: none.
+
+#### `getSettings`
+
+Returns the theme and export presets that this browser stores.
+
+Arguments: none.
+
+#### `getForegroundColor`
+
+Returns the foreground color as a `#rrggbb` string.
+
+Arguments: none.
+
+### Find effects
+
+#### `searchEffects`
+
+Searches the effect catalog. `query` matches a substring, every tag in `tags` must match, and `limit` sets the maximum count.
+
+Arguments:
+
+- `query`: string
+- `namespace`: string
+- `tags`: array of strings
+- `limit`: integer, from 1 to 1000
+
+#### `listEffectCategories`
+
+Returns every namespace and tag in the effect catalog.
+
+Arguments: none.
+
+#### `listCuratedEffects`
+
+Returns the effect groups that the Image and Filter menus show.
+
+Arguments: none.
+
+#### `getEffectDefinition`
+
+Returns the parameters of one effect: name, type, default, range and allowed values.
+
+Arguments:
+
+- `effectId` (required): string
+
+### Jobs
+
+#### `getJob`
+
+Returns the current state of a job: status, progress, and the result or error.
+
+Arguments:
+
+- `jobId` (required): string
+
+#### `waitForJob`
+
+Waits until a job settles or `timeoutMs` passes. A timeout returns `ok: true` with `result.timedOut: true`.
+
+Arguments:
+
+- `jobId` (required): string
+- `timeoutMs`: integer, from 0 to 3600000
+
+#### `cancelJob`
+
+Asks a running job to stop. The job stops at its next check, for example between video frames.
+
+Arguments:
+
+- `jobId` (required): string
+
+### Layers
+
+#### `addLayer`
+
+Adds a layer and returns its id. `kind` is effect (needs `effectId`), drawing, media (needs `source` and `mediaType`) or text (needs `text`). `source` has the same shape as in pasteImageFromBytes.
+
+Arguments:
+
+- `kind` (required): string, one of `effect`, `drawing`, `media`, `text`
+- `effectId`: string
+- `params`: object
+- `name`: string
+- `text`: string
+- `mediaType`: string, one of `image`, `video`
+- `source`: object
+
+#### `deleteLayer`
+
+Deletes a layer.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `duplicateLayer`
+
+Duplicates a layer, selects the copy, and returns its id.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `reorderLayer`
+
+Moves a layer to `toIndex`. Index 0 is the base layer at the bottom. The base layer cannot move, and no layer can move to index 0.
+
+Arguments:
+
+- `layerId` (required): string
+- `toIndex` (required): integer, 0 or more
+
+#### `selectLayer`
+
+Makes one layer the active layer.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `selectLayers`
+
+Selects the given layers. The first id becomes the active layer.
+
+Arguments:
+
+- `layerIds` (required): array of strings
+
+#### `flattenImage`
+
+Merges all layers into one media layer.
+
+Arguments: none.
+
+#### `flattenLayers`
+
+Merges two or more given layers into one raster layer. The other layers do not change.
+
+Arguments:
+
+- `layerIds` (required): array of strings
+
+#### `rasterizeLayer`
+
+Changes an effect or drawing layer into a media layer with its current pixels. The layer loses its effect parameters or strokes.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `flipLayer`
+
+Flips a media layer horizontally (`h`) or vertically (`v`). Other layer types are not supported.
+
+Arguments:
+
+- `layerId` (required): string
+- `axis` (required): string, one of `h`, `v`
+
+#### `setLayerProps`
+
+Sets the name, visible, opacity, blendMode or locked property of a layer.
+
+Arguments:
+
+- `layerId` (required): string
+- `props` (required): object with these fields
+  - `name`: string
+  - `visible`: boolean
+  - `opacity`: number, from 0 to 100
+  - `blendMode`: string, one of `mix`, `multiply`, `screen`, `overlay`, `softLight`, `hardLight`, `darken`, `lighten`, `dodge`, `burn`, `add`, `subtract`, `difference`, `exclusion`, `negation`, `phoenix`
+  - `locked`: boolean
+
+#### `setLayerTransform`
+
+Sets the offset, scale, rotation or flip of a layer. The layer must have a raster source.
+
+Arguments:
+
+- `layerId` (required): string
+- `transform` (required): object with these fields
+  - `offsetX`: number
+  - `offsetY`: number
+  - `scaleX`: number, from 0.01 to 100
+  - `scaleY`: number, from 0.01 to 100
+  - `rotation`: number
+  - `flipH`: boolean
+  - `flipV`: boolean
+
+### Effect parameters and child effects
+
+#### `setLayerEffectParams`
+
+Changes the parameters of an effect layer. The new values merge into the old values. `replace: true` clears the old values first.
+
+Arguments:
+
+- `layerId` (required): string
+- `params` (required): object
+- `replace`: boolean
+
+#### `addChildEffect`
+
+Adds a child effect to a layer and returns its id. A child effect applies on top of the output of its layer.
+
+Arguments:
+
+- `layerId` (required): string
+- `effectId` (required): string
+- `params`: object
+
+#### `removeChildEffect`
+
+Removes a child effect from a layer.
+
+Arguments:
+
+- `layerId` (required): string
+- `childId` (required): string
+
+#### `reorderChildEffect`
+
+Moves a child effect to `toIndex` in the child list of its layer.
+
+Arguments:
+
+- `layerId` (required): string
+- `childId` (required): string
+- `toIndex` (required): integer, 0 or more
+
+#### `setChildEffectProps`
+
+Sets the `visible` or `name` property of a child effect. Other keys have no effect.
+
+Arguments:
+
+- `layerId` (required): string
+- `childId` (required): string
+- `props` (required): object with these fields
+  - `visible`: boolean
+  - `name`: string
+
+#### `setChildEffectParams`
+
+Changes the parameters of a child effect. The new values merge into the old values. `replace: true` clears the old values first.
+
+Arguments:
+
+- `layerId` (required): string
+- `childId` (required): string
+- `params` (required): object
+- `replace`: boolean
+
+### Images and export
+
+#### `getCanvasImageBytes`
+
+Returns the full-size canvas as base64 image data. No download starts.
+
+Arguments:
+
+- `format`: string, one of `png`, `jpg`, `webp`
+- `quality`: number, from 0 to 1
+
+#### `getThumbnail`
+
+Returns a small canvas image as base64 data. The longest side is `maxDimension` (default 256).
+
+Arguments:
+
+- `maxDimension`: integer, from 1 to 4096
+- `format`: string, one of `png`, `jpg`, `webp`
+- `quality`: number, from 0 to 1
+
+#### `getLayerThumbnail`
+
+Returns a small image of one layer, with its child effects and mask, as base64 data.
+
+Arguments:
+
+- `layerId` (required): string
+- `maxDimension`: integer, from 1 to 4096
+- `format`: string, one of `png`, `jpg`, `webp`
+- `quality`: number, from 0 to 1
+
+#### `exportImage`
+
+Exports the canvas as an image and starts a browser download. The result always includes the image as base64 in `bytes`.
+
+Arguments:
+
+- `format`: string, one of `png`, `jpg`, `webp`
+- `quality`: number, from 0 to 1
+- `width`: integer, from 1 to 8192
+- `height`: integer, from 1 to 8192
+- `filename`: string
+- `triggerDownload`: boolean
+- `captureOnly`: boolean
+
+#### `pasteImageFromBytes`
+
+Adds an image as a new media layer. `source` is `{kind: "base64", data, mimeType?}` or `{kind: "url", value}`.
+
+Arguments:
+
+- `source` (required): object
+- `name`: string
+
+#### `exportVideo`
+
+Starts a video export job (MP4, or a ZIP of PNG frames) and returns its `jobId`. The file downloads when the job succeeds.
+
+Arguments:
+
+- `width`: integer, from 2 to 4096
+- `height`: integer, from 2 to 4096
+- `framerate`: integer, one of `24`, `30`, `60`
+- `duration`: number, from 0.1 to 300
+- `loopCount`: integer, from 1 to 10
+- `format`: string, one of `mp4`, `zip`
+- `quality`: string, one of `low`, `medium`, `high`, `very high`, `ultra`
+- `playFrom`: string, one of `beginning`, `current`
+- `filename`: string
+- `captureOnly`: boolean
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+#### `releaseExport`
+
+Frees the blob URL of a `captureOnly` video export. Call it after you read the bytes.
+
+Arguments:
+
+- `exportId` (required): string, at least 1 character
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+### Selections
+
+#### `selectAll`
+
+Selects the whole canvas.
+
+Arguments: none.
+
+#### `selectNone`
+
+Clears the selection.
+
+Arguments: none.
+
+#### `selectInverse`
+
+Inverts the selection. A selection must be active.
+
+Arguments: none.
+
+#### `setRectangleSelection`
+
+Selects a rectangle from its top-left corner, width and height.
+
+Arguments:
+
+- `x` (required): integer
+- `y` (required): integer
+- `width` (required): integer, 1 or more
+- `height` (required): integer, 1 or more
+
+#### `setOvalSelection`
+
+Selects the oval inside the given rectangle.
+
+Arguments:
+
+- `x` (required): integer
+- `y` (required): integer
+- `width` (required): integer, 1 or more
+- `height` (required): integer, 1 or more
+
+#### `setPolygonSelection`
+
+Selects a polygon or lasso shape from 3 or more points. Each point is `[x, y]` or `{x, y}`.
+
+Arguments:
+
+- `kind`: string, one of `polygon`, `lasso`
+- `points` (required): array, each item array of numbers
+
+#### `setMagicWandSelection`
+
+Selects the connected pixels with a color near the color at (x, y). `tolerance` is 0 to 255 (default 32).
+
+Arguments:
+
+- `x` (required): integer, 0 or more
+- `y` (required): integer, 0 or more
+- `tolerance`: integer, from 0 to 255
+
+#### `selectColorRange`
+
+Selects every pixel with a color near the color at (x, y), connected or not. `tolerance` defaults to 32.
+
+Arguments:
+
+- `x` (required): integer, 0 or more
+- `y` (required): integer, 0 or more
+- `tolerance`: integer, from 0 to 255
+
+#### `expandSelection`
+
+Grows the selection by `pixels`.
+
+Arguments:
+
+- `pixels` (required): integer, from 1 to 1000
+
+#### `contractSelection`
+
+Shrinks the selection by `pixels`.
+
+Arguments:
+
+- `pixels` (required): integer, from 1 to 1000
+
+#### `featherSelection`
+
+Softens the selection edge over `pixels`.
+
+Arguments:
+
+- `pixels` (required): integer, from 1 to 1000
+
+#### `smoothSelection`
+
+Smooths rough selection edges with a blur of `pixels`.
+
+Arguments:
+
+- `pixels` (required): integer, from 1 to 1000
+
+#### `borderSelection`
+
+Replaces the selection with a band, `pixels` wide, inside its edge.
+
+Arguments:
+
+- `pixels` (required): integer, from 1 to 1000
+
+#### `cropToSelection`
+
+Crops the image and canvas to the bounding box of the selection.
+
+Arguments: none.
+
+### Masks
+
+#### `addLayerMask`
+
+Adds a white mask to a layer. A white mask shows the full layer.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `deleteLayerMask`
+
+Removes the mask of a layer. The layer pixels do not change.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `addMaskFromSelection`
+
+Adds a mask to a layer. The mask starts as a copy of the current selection.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `invertLayerMask`
+
+Inverts the mask of a layer.
+
+Arguments:
+
+- `layerId` (required): string
+
+#### `setMaskEnabled`
+
+Turns the mask of a layer on or off. A disabled mask stays on the layer.
+
+Arguments:
+
+- `layerId` (required): string
+- `enabled` (required): boolean
+
+#### `featherMask`
+
+Softens the mask edge over `radius` pixels.
+
+Arguments:
+
+- `layerId` (required): string
+- `radius` (required): integer, from 1 to 100
+
+#### `expandMask`
+
+Grows the mask by `radius` pixels.
+
+Arguments:
+
+- `layerId` (required): string
+- `radius` (required): integer, from 1 to 100
+
+#### `contractMask`
+
+Shrinks the mask by `radius` pixels.
+
+Arguments:
+
+- `layerId` (required): string
+- `radius` (required): integer, from 1 to 100
+
+#### `smoothMask`
+
+Smooths rough mask edges with a blur of `radius` pixels.
+
+Arguments:
+
+- `layerId` (required): string
+- `radius` (required): integer, from 1 to 100
+
+### Drawing
+
+#### `paintStroke`
+
+Paints a stroke through 2 or more `points` (`[x, y]` or `{x, y}`) on a drawing layer. With `mode: "eraser"`, the stroke paints transparency.
+
+Arguments:
+
+- `layerId`: string
+- `points` (required): array
+- `size` (required): integer, from 1 to 200
+- `opacity`: number, from 0 to 1
+- `color` (required): string
+- `mode`: string, one of `brush`, `eraser`
+
+#### `eraseStroke`
+
+Removes one stroke, by its `strokeId`, from a drawing layer.
+
+Arguments:
+
+- `layerId` (required): string, at least 1 character
+- `strokeId` (required): string, at least 1 character
+
+#### `clearDrawingLayer`
+
+Removes all strokes from a drawing layer and returns the number it removed.
+
+Arguments:
+
+- `layerId` (required): string, at least 1 character
+
+#### `drawShape`
+
+Draws a rectangle or ellipse, filled or outlined, on a drawing layer.
+
+Arguments:
+
+- `layerId`: string
+- `shape` (required): string, one of `rect`, `ellipse`
+- `x` (required): integer
+- `y` (required): integer
+- `width` (required): integer, 1 or more
+- `height` (required): integer, 1 or more
+- `color` (required): string
+- `size` (required): integer, from 1 to 200
+- `opacity`: number, from 0 to 1
+- `filled`: boolean
+
+#### `fillRegion`
+
+Adds a media layer of `color`, masked to the connected area with a color near the color at (x, y).
+
+Arguments:
+
+- `x` (required): integer, 0 or more
+- `y` (required): integer, 0 or more
+- `color` (required): string
+- `tolerance`: integer, from 0 to 255
+
+### Projects and history
+
+#### `newProject`
+
+Starts a new empty project at the given size. It discards unsaved changes without a warning.
+
+Arguments:
+
+- `width` (required): integer, from 1 to 8192
+- `height` (required): integer, from 1 to 8192
+- `name`: string
+
+#### `openProject`
+
+Opens a saved project in place of the current project.
+
+Arguments:
+
+- `projectId` (required): string, at least 1 character
+
+#### `saveProject`
+
+Saves the open project. When no project is open, it saves a new project named `name`.
+
+Arguments:
+
+- `name`: string, at least 1 character
+
+#### `saveProjectAs`
+
+Saves the current state as a new project named `name` and returns its id.
+
+Arguments:
+
+- `name` (required): string, at least 1 character
+
+#### `deleteProject`
+
+Deletes a saved project. When it is the open project, the canvas keeps its content.
+
+Arguments:
+
+- `projectId` (required): string, at least 1 character
+
+#### `undo`
+
+Undoes the last change. When `canUndo` is false, nothing changes.
+
+Arguments: none.
+
+#### `redo`
+
+Redoes the last undone change. When `canRedo` is false, nothing changes.
+
+Arguments: none.
+
+### View and settings
+
+#### `setForegroundColor`
+
+Sets the foreground color from a `#rrggbb` string.
+
+Arguments:
+
+- `color` (required): string, matches `/^#[0-9a-fA-F]{6}$/`
+
+#### `setZoom`
+
+Sets the zoom mode.
+
+Arguments:
+
+- `mode` (required): string, one of `fit`, `50`, `100`, `200`
+
+#### `play`
+
+Starts the animation of time-based effects.
+
+Arguments: none.
+
+#### `pause`
+
+Stops the animation. The current frame stays visible.
+
+Arguments: none.
+
+#### `setSettings`
+
+Changes settings. Only `theme` has an effect.
+
+Arguments:
+
+- `theme`: string, one of `system`, `gray-dark`, `gray-light`, `neutral-dark`, `neutral-light`, `corporate`, `cyberpunk`, `earthy`, `organic`, `terminal`, `dark`, `light`
+
+### Canvas and adjustments
+
+#### `resizeImage`
+
+Resamples the image and all layers to a new size. It clears the selection.
+
+Arguments:
+
+- `width` (required): integer, from 1 to 8192
+- `height` (required): integer, from 1 to 8192
+
+#### `resizeCanvas`
+
+Changes the canvas size without resampling. `anchor` (default center) sets the position of the layers.
+
+Arguments:
+
+- `width` (required): integer, from 1 to 8192
+- `height` (required): integer, from 1 to 8192
+- `anchor`: string, one of `top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left`, `bottom`, `bottom-right`
+
+#### `autoLevels`
+
+Adds an adjustment layer that stretches the tonal range. Returns `applied: false` when no change is necessary.
+
+Arguments: none.
+
+#### `autoContrast`
+
+Adds an adjustment layer that stretches luminance to the full range. Returns `applied: false` when no change is necessary.
+
+Arguments: none.
+
+#### `autoWhiteBalance`
+
+Adds an adjustment layer that makes the brightest area neutral white. Returns `applied: false` when no change is necessary.
+
+Arguments: none.
+
+### Fonts
+
+#### `listInstalledFonts`
+
+Returns the state of the font bundle: installed, version, count, and each font as id, family and category.
+
+Arguments: none.
+
+#### `installFontBundle`
+
+Starts a job that downloads the font bundle (about 140 MB) into browser storage. Returns its `jobId`.
+
+Arguments: none.
