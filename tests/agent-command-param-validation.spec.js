@@ -567,29 +567,35 @@ test.describe('agent effect parameter command boundary', () => {
         expectRejectedWithoutMutation(result, 'INVALID_ARGS_TYPE', 'params.radiusY')
     })
 
-    test('valid parameter aliases survive add and update round trips', async ({ page }) => {
+    // Noisemaker 1.0.289 retired parameter aliases: the canonical names
+    // round-trip, and a retired alias is an undeclared parameter.
+    test('canonical parameter names survive add and update round trips', async ({ page }) => {
         await bootApp(page)
         const result = await page.evaluate(async () => {
             const added = await window.LayersAgent.addLayer({
                 kind: 'text',
-                text: 'alias',
-                params: { bgOpacity: 0.25 },
+                text: 'canonical',
+                params: { matteOpacity: 0.25 },
             })
             const updated = await window.LayersAgent.setLayerEffectParams({
                 layerId: added.result.layerId,
-                params: { bgAlpha: 0.5 },
+                params: { matteOpacity: 0.5 },
             })
-            return { added, updated }
+            const retired = await window.LayersAgent.setLayerEffectParams({
+                layerId: added.result.layerId,
+                params: { bgAlpha: 0.75 },
+            })
+            return { added, updated, retired }
         })
 
         expect(result.added.ok).toBe(true)
         expect(result.updated.ok).toBe(true)
         const layer = result.updated.state.layers.find(
             candidate => candidate.id === result.added.result.layerId)
-        expect(layer.effect.params).toMatchObject({
-            bgOpacity: 0.25,
-            bgAlpha: 0.5,
-        })
+        expect(layer.effect.params).toMatchObject({ matteOpacity: 0.5 })
+        expect(result.retired.ok).toBe(false)
+        expect(result.retired.error.code).toBe('INVALID_ARGS_UNKNOWN')
+        expect(result.retired.error.details.field).toBe('params.bgAlpha')
     })
 })
 
