@@ -1120,7 +1120,7 @@ export class LayersRenderer {
         if (blendPassIndex >= 0 && blendPassIndex < blendPasses.length) {
             const { stepIndex } = blendPasses[blendPassIndex]
             this._renderer.applyStepParameterValues?.({
-                [`step_${stepIndex}`]: { mixAmt: this._opacityToMixAmt(opacity, layer.blendMode) }
+                [`step_${stepIndex}`]: { mix: this._opacityToMixAmt(opacity, layer.blendMode) }
             })
         }
     }
@@ -2046,7 +2046,7 @@ export class LayersRenderer {
                         lines.push(`${layerCall}.write(o${layerOutput})`)
                     }
                     const composed = allocSurface()
-                    lines.push(`read(o${transparent}).blendMode(tex: read(o${layerOutput}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${composed})`)
+                    lines.push(`read(o${transparent}).blendMode(tex: read(o${layerOutput}), mode: ${shaderMode}, mix: ${mixAmt}).write(o${composed})`)
                     releaseSurface(transparent)
                     releaseSurface(layerOutput)
                     currentOutput = applyChildChain(layer, composed)
@@ -2089,7 +2089,7 @@ export class LayersRenderer {
 
                 const blended = allocSurface()
                 const shaderMode = this._shaderBlendMode(layer.blendMode)
-                lines.push(`read(o${prevOutput}).blendMode(tex: read(o${layerOutput}), mode: ${shaderMode}, mixAmt: ${mixAmt}).write(o${blended})`)
+                lines.push(`read(o${prevOutput}).blendMode(tex: read(o${layerOutput}), mode: ${shaderMode}, mix: ${mixAmt}).write(o${blended})`)
                 releaseSurface(prevOutput)
                 releaseSurface(layerOutput)
                 currentOutput = blended
