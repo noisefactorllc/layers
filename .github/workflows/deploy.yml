@@ -1,7 +1,7 @@
 name: Deploy
 
 # CI is the only automatic release trigger. Manual dispatch retries release of
-# the selected main SHA; Scaffold independently verifies its CI proof.
+# the selected main SHA; the release independently verifies its CI proof.
 on:
   workflow_run:
     workflows: [ci]
@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  trigger-scaffold-release:
-    name: Dispatch scaffold static-site-release
+  dispatch-release:
+    name: Dispatch the site release
     runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'workflow_run' &&
@@ -45,7 +45,21 @@ jobs:
             const ran = required.every(name => jobs.some(job => job.name === name && job.conclusion === 'success'));
             core.setOutput('release', String(ran));
 
-      - name: Mint scaffold GitHub App token
+      - name: Check the release dispatch configuration
+        if: steps.product-checks.outputs.release == 'true'
+        env:
+          RELEASE_REPOSITORY: ${{ secrets.RELEASE_REPOSITORY }}
+          STATIC_SITE_RELEASE_WORKFLOW: ${{ secrets.STATIC_SITE_RELEASE_WORKFLOW }}
+        run: |
+          missing=""
+          [ -n "$RELEASE_REPOSITORY" ] || missing="$missing RELEASE_REPOSITORY"
+          [ -n "$STATIC_SITE_RELEASE_WORKFLOW" ] || missing="$missing STATIC_SITE_RELEASE_WORKFLOW"
+          if [ -n "$missing" ]; then
+            echo "::error::The release dispatch is not configured. Empty or unset secret(s):$missing"
+            exit 1
+          fi
+
+      - name: Mint release GitHub App token
         if: steps.product-checks.outputs.release == 'true'
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
@@ -53,16 +67,18 @@ jobs:
           client-id: Iv23liy6T6BW0BXuZRzx
           private-key: ${{ secrets.EHSRE_APP_PRIVATE_KEY }}
           owner: noisefactorllc
-          repositories: scaffold
+          repositories: ${{ secrets.RELEASE_REPOSITORY }}
       - name: Dispatch quality-verified source SHA
         if: steps.product-checks.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RELEASE_REPOSITORY: ${{ secrets.RELEASE_REPOSITORY }}
+          STATIC_SITE_RELEASE_WORKFLOW: ${{ secrets.STATIC_SITE_RELEASE_WORKFLOW }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          gh workflow run static-site-release.yml \
-            --repo noisefactorllc/scaffold --ref main \
+          gh workflow run "$STATIC_SITE_RELEASE_WORKFLOW" \
+            --repo "$GITHUB_REPOSITORY_OWNER/$RELEASE_REPOSITORY" --ref main \
             -f site=layers -f sha="$SOURCE_SHA"
           echo "Dispatched Layers release verification for $SOURCE_SHA"

@@ -36,7 +36,7 @@ updates:
   # The Electron wrapper in desktop/ has its own package.json and lockfile.
   # It is a separate entry, not a second directory on the root entry, so a
   # desktop failure cannot stop root updates. The desktop build declares the
-  # @nf/desktop-shell link itself; desktop/package.json does not (scaffold#75).
+  # @nf/desktop-shell link itself; desktop/package.json does not.
   - package-ecosystem: "npm"
     directory: "/desktop"
     schedule:
