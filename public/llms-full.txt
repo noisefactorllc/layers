@@ -61,9 +61,11 @@ How it works, so you can explain it to the person:
 - The tool joins the session as an anonymous participant, which the person
   sees join. It runs commands in the tab that took the composition online,
   through the session, with the same checks as the in-page API. The changes
-  appear in the person's layer stack, and the person can undo them. No other
-  tab answers, even one that becomes the session's owner after the person's
-  tab leaves. After the person reloads that tab, it answers again.
+  appear in the person's layer stack, and the person can undo them. A tab
+  that joined the session from its link does not answer, even one that
+  becomes the session's owner after the person's tab leaves. After the person
+  reloads their tab, it answers again (a copy of it that the browser
+  duplicates answers too).
 - Everyone in the session receives every answer, and anyone who can edit the
   session can send commands to that tab. So nothing that the person keeps in
   this browser is reachable through a session: saved projects
@@ -340,6 +342,7 @@ The commands cover these operations:
 | `RENDER_LAYER_COMPOSITE_FAILED` | the renderer could not isolate the layer (`getLayerThumbnail`) |
 | `NOT_FOUND_COMMAND` | a session request named a command that Layers does not have |
 | `REMOTE_UNAVAILABLE` | the command needs the person at the browser, and came through a session |
+| `CONFLICT_SESSION_ENDED` | the session that sent the command was no longer online in the tab when the command's turn came; the command did not run |
 | `CONFLICT_BEFORE_SESSION` | through a session, `undo` or `redo` would restore a state from before the session went online |
 | `IMAGE_LIMIT` | the tab already took 16 images in ten minutes. `details.retryAfter` is in seconds |
 | `IMAGE_AS_TEXT` | a session request or answer would carry an image as base64 text. Add the image with `image-put` and use `image:<sha256>` |

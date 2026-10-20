@@ -18,7 +18,7 @@
 import { API_VERSION } from './constants.js'
 export { API_VERSION }
 
-import { registerCommand, runCommand } from './dispatcher.js'
+import { makeFailure, registerCommand, runCommand } from './dispatcher.js'
 import { buildSnapshot } from './snapshot.js'
 import * as commands from './commands.js'
 import { createAgentRelay } from './relay.js'
@@ -191,10 +191,17 @@ export function bootstrapAgent(app) {
  * hears the first request from each agent. A request runs the same command,
  * validation and checks as the in-page API, within the limits of session.js.
  *
- * @param {{appVersion: string, uploadImage: (blob: Blob) => Promise<string>, onAgent?: Function}} options
+ * A request waits its turn behind other commands. If its session is no longer
+ * this tab's current one when its turn comes, it does not run.
+ *
+ * @param {{appVersion: string, uploadImage: (blob: Blob) => Promise<string>, onAgent?: Function,
+ *   currentSession?: () => *}} options - `currentSession` names the session a
+ *   request arrives in, or returns null when none is current.
  * @returns {{ WebSocket: typeof WebSocket, tabId: string, sessionCreated: (sessionId: string) => void, answers: () => boolean }}
  */
-export function createSeanceAgentRelay({ appVersion, uploadImage, onAgent }) {
+export function createSeanceAgentRelay({ appVersion, uploadImage, onAgent, currentSession = () => true }) {
+    const ended = command => makeFailure(command, 'CONFLICT_SESSION_ENDED',
+        'The session that sent this command is no longer online in this tab.')
     return createAgentRelay({
         app: 'layers',
         appVersion,
@@ -202,10 +209,15 @@ export function createSeanceAgentRelay({ appVersion, uploadImage, onAgent }) {
         uploadImage,
         onAgent,
         async invoke(command, args) {
+            const session = currentSession()
             const refused = checkSessionRequest(command, args)
             if (refused) return { envelope: refused }
+            if (session === null) return { envelope: ended(command) }
+            const isCurrent = () => currentSession() === session
             await LayersAgent.ready
-            const { envelope, image } = await runCommand(command, args, { session: true })
+            const { envelope, image } = await runCommand(command, args, { session: true, isCurrent })
+            // The answer, and any image, belong only to the session that asked.
+            if (!isCurrent()) return { envelope: ended(command) }
             return { envelope: sessionEnvelope(command, envelope, LayersAgent._app), image }
         },
     })

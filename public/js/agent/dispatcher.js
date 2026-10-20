@@ -66,8 +66,10 @@ const RUNNERS = new Map()
  * @param {(args: object, app: object, mutationToken?: object, context?: {session?: boolean}) => Promise<{ result, warnings?, image? }>} handler
  *   Async handler receiving validated args, the app, its lifecycle token, and
  *   the context of the call: `context.session` is true when the command came
- *   through the person's Seance session. Returns a plain object with
- *   result/warnings and, for an image, `image`; the dispatcher wraps it.
+ *   through the person's Seance session, and `context.isCurrent()`, when
+ *   given, says whether that session is still current once the command's turn
+ *   comes. Returns a plain object with result/warnings and, for an image,
+ *   `image`; the dispatcher wraps it.
  */
 export function registerCommand(agent, name, handler) {
     const run = (args = {}, context = {}) => {
@@ -76,6 +78,11 @@ export function registerCommand(agent, name, handler) {
         try {
             if (!LIFECYCLE_EXEMPT_COMMANDS.has(name)) {
                 mutationToken = await agent._app?._acquireProjectLifecycle?.()
+            }
+            if (context.isCurrent && !context.isCurrent()) {
+                return { envelope: makeFailure(name, 'CONFLICT_SESSION_ENDED',
+                    'The session that sent this command is no longer online in this tab.',
+                    {}, safeSnapshot(agent._app)) }
             }
             const schema = SCHEMAS[name]
             if (schema) {
@@ -107,7 +114,7 @@ export function registerCommand(agent, name, handler) {
         return CONCURRENT_COMMANDS.has(name) ? execute() : serialize(execute)
     }
     RUNNERS.set(name, run)
-    agent[name] = async (args = {}) => inlineImage(await run(args))
+    agent[name] = async (args = {}) => inlineImage(name, await run(args))
 }
 
 /**
@@ -135,18 +142,32 @@ export function runCommand(name, args = {}, context = {}) {
  * @param {Blob} blob
  * @returns {Promise<string>}
  */
-export async function blobToBase64(blob) {
-    const bytes = new Uint8Array(await blob.arrayBuffer())
-    let binary = ''
-    for (let at = 0; at < bytes.length; at += 0x8000) {
-        binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000))
-    }
-    return btoa(binary)
+export function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onloadend = () => {
+            const result = reader.result
+            if (typeof result !== 'string') {
+                reject(reader.error || new Error('FileReader produced non-string result'))
+                return
+            }
+            const comma = result.indexOf(',')
+            resolve(comma >= 0 ? result.slice(comma + 1) : result)
+        }
+        reader.onerror = () => reject(reader.error || new Error('FileReader failed'))
+        reader.readAsDataURL(blob)
+    })
 }
 
-async function inlineImage({ envelope, image }) {
+// The in-page method returns the image's bytes as base64 in the result, as
+// it always has. An encoding failure is a failure envelope, not a rejection.
+async function inlineImage(name, { envelope, image }) {
     if (!image) return envelope
-    return { ...envelope, result: { bytes: await blobToBase64(image), ...envelope.result } }
+    try {
+        return { ...envelope, result: { bytes: await blobToBase64(image), ...envelope.result } }
+    } catch (err) {
+        return makeFailure(name, 'INTERNAL_ERROR', err?.message || String(err), {}, envelope.state)
+    }
 }
 
 function safeSnapshot(app) {

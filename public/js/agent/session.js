@@ -33,8 +33,14 @@ const READ_ONLY = new Set([
     'getLayerThumbnail', 'listInstalledFonts',
 ])
 
-// The state fields that describe what the person keeps in this browser.
-const PRIVATE_STATE = new Set(['foreground', 'jobs', 'recentExports', 'settings'])
+// The state that a session sees. Everything else in a snapshot stays in this
+// tab: the saved project's id and name, the foreground color, jobs, exports,
+// settings and media file names, and any field added to the snapshot later.
+export const SESSION_STATE_KEYS = ['apiVersion', 'schemaVersion', 'project', 'canvas', 'view',
+    'selection', 'layers', 'selectedLayerIds', 'activeLayerId']
+export const SESSION_LAYER_KEYS = ['id', 'name', 'sourceType', 'visible', 'opacity', 'blendMode',
+    'locked', 'transform', 'media', 'effect', 'drawing', 'children', 'mask']
+export const SESSION_MEDIA_KEYS = ['type', 'width', 'height', 'durationSec']
 
 // An image that the session holds, named by the SHA-256 of its bytes.
 const SESSION_IMAGE_REF = /^image:[a-f0-9]{64}$/
@@ -104,12 +110,16 @@ export function checkSessionRequest(command, args) {
     return null
 }
 
-/** One layer's snapshot without the name of the person's media file. */
+function pick(object, keys) {
+    return Object.fromEntries(Object.entries(object).filter(([key]) => keys.includes(key)))
+}
+
+/** One layer's snapshot as a session sees it: no name of the person's media file. */
 export function sessionLayer(layer) {
-    if (!isPlainObject(layer?.media)) return layer
-    const { filename: _filename, ...media } = layer.media
-    return Object.fromEntries(Object.entries(layer).map(([key, value]) =>
-        [key, key === 'media' ? media : value]))
+    if (!isPlainObject(layer)) return layer
+    const out = pick(layer, SESSION_LAYER_KEYS)
+    if (isPlainObject(out.media)) out.media = pick(out.media, SESSION_MEDIA_KEYS)
+    return out
 }
 
 /**
@@ -126,7 +136,7 @@ export function sessionState(state, app) {
     const reaches = step => Boolean(app?._onlineAdapter?.reachesBeforeSession?.(step))
     const out = {}
     for (const [key, value] of Object.entries(state)) {
-        if (PRIVATE_STATE.has(key)) continue
+        if (!SESSION_STATE_KEYS.includes(key)) continue
         if (key === 'project' && isPlainObject(value)) {
             out.project = {
                 canUndo: Boolean(value.canUndo) && !reaches(-1),

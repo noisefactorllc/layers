@@ -110,9 +110,10 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     const createAgentRelay = typeof deps.createAgentRelay === 'function' ? deps.createAgentRelay : null
     const agentPrompt = typeof deps.agentPrompt === 'function' ? deps.agentPrompt : null
     const onStatusChange = typeof deps.onStatusChange === 'function' ? deps.onStatusChange : null
-    // The agent relay rides the SDK's own socket (agent/relay.js). One relay
-    // serves every session this tab takes online or joins.
-    let agentRelay = null
+    // The agent relay rides the SDK's own socket (agent/relay.js). Each online
+    // layer gets its own relay, so a session change that fails or is abandoned
+    // leaves the relay of the session that stays online as it was.
+    const agentRelays = new WeakMap()
     // Undo states recorded before the current session started. An agent in
     // the session cannot undo or redo into them (agent/commands.js).
     let historyBeforeSession = new WeakSet()
@@ -192,13 +193,17 @@ export function createLayersOnlineAdapter(app, deps = {}) {
 
     // -- agent connection ---------------------------------------------------
 
-    function ensureAgentRelay() {
-        if (agentRelay || !createAgentRelay) return agentRelay
+    // A relay for one online layer. It answers only while that layer holds this
+    // tab's current session, and adds images only to that session.
+    function createAgentRelayFor() {
+        if (!createAgentRelay) return null
+        const owner = { layer: null }
+        const current = () => Boolean(owner.layer) && owner.layer === online && isOnline()
         try {
-            agentRelay = createAgentRelay({
+            const relay = createAgentRelay({
                 uploadImage: (blob) => {
-                    if (!online) throw new Error('No session is online')
-                    return online.uploadImage(blob)
+                    if (!current()) throw new Error('The session that asked for this image is no longer online')
+                    return owner.layer.uploadImage(blob)
                 },
                 onAgent: () => {
                     // The open dialog lights its last step and confirms as it
@@ -206,12 +211,19 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                     if (agentDialog?.open) agentDialog.connected = true
                     else toast.success('Agent connected')
                 },
-            }) || null
+                // Which session a request arrived in; null once it is not the
+                // current one. Every session change moves sessionEpoch.
+                currentSession: () => (current() ? sessionEpoch : null),
+            })
+            return relay ? { relay, owner } : null
         } catch (err) {
             console.error('[Layers] Failed to create the agent relay:', err)
-            agentRelay = null
+            return null
         }
-        return agentRelay
+    }
+
+    function relayFor(layer = online) {
+        return layer ? agentRelays.get(layer) || null : null
     }
 
     /**
@@ -223,7 +235,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         if (!createAgentRelay) return false
         const status = getStatus()
         if (status === 'offline' || status === 'connecting') return true
-        return Boolean(agentRelay?.answers?.())
+        return Boolean(relayFor()?.answers?.())
     }
 
     function openAgentDialog() {
@@ -232,6 +244,9 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     }
 
     function markSessionHistory() {
+        // A change still waiting for its undo step belongs to the session's
+        // starting composition, so the state before it is from before.
+        app._finalizePendingUndo?.()
         const history = app._undoManager
         const stack = Array.isArray(history?._stack) ? history._stack : []
         historyBeforeSession = new WeakSet(stack.filter((state, index) =>
@@ -275,15 +290,19 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             })
         }
         const sdk = await sdkPromise
-        const relay = ensureAgentRelay()
+        const agent = createAgentRelayFor()
         const layer = sdk.createOnlineDslLayer({
             seanceUrl: config.seanceUrl,
             publicAppUrl,
             location,
             dialect: DIALECT,
             dialects: [DIALECT],
-            ...(relay ? { WebSocket: relay.WebSocket } : {})
+            ...(agent ? { WebSocket: agent.relay.WebSocket } : {})
         })
+        if (agent) {
+            agent.owner.layer = layer
+            agentRelays.set(layer, agent.relay)
+        }
         // Status is also the only signal that a dropped connection came back.
         // Tracked per layer, since each session transition builds its own.
         let previousStatus = 'offline'
@@ -1709,7 +1728,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             finishSessionTransition(previous)
             // This tab took the session online, so it answers agents in it.
             bestEffortSessionEffect('Failed to answer agents in the session',
-                () => agentRelay?.sessionCreated(committedSessionId))
+                () => relayFor(layer)?.sessionCreated(committedSessionId))
             bestEffortSessionEffect('Failed to remember collaboration session',
                 () => rememberSessionId(committedSessionId))
             bestEffortSessionEffect('Failed to update collaboration session URL',

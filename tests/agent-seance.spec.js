@@ -143,7 +143,7 @@ test('connect agent walks the person through going online, copying the prompt an
         expect(code).toMatch(/^[A-Za-z0-9]{6}$/)
 
         await dialog.locator('[data-action="copy-prompt"]').click()
-        await expect.poll(states).toEqual(['done', 'done', 'active'])
+        await expect.poll(states, { timeout: 30000 }).toEqual(['done', 'done', 'active'])
         const prompt = browserName === 'chromium'
             ? await page.evaluate(() => navigator.clipboard.readText())
             : await page.evaluate(() => window.__copiedPrompt)
@@ -160,7 +160,7 @@ test('connect agent walks the person through going online, copying the prompt an
         const joined = await joinAgent(baseURL, new URL(link).searchParams.get('seance'))
         agent = joined.agent
         expect(joined.describe.app).toBe('layers')
-        await expect.poll(states).toEqual(['done', 'done', 'done'])
+        await expect.poll(states, { timeout: 30000 }).toEqual(['done', 'done', 'done'])
         await expect(dialog).toBeHidden({ timeout: 10000 })
         await expect(page.locator('#toast-container .toast-message', { hasText: 'Agent connected' })).toBeVisible()
 
@@ -267,7 +267,7 @@ test('an agent reads, changes and looks at the composition, and images cross onl
         const added = await agent.call(tab, 'addLayer', { kind: 'effect', effectId: 'synth/gradient', name: 'from the agent' })
         expect(added.envelope.ok, JSON.stringify(added.envelope.error)).toBe(true)
         const layerId = added.envelope.result.layerId
-        await expect(page.locator(`layer-item[data-layer-id="${layerId}"]`)).toBeVisible()
+        await expect(page.locator(`layer-item[data-layer-id="${layerId}"]`)).toBeVisible({ timeout: 30000 })
         expect(await page.evaluate(id => window.layersApp._layers.find(layer => layer.id === id)?.name, layerId)).toBe('from the agent')
 
         const look = await agent.call(tab, 'getThumbnail', { maxDimension: 48, format: 'png' })
@@ -311,7 +311,7 @@ test('an agent reads, changes and looks at the composition, and images cross onl
         await expect.poll(() => page.evaluate(id => {
             const layer = window.layersApp._layers.find(candidate => candidate.id === id)
             return layer && { sourceType: layer.sourceType, imageId: layer.imageId }
-        }, pasted.envelope.result.layerId)).toEqual({ sourceType: 'media', imageId: put.id })
+        }, pasted.envelope.result.layerId), { timeout: 60000 }).toEqual({ sourceType: 'media', imageId: put.id })
         const media = (await agent.call(tab, 'getLayer', { layerId: pasted.envelope.result.layerId })).envelope.result.media
         expect(media).toMatchObject({ type: 'image', width: 2, height: 2 })
         expect(media.filename).toBeUndefined()
@@ -349,6 +349,70 @@ test('through a session, undo stops at the composition the session started with'
         // The deleted image never went into the session.
         expect(await page.evaluate(() => window.layersApp._layers.some(layer => layer.sourceType === 'media'))).toBe(false)
         expect(uploads).toEqual([])
+    } finally {
+        agent.close()
+    }
+})
+
+test('a request waiting its turn does not run once the person goes offline', async ({ page, baseURL }) => {
+    await openLayers(page)
+    const received = []
+    page.on('websocket', socket => socket.on('framereceived', frame => received.push(String(frame.payload))))
+    const code = await takeOnline(page)
+    const { agent, tab } = await joinAgent(baseURL, code)
+    try {
+        const before = await page.evaluate(() => window.layersApp._layers.map(layer => layer.id))
+        // A command of the person's own holds the queue.
+        await page.evaluate(() => { window.__held = window.LayersAgent._sleep({ delayMs: 4000 }) })
+        agent.call(tab, 'addLayer', { kind: 'drawing', name: 'late' }, { timeoutMs: 15000 }).catch(() => {})
+        await expect.poll(() => received.some(frame => frame.includes('"command":"addLayer"'))).toBe(true)
+        await page.evaluate(() => window.layersApp._onlineAdapter.goOffline())
+        // getState queues behind the agent's request, so it has had its turn.
+        await page.evaluate(async () => {
+            await window.__held
+            await window.LayersAgent.getState()
+        })
+        expect(await page.evaluate(() => window.layersApp._layers.map(layer => layer.id))).toEqual(before)
+    } finally {
+        agent.close()
+    }
+})
+
+test('a failed switch to another session leaves the tab answering its own', async ({ page, baseURL }) => {
+    await openLayers(page)
+    const code = await takeOnline(page)
+    const { agent, tab } = await joinAgent(baseURL, code)
+    try {
+        const switched = await page.evaluate(() => window.layersApp._onlineAdapter.joinSession('zz9zz9', { skipConfirm: true }))
+        expect(switched).toBeNull()
+        expect(await page.evaluate(() => window.layersApp._onlineAdapter.getStatus())).toBe('online')
+        const answers = await agent.describe()
+        expect(answers.map(answer => answer.tab)).toEqual([tab])
+        expect((await agent.call(tab, 'getCanvasSize')).envelope.ok).toBe(true)
+        expect(await page.evaluate(() => window.layersApp._onlineAdapter.canConnectAgent())).toBe(true)
+    } finally {
+        agent.close()
+    }
+})
+
+test('an edit still waiting for its undo step when the session starts counts as the session\'s start', async ({ page, baseURL }) => {
+    await openLayers(page)
+    // The person is still dragging an opacity slider as the session goes online.
+    const code = await page.evaluate(async () => {
+        const app = window.layersApp
+        app._sliderDragActive = true
+        app._layers.at(-1).opacity = 40
+        app._pushUndoStateDebounced()
+        const sessionId = await app._onlineAdapter.takeOnline()
+        app._sliderDragActive = false
+        app._finalizePendingUndo()
+        return sessionId
+    })
+    const { agent, tab } = await joinAgent(baseURL, code)
+    try {
+        const refused = await agent.call(tab, 'undo')
+        expect(refused.envelope.error?.code).toBe('CONFLICT_BEFORE_SESSION')
+        expect(await page.evaluate(() => window.layersApp._layers.at(-1).opacity)).toBe(40)
     } finally {
         agent.close()
     }

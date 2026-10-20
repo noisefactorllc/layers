@@ -1474,8 +1474,8 @@ class LayersApp {
             // A software agent that joins the session runs agent commands in
             // this tab (agent/relay.js); "connect agent..." walks the person
             // through it.
-            createAgentRelay: ({ uploadImage, onAgent }) =>
-                createSeanceAgentRelay({ appVersion: APP_VERSION, uploadImage, onAgent }),
+            createAgentRelay: ({ uploadImage, onAgent, currentSession }) =>
+                createSeanceAgentRelay({ appVersion: APP_VERSION, uploadImage, onAgent, currentSession }),
             agentPrompt: sessionUrl => handfish.agentConnectPrompt?.({
                 app: 'Layers',
                 contractUrl: 'https://layers.noisefactor.io/llms-full.txt',

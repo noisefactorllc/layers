@@ -4,8 +4,11 @@ import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { COMMAND_GROUPS, LOCAL_ONLY } from '../public/js/agent/descriptions.js'
 import {
-    REMOTE, catalog, checkSessionRequest, jsonSchema, sessionEnvelope, sessionLayer, sessionState
+    REMOTE, SESSION_LAYER_KEYS, SESSION_MEDIA_KEYS, SESSION_STATE_KEYS,
+    catalog, checkSessionRequest, jsonSchema, sessionEnvelope, sessionLayer, sessionState
 } from '../public/js/agent/session.js'
+import { buildSnapshot } from '../public/js/agent/snapshot.js'
+import { registerCommand, runCommand } from '../public/js/agent/dispatcher.js'
 
 // Every app that answers agents in a Seance session runs this relay, byte for
 // byte. Change it in all of them together, then update this digest.
@@ -78,6 +81,52 @@ test('a session request cannot reach local commands or bring media as text or by
     assert.equal(code('pasteImageFromBytes', { source: { kind: 'url', value: image } }), null)
     assert.equal(code('addLayer', { kind: 'effect', effectId: 'synth/gradient' }), null)
     assert.equal(code('getState'), null)
+})
+
+test('every snapshot field is either shown to a session or kept in this tab', () => {
+    // A field added to the snapshot stays out of sessions until it is listed here.
+    const kept = ['foreground', 'jobs', 'recentExports', 'settings']
+    const snapshot = buildSnapshot({
+        _layers: [{ id: 'layer-1', name: 'photo', sourceType: 'media', mediaType: 'image', mediaFile: { name: 'IMG_0001.jpg' } }],
+    })
+    assert.deepEqual(Object.keys(snapshot).sort(), [...SESSION_STATE_KEYS, ...kept].sort())
+    assert.deepEqual(Object.keys(snapshot.layers[0]).sort(), [...SESSION_LAYER_KEYS].sort())
+    assert.deepEqual(Object.keys(snapshot.layers[0].media).sort(), [...SESSION_MEDIA_KEYS, 'filename'].sort())
+    assert.deepEqual(Object.keys(snapshot.project).sort(),
+        ['canRedo', 'canSaveAs', 'canUndo', 'id', 'isDirty', 'name'])
+    const seen = sessionState({ ...snapshot, addedLater: 'private' })
+    assert.deepEqual(Object.keys(seen), SESSION_STATE_KEYS)
+    assert.deepEqual(Object.keys(seen.project), ['canUndo', 'canRedo'])
+    assert.equal(sessionLayer({ ...snapshot.layers[0], addedLater: 1 }).addedLater, undefined)
+})
+
+test('a command whose session ended before its turn does not run', async () => {
+    let ran = 0
+    const agent = { _app: { _acquireProjectLifecycle: async () => ({ release() {} }) } }
+    registerCommand(agent, 'sessionProbe', async () => { ran += 1; return { result: { ran } } })
+    const ended = await runCommand('sessionProbe', {}, { session: true, isCurrent: () => false })
+    assert.equal(ended.envelope.error.code, 'CONFLICT_SESSION_ENDED')
+    assert.equal(ran, 0)
+    const current = await runCommand('sessionProbe', {}, { session: true, isCurrent: () => true })
+    assert.equal(current.envelope.ok, true)
+    assert.equal(ran, 1)
+})
+
+test('the in-page method answers with an envelope when an image cannot be encoded', async () => {
+    const original = globalThis.FileReader
+    globalThis.FileReader = class {
+        readAsDataURL() { queueMicrotask(() => { this.error = new Error('too large'); this.onerror() }) }
+    }
+    try {
+        const agent = { _app: { _acquireProjectLifecycle: async () => ({ release() {} }) } }
+        registerCommand(agent, 'imageProbe', async () => ({ result: { width: 1 }, image: new Blob(['x']) }))
+        const envelope = await agent.imageProbe()
+        assert.equal(envelope.ok, false)
+        assert.equal(envelope.error.code, 'INTERNAL_ERROR')
+        assert.equal(envelope.error.message, 'too large')
+    } finally {
+        globalThis.FileReader = original
+    }
 })
 
 test('the session state leaves out what the person keeps in this browser', () => {
