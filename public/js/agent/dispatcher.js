@@ -49,17 +49,25 @@ export function makeFailure(command, code, message, details = {}, state = null) 
     }
 }
 
+const RUNNERS = new Map()
+
 /**
  * Register a command on the LayersAgent namespace.
  *
+ * A handler that produces an image returns it as a Blob in `image`. The
+ * in-page method puts its bytes in the result as base64 `bytes`; runCommand
+ * hands the Blob itself to a transport that carries binary bytes.
+ *
  * @param {object} agent - The LayersAgent object.
  * @param {string} name - Command name.
- * @param {(args: object, app: object, mutationToken?: object) => Promise<{ result, warnings? }>} handler
- *   Async handler receiving validated args, the app, and its lifecycle token.
- *   Returns a plain object with result/warnings; the dispatcher wraps it.
+ * @param {(args: object, app: object, mutationToken?: object, context?: {session?: boolean}) => Promise<{ result, warnings?, image? }>} handler
+ *   Async handler receiving validated args, the app, its lifecycle token, and
+ *   the context of the call: `context.session` is true when the command came
+ *   through the person's Seance session. Returns a plain object with
+ *   result/warnings and, for an image, `image`; the dispatcher wraps it.
  */
 export function registerCommand(agent, name, handler) {
-    agent[name] = (args = {}) => {
+    const run = (args = {}, context = {}) => {
         const execute = async () => {
         let mutationToken = null
         try {
@@ -71,27 +79,71 @@ export function registerCommand(agent, name, handler) {
                 const v = validate(args, schema)
                 if (!v.ok) {
                     const snap = safeSnapshot(agent._app)
-                    return makeFailure(name, v.code, v.message, v.details, snap)
+                    return { envelope: makeFailure(name, v.code, v.message, v.details, snap) }
                 }
             }
-            const out = await handler(args, agent._app, mutationToken)
+            const out = await handler(args, agent._app, mutationToken, context)
             const snap = safeSnapshot(agent._app)
-            return makeSuccess(name, out.result, snap, out.warnings || [])
+            return {
+                envelope: makeSuccess(name, out.result, snap, out.warnings || []),
+                image: out.image || null
+            }
         } catch (err) {
             const snap = safeSnapshot(agent._app)
             if (err && err.__envelope) {
                 err.__envelope.command = name
                 err.__envelope.state = snap
-                return err.__envelope
+                return { envelope: err.__envelope }
             }
-            return makeFailure(name, 'INTERNAL_ERROR', err.message || String(err),
-                { stack: err.stack }, snap)
+            return { envelope: makeFailure(name, 'INTERNAL_ERROR', err.message || String(err),
+                { stack: err.stack }, snap) }
         } finally {
             mutationToken?.release?.()
         }
         }
         return CONCURRENT_COMMANDS.has(name) ? execute() : serialize(execute)
     }
+    RUNNERS.set(name, run)
+    agent[name] = async (args = {}) => inlineImage(await run(args))
+}
+
+/**
+ * Run a registered command for a transport that carries binary bytes. An
+ * image result keeps its bytes out of the envelope and comes back as a Blob.
+ *
+ * @param {string} name
+ * @param {object} [args]
+ * @param {{session?: boolean}} [context]
+ * @returns {Promise<{envelope: object, image?: Blob|null}>}
+ */
+export function runCommand(name, args = {}, context = {}) {
+    const run = RUNNERS.get(name)
+    if (!run) {
+        return Promise.resolve({
+            envelope: makeFailure(name, 'NOT_FOUND_COMMAND', `Unknown command: ${name}`)
+        })
+    }
+    return run(args, context)
+}
+
+/**
+ * Encode a Blob's bytes as base64 text, for the in-page API only.
+ *
+ * @param {Blob} blob
+ * @returns {Promise<string>}
+ */
+export async function blobToBase64(blob) {
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    let binary = ''
+    for (let at = 0; at < bytes.length; at += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000))
+    }
+    return btoa(binary)
+}
+
+async function inlineImage({ envelope, image }) {
+    if (!image) return envelope
+    return { ...envelope, result: { bytes: await blobToBase64(image), ...envelope.result } }
 }
 
 function safeSnapshot(app) {

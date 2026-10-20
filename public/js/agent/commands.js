@@ -8,7 +8,7 @@
  */
 
 import { buildSnapshot } from './snapshot.js'
-import { commandError } from './dispatcher.js'
+import { blobToBase64, commandError } from './dispatcher.js'
 import { safeClone } from './constants.js'
 import {
     recordExport,
@@ -1202,26 +1202,6 @@ async function drawSurfaceToBlob(surface, mimeType, quality) {
 }
 
 /**
- * Read a blob as base64 (data-url-strip pattern).
- */
-async function blobToBase64(blob) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onloadend = () => {
-            const result = reader.result
-            if (typeof result !== 'string') {
-                reject(new Error('FileReader produced non-string result'))
-                return
-            }
-            const comma = result.indexOf(',')
-            resolve(comma >= 0 ? result.slice(comma + 1) : result)
-        }
-        reader.onerror = () => reject(reader.error || new Error('FileReader failed'))
-        reader.readAsDataURL(blob)
-    })
-}
-
-/**
  * Render `canvas` to bytes at the requested format/quality and (optionally) target size.
  * If target size matches canvas size, the canvas is encoded directly.
  * If target size differs, the canvas is drawn into an OffscreenCanvas at the target size
@@ -1258,10 +1238,8 @@ async function canvasToBytes(canvas, format, quality, targetW, targetH) {
         blob = await drawSurfaceToBlob(surface, mimeType, quality)
     }
 
-    const base64 = await blobToBase64(blob)
     return {
         blob,
-        base64,
         mimeType,
         width: tw,
         height: th,
@@ -1271,12 +1249,13 @@ async function canvasToBytes(canvas, format, quality, targetW, targetH) {
 }
 
 /**
- * Encode the current canvas to base64-encoded image bytes at full resolution.
+ * Encode the current canvas to image bytes at full resolution. The in-page
+ * API returns them as base64 `bytes`; a session receives the image itself.
  * Format defaults to 'png'; quality defaults to 0.92 and is ignored for png.
  * Does not trigger a download — use exportImage for that.
  *
  * @param {{format?: 'png'|'jpg'|'webp', quality?: number}} args
- * @returns {Promise<{result: object}>}
+ * @returns {Promise<{result: object, image: Blob}>}
  */
 export async function getCanvasImageBytes(args, app, mutationToken = null) {
     const format = args?.format || 'png'
@@ -1286,13 +1265,13 @@ export async function getCanvasImageBytes(args, app, mutationToken = null) {
     })
     return {
         result: {
-            bytes: out.base64,
             mimeType: out.mimeType,
             format: out.format,
             width: out.width,
             height: out.height,
             sizeBytes: out.sizeBytes
-        }
+        },
+        image: out.blob
     }
 }
 
@@ -1310,10 +1289,11 @@ function thumbnailDimensions(srcWidth, srcHeight, maxDimension) {
 
 /**
  * Encode a downscaled snapshot of the canvas. The longest side is clamped
- * to `maxDimension` (default 256). Format defaults to 'jpg'.
+ * to `maxDimension` (default 256). Format defaults to 'jpg'. The in-page API
+ * returns the bytes as base64 `bytes`; a session receives the image itself.
  *
  * @param {{maxDimension?: number, format?: 'png'|'jpg'|'webp', quality?: number}} args
- * @returns {Promise<{result: object}>}
+ * @returns {Promise<{result: object, image: Blob}>}
  */
 export async function getThumbnail(args, app) {
     const maxDim = args?.maxDimension ?? 256
@@ -1325,22 +1305,23 @@ export async function getThumbnail(args, app) {
     const out = await canvasToBytes(app._canvas, format, quality, tw, th)
     return {
         result: {
-            bytes: out.base64,
             mimeType: out.mimeType,
             format: out.format,
             width: out.width,
             height: out.height,
             sizeBytes: out.sizeBytes
-        }
+        },
+        image: out.blob
     }
 }
 
 /**
  * Encode a thumbnail of a single layer (and its children/mask), as if only
- * that layer were rendered. Useful for layer-panel previews.
+ * that layer were rendered. Useful for layer-panel previews. The in-page API
+ * returns the bytes as base64 `bytes`; a session receives the image itself.
  *
  * @param {{layerId: string, maxDimension?: number, format?: 'png'|'jpg'|'webp', quality?: number}} args
- * @returns {Promise<{result: object}>}
+ * @returns {Promise<{result: object, image: Blob}>}
  * @throws NOT_FOUND_LAYER — when the layer doesn't exist.
  * @throws RENDER_LAYER_COMPOSITE_FAILED — when the renderer can't isolate the layer.
  */
@@ -1372,14 +1353,14 @@ export async function getLayerThumbnail({ layerId, maxDimension, format, quality
     const out = await canvasToBytes(imgCanvas, fmt, q, tw, th)
     return {
         result: {
-            bytes: out.base64,
             mimeType: out.mimeType,
             format: out.format,
             width: out.width,
             height: out.height,
             sizeBytes: out.sizeBytes,
             layerId
-        }
+        },
+        image: out.blob
     }
 }
 
@@ -1455,7 +1436,7 @@ export async function exportImage(args, app, mutationToken = null) {
 
     return {
         result: {
-            bytes: out.base64,
+            bytes: await blobToBase64(out.blob),
             mimeType: out.mimeType,
             format: out.format,
             width: out.width,
