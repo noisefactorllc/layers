@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
-import { COMMAND_GROUPS } from '../public/js/agent/descriptions.js'
+import { COMMAND_GROUPS, LOCAL_ONLY } from '../public/js/agent/descriptions.js'
 import { SCHEMAS } from '../public/js/agent/schemas.js'
-import { LLMS_PATH, LLMS_FULL_PATH, renderLlmsFull } from './build-llms-full.mjs'
+import { LLMS_PATH, LLMS_FULL_PATH, renderLlmsFull, renderReference } from './build-llms-full.mjs'
 
 const AGENT_DIR = new URL('../public/js/agent/', import.meta.url)
 
@@ -29,6 +29,13 @@ test('every public schema belongs to a registered command', async () => {
     assert.deepEqual(orphans, [])
 })
 
+test('the reference marks each command that a session cannot run', () => {
+    const reference = renderReference()
+    const marked = [...reference.matchAll(/^#### `(\w+)`\n\n.*\n\nNot available through a session/gm)]
+        .map(match => match[1])
+    assert.deepEqual(marked.sort(), [...LOCAL_ONLY].sort())
+})
+
 test('public/llms-full.txt matches a fresh render (run npm run build:llms)', async () => {
     assert.equal(await readFile(LLMS_FULL_PATH, 'utf8'), await renderLlmsFull())
 })
@@ -42,11 +49,12 @@ test('llms.txt names every error and warning code that the agent API returns', a
     const codes = new Set()
     for (const name of files) {
         const source = await readFile(new URL(name, AGENT_DIR), 'utf8')
-        // commandError('X'), fail('X'), err.code = 'X', code: 'X', code: err?.code || 'X'
-        const pattern = /(?:commandError|fail)\(\s*'([A-Z][A-Z_]+)'|\bcode\s*[:=]\s*(?:[\w?.]+\s*\|\|\s*)?'([A-Z][A-Z_]+)'/g
-        for (const match of source.matchAll(pattern)) codes.add(match[1] || match[2])
+        // commandError('X'), fail('X'), err.code = 'X', code: 'X', code: err?.code || 'X',
+        // makeFailure(command, 'X')
+        const pattern = /(?:commandError|fail)\(\s*'([A-Z][A-Z_]+)'|\bcode\s*[:=]\s*(?:[\w?.]+\s*\|\|\s*)?'([A-Z][A-Z_]+)'|makeFailure\([^,()]*,\s*'([A-Z][A-Z_]+)'/g
+        for (const match of source.matchAll(pattern)) codes.add(match[1] || match[2] || match[3])
     }
-    for (const code of ['JOB_FAILED', 'VIDEO_EXPORT_ENCODE_FAILED', 'UNKNOWN_SETTING_KEY']) {
+    for (const code of ['JOB_FAILED', 'VIDEO_EXPORT_ENCODE_FAILED', 'UNKNOWN_SETTING_KEY', 'REMOTE_UNAVAILABLE', 'IMAGE_LIMIT']) {
         assert.ok(codes.has(code), `the code scan no longer finds ${code}`)
     }
     // Error codes are table rows. Warning codes are list items in Warnings.

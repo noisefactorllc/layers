@@ -90,7 +90,10 @@ export function resolveOnlineConfig(options = {}) {
 /**
  * @param {object} app - the live LayersApp instance (same "reach into
  *   private members" convention already used by public/js/agent/commands.js)
- * @param {object} [deps] - overrides for testability (location/importSdk/dialog)
+ * @param {object} [deps] - overrides for testability (location/importSdk/dialog),
+ *   and the agent connection: `createAgentRelay` builds this tab's agent relay
+ *   (agent/index.js createSeanceAgentRelay), `agentPrompt(sessionUrl)` gives the
+ *   prompt that <agent-connect-dialog> copies, and `agentDialog` is that dialog.
  */
 export function createLayersOnlineAdapter(app, deps = {}) {
     const location = deps.location || globalThis.location
@@ -99,6 +102,18 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     const config = resolveOnlineConfig({ location, globals: deps.globals })
     const publicAppUrl = shareBaseUrl(location)
     const dialog = deps.dialog !== undefined ? deps.dialog : document.getElementById('seanceDialog')
+    // The shared connect-agent dialog (handfish <agent-connect-dialog>).
+    const agentDialog = deps.agentDialog !== undefined
+        ? deps.agentDialog
+        : (globalThis.document?.getElementById?.('agentConnectDialog') || null)
+    const createAgentRelay = typeof deps.createAgentRelay === 'function' ? deps.createAgentRelay : null
+    const agentPrompt = typeof deps.agentPrompt === 'function' ? deps.agentPrompt : null
+    // The agent relay rides the SDK's own socket (agent/relay.js). One relay
+    // serves every session this tab takes online or joins.
+    let agentRelay = null
+    // Undo states recorded before the current session started. An agent in
+    // the session cannot undo or redo into them (agent/commands.js).
+    let historyBeforeSession = new WeakSet()
 
     let online = null
     let sdkPromise = null
@@ -156,11 +171,93 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     }
 
     function refreshStatus(status = getStatus()) {
-        if (!dialog) return
         const onlineish = status === 'online' || status === 'readonly'
-        dialog.state = onlineish ? status : (status === 'connecting' ? 'connecting' : 'offline')
-        dialog.sessionId = onlineish ? (online?.getSessionId?.() || '') : ''
-        dialog.sessionUrl = onlineish ? (online?.getShareUrl?.() || '') : ''
+        const state = onlineish ? status : (status === 'connecting' ? 'connecting' : 'offline')
+        const shareUrl = onlineish ? (online?.getShareUrl?.() || '') : ''
+        if (dialog) {
+            dialog.state = state
+            dialog.sessionId = onlineish ? (online?.getSessionId?.() || '') : ''
+            dialog.sessionUrl = shareUrl
+        }
+        if (agentDialog) {
+            agentDialog.state = state
+            agentDialog.prompt = shareUrl && agentPrompt ? agentPrompt(shareUrl) : ''
+        }
+    }
+
+    // -- agent connection ---------------------------------------------------
+
+    function ensureAgentRelay() {
+        if (agentRelay || !createAgentRelay) return agentRelay
+        try {
+            agentRelay = createAgentRelay({
+                uploadImage: (blob) => {
+                    if (!online) throw new Error('No session is online')
+                    return online.uploadImage(blob)
+                },
+                onAgent: () => {
+                    // The open dialog lights its last step and confirms as it
+                    // closes; with the dialog closed, confirm at once.
+                    if (agentDialog?.open) agentDialog.connected = true
+                    else toast.success('Agent connected')
+                },
+            }) || null
+        } catch (err) {
+            console.error('[Layers] Failed to create the agent relay:', err)
+            agentRelay = null
+        }
+        return agentRelay
+    }
+
+    /**
+     * "connect agent..." helps only where an agent can be answered: offline
+     * (going online makes this tab the session's), or online in the session
+     * this tab took online. A tab that joined someone else's session cannot.
+     */
+    function canConnectAgent() {
+        if (!createAgentRelay) return false
+        const status = getStatus()
+        if (status === 'offline' || status === 'connecting') return true
+        return Boolean(agentRelay?.answers?.())
+    }
+
+    function openAgentDialog() {
+        refreshStatus()
+        agentDialog?.show?.()
+    }
+
+    function markSessionHistory() {
+        const history = app._undoManager
+        const stack = Array.isArray(history?._stack) ? history._stack : []
+        historyBeforeSession = new WeakSet(stack.filter((state, index) =>
+            index !== history._index && state && typeof state === 'object'))
+    }
+
+    /**
+     * Whether one undo (-1) or redo (1) step from the current state would
+     * restore a state recorded before this session started.
+     * @param {-1|1} step
+     */
+    function reachesBeforeSession(step) {
+        const history = app._undoManager
+        const target = history?._stack?.[history._index + step]
+        return Boolean(target) && historyBeforeSession.has(target)
+    }
+
+    /**
+     * An image that the online session holds, as a Blob. The SDK checks that
+     * the bytes it returns are the image the id names.
+     * @param {string} imageId - SHA-256 of the image's bytes
+     * @returns {Promise<Blob|null>} null when no session is online
+     */
+    async function getSessionImage(imageId) {
+        if (!online || !isOnline()) return null
+        return imagesForSession(online).get(imageId) || online.getImage(imageId)
+    }
+
+    function hideSessionDialogs() {
+        bestEffortSessionEffect('Failed to hide collaboration dialog', () => dialog?.hide?.())
+        bestEffortSessionEffect('Failed to hide connect-agent dialog', () => agentDialog?.hide?.())
     }
 
     // -- SDK bootstrap --------------------------------------------------
@@ -173,12 +270,14 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             })
         }
         const sdk = await sdkPromise
+        const relay = ensureAgentRelay()
         const layer = sdk.createOnlineDslLayer({
             seanceUrl: config.seanceUrl,
             publicAppUrl,
             location,
             dialect: DIALECT,
-            dialects: [DIALECT]
+            dialects: [DIALECT],
+            ...(relay ? { WebSocket: relay.WebSocket } : {})
         })
         // Status is also the only signal that a dropped connection came back.
         // Tracked per layer, since each session transition builds its own.
@@ -510,8 +609,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         // the app's infoDialog.show() call sites — this can run during boot,
         // and awaiting it would leave the (much higher z-index) loading
         // screen stuck up behind the modal until the user dismisses it.
-        bestEffortSessionEffect('Failed to hide collaboration dialog after refusal',
-            () => dialog?.hide?.())
+        hideSessionDialogs()
         try {
             Promise.resolve(infoDialog.show({ message: NOT_A_LAYERS_SESSION_MESSAGE }))
                 .catch(err => console.error('[Layers] Failed to show session refusal:', err))
@@ -1446,8 +1544,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     }
 
     async function showUnsupportedMediaMessage() {
-        bestEffortSessionEffect('Failed to hide collaboration dialog for media warning',
-            () => dialog?.hide?.())
+        hideSessionDialogs()
         try {
             await infoDialog.show({
                 message: 'This composition has a video layer. Video layers aren’t supported in shared sessions — remove it before going online.'
@@ -1458,8 +1555,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     }
 
     async function showUnsupportedChildMaskMessage() {
-        bestEffortSessionEffect('Failed to hide collaboration dialog for effect-mask warning',
-            () => dialog?.hide?.())
+        hideSessionDialogs()
         try {
             await infoDialog.show({
                 message: 'This composition has an effect confined to a selection (an effect mask). Effect masks aren’t supported in shared sessions yet — delete the effect’s mask or the effect before going online.'
@@ -1604,7 +1700,11 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 imagesForSession(layer).set(entry.asset.id, entry.file)
             }
             activateSessionTransition(layer, nodes)
+            markSessionHistory()
             finishSessionTransition(previous)
+            // This tab took the session online, so it answers agents in it.
+            bestEffortSessionEffect('Failed to answer agents in the session',
+                () => agentRelay?.sessionCreated(committedSessionId))
             bestEffortSessionEffect('Failed to remember collaboration session',
                 () => rememberSessionId(committedSessionId))
             bestEffortSessionEffect('Failed to update collaboration session URL',
@@ -1744,6 +1844,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 await handleJoinFailure(applyResult.error, layer)
                 return null
             }
+            markSessionHistory()
             finishSessionTransition(previous)
             bestEffortSessionEffect('Failed to remember collaboration session',
                 () => rememberSessionId(committedSessionId))
@@ -1789,6 +1890,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         pendingLocalWrites.clear()
         clearPendingDeleteRejections()
         lastPublished = []
+        if (agentDialog) agentDialog.connected = false
         bestEffortSessionEffect('Failed to clear collaboration session URL',
             () => writeSessionToBrowserUrl(null))
         bestEffortSessionEffect('Failed to refresh offline collaboration status',
@@ -1847,6 +1949,20 @@ export function createLayersOnlineAdapter(app, deps = {}) {
                 toast.error('Could not copy session URL')
             })
         })
+        // The connect-agent dialog's Go Online step takes the composition
+        // online the same way the go-online dialog does.
+        agentDialog?.addEventListener('go-online', () => {
+            takeOnline().catch((err) => {
+                console.error('[Layers] Take online failed:', err)
+                toast.error(`Could not take online: ${err.message}`)
+            })
+        })
+        agentDialog?.addEventListener('copy-failed', () => {
+            toast.error('Could not copy the prompt')
+        })
+        agentDialog?.addEventListener('connected', () => {
+            toast.success('Agent connected')
+        })
         refreshStatus('offline')
     }
 
@@ -1901,6 +2017,10 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         goOffline,
         copyShareUrl,
         schedulePublish,
+        canConnectAgent,
+        openAgentDialog,
+        getSessionImage,
+        reachesBeforeSession,
         get online() { return online }
     }
 }

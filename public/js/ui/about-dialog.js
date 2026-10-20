@@ -1,7 +1,7 @@
 import { NOISEMAKER_BASE } from '../dependency-versions.js'
 import { AboutDialog } from 'handfish'
 
-const APP_VERSION = '1.0'
+export const APP_VERSION = '1.0'
 
 const about = new AboutDialog({
     name: 'Layers',

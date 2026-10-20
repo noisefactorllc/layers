@@ -1,19 +1,127 @@
 # Layers -- Agent API
 
-> Layers is a browser-based image/video editor. Its `window.LayersAgent` API
-> exposes UI operations as JSON commands. These include adding layers, painting
-> strokes, setting selections, and exporting images. This file is the contract
-> for software agents that control Layers.
+> Layers is a browser-based image/video editor. An agent can join the person's
+> own open Layers over Seance, the Noise Factor collaboration service, and run
+> Layers' commands in it: add and change layers, paint, select, mask, and look
+> at the canvas. An agent that drives its own browser can call the same
+> commands through the in-page `window.LayersAgent` API instead. This file is
+> the contract for software agents that control Layers.
 
 The full contract adds a reference for every command and its arguments:
 https://layers.noisefactor.io/llms-full.txt
 
-## Connect
+Layers is an island. Its document is a stack of layers, not program text, and
+it shares nothing with other apps. A Layers session joins only Layers, and
+programs and images do not move between Layers and Noisedeck, Polymorphic,
+Visualize, HD4, Foundry or Shade.
 
-Layers runs in the browser. Its API exists only in the page.
-You need a browser tool that can run JavaScript in a page.
+## Connect to the person's Layers
+
+Use this route when you can run shell commands. It works with the Layers the
+person already has open: their composition and their canvas.
+
+1. Ask the person to open https://layers.noisefactor.io, choose
+   **connect agent...** in the File menu, click **Go Online**, then
+   **Copy Prompt**, and paste the prompt to you. The prompt names this file and
+   the session link. (Without that dialog: File, **go online...**,
+   **Take Online**, then send the link or the six-character code.)
+2. Get the agent tool. It needs Node 22.4 or later and nothing else:
+   `curl -fsSLO https://noisedeck.app/agent/seance-agent.mjs`
+3. Join: `node seance-agent.mjs join <link-or-code>`. It prints the session
+   name (`layers`), its `dialect` (`layers`), its `rev` and the open app tabs.
+   A background process keeps the session joined between commands.
+
+| Command | What it does |
+|---|---|
+| `node seance-agent.mjs commands` | Lists Layers' commands and their arguments. `[not available remotely]` marks the commands that a session cannot run. |
+| `node seance-agent.mjs call <command> [JSON]` | Runs one command in the person's tab and prints its envelope, for example `call addLayer '{"kind":"effect","effectId":"synth/gradient"}'`. |
+| `node seance-agent.mjs look [--size N] [--format png\|jpg] [--out FILE]` | Saves an image of the person's canvas (`getThumbnail`). Prints its path. Open the file with your image tool. |
+| `node seance-agent.mjs status` | Lists the joined sessions. For a Layers session, `rev` counts the changes to its document. |
+| `node seance-agent.mjs wait [--since REV] [--timeout S]` | Waits until the person changes the composition. With `--since`, a change after that `rev` from `status` returns at once. |
+| `node seance-agent.mjs image-put <file>` | Adds a PNG, JPEG, GIF or WebP file to the session. Prints `image:<id>`. |
+| `node seance-agent.mjs image-get <id> [--out FILE]` | Saves an image that the session holds to a file. |
+| `node seance-agent.mjs leave` / `stop` | Leaves the session / stops the background process. |
+
+Every command prints JSON. The exit code is 0 for success, 1 when Layers
+refused the command (read `result.envelope.error.code`), and 2 when the tool
+could not run it (read `error.code`; the codes are listed below). The tool
+leaves `state` out of the envelopes that it prints; `--state` keeps it.
+`node seance-agent.mjs help` lists every option.
+
+`program`, `set` and `validate` do not apply to Layers, which has no program
+text: `program` answers `NO_DOCUMENT`, and `set` and `validate` answer
+`NOT_FOUND_COMMAND`. `transfer` to or from a Layers session answers `ISLAND`.
+
+To follow the person: read `rev` from `status`, do your work, then run
+`wait --since <rev>`. It returns when the person changes the composition.
+Your own commands do not count as the person's changes.
+
+How it works, so you can explain it to the person:
+
+- The tool joins the session as an anonymous participant, which the person
+  sees join. It runs commands in the tab that took the composition online,
+  through the session, with the same checks as the in-page API. The changes
+  appear in the person's layer stack, and the person can undo them. No other
+  tab answers, even one that becomes the session's owner after the person's
+  tab leaves. After the person reloads that tab, it answers again.
+- Everyone in the session receives every answer, and anyone who can edit the
+  session can send commands to that tab. So nothing that the person keeps in
+  this browser is reachable through a session: saved projects
+  (`getProjectInfo`, `listProjects`, `openProject`, `saveProject`,
+  `saveProjectAs`, `deleteProject`), settings and the foreground color
+  (`getSettings`, `setSettings`, `getForegroundColor`, `setForegroundColor`),
+  fonts (`listInstalledFonts`, `installFontBundle`), and exports and their
+  jobs (`exportImage`, `exportVideo`, `releaseExport`, `getJob`,
+  `waitForJob`, `cancelJob`). `newProject` would also take the session
+  offline. These commands answer `REMOTE_UNAVAILABLE`, and `commands` marks
+  them. Suggest that the person goes offline (File, **go online...**, then
+  **Go Offline**) when you are done.
+- In each answer, `state` leaves out `foreground`, `jobs`, `recentExports`
+  and `settings`. `state.project` keeps only `canUndo` and `canRedo`, and the
+  `media` of a media layer has no `filename`.
+- `undo` and `redo` stay within the changes made since the session went
+  online. The states from before it can hold the person's offline work,
+  including images that never went into the session. A step into them answers
+  `CONFLICT_BEFORE_SESSION`.
+- Images travel as bytes. `look`, and `call` with `getThumbnail`,
+  `getCanvasImageBytes` or `getLayerThumbnail`, add the image to the session
+  as its own bytes. In place of base64 `bytes`, the result has
+  `image: { id, mimeType, bytes }`, where `id` is the SHA-256 of the image and
+  `bytes` is its size. The tool saves the image as a file and adds its `path`.
+- To add an image to the composition, add the file with `image-put`, then
+  name it as `image:<sha256>`:
+  `call pasteImageFromBytes '{"source":{"kind":"url","value":"image:<sha256>"}}'`
+  (or `addLayer` with `kind: "media"`, `mediaType: "image"` and the same
+  `source`). A request that carries an image as base64 text answers
+  `IMAGE_AS_TEXT`. A request that names media by any other link answers
+  `OUTSIDE_LINK`, because the person's browser would fetch it.
+- A session holds at most 32 images, and the composition's own images and
+  masks need room too. The tab takes at most 16 images in ten minutes; past
+  that, image commands answer `IMAGE_LIMIT` with `details.retryAfter` in
+  seconds. Look when the composition has changed, not in a loop.
+- A session cannot hold video layers.
+
+Agent tool errors (exit code 2, `error.code`):
+
+- `NO_SESSION`: no session is joined, or more than one and none was named.
+- `UNKNOWN_SESSION`, `SESSION_LOCKED`, `REFUSED`: the session code is wrong or
+  expired, the session is locked, or the session refused the join.
+- `NO_APP_TAB`: the tab that took the session online did not answer. Ask the
+  person to keep it open, or to go online again and send the new code.
+- `TIMEOUT`: the tab did not answer in time. Check `status`, then try again.
+- `READONLY`: the session lets this agent only read.
+- `SESSION_CLOSED`, `SESSION_REFUSED`: the connection closed, or the session
+  server refused a request (the message says why).
+- `ISLAND`: a `transfer` to or from a Layers session. Layers shares nothing
+  with other apps.
+- `IMAGE_FAILED`, `NO_DOCUMENT`, `USAGE`, `INVALID_JSON`: an image transfer
+  failed, a document is missing, or the command line was wrong.
+
+## Control Layers in a browser you drive
+
+Use this route when you control a browser yourself. Its API exists only in
+the page. You need a browser tool that can run JavaScript in a page.
 A tool that only fetches HTML cannot use Layers.
-You do not need other software.
 
 1. Open https://layers.noisefactor.io in your browser tool.
 2. Run JavaScript in the page. Wait for `window.LayersAgent.ready`.
@@ -41,6 +149,8 @@ A large result uses a large part of your context.
   Remove `bytes` before you return the envelope, unless you need the bytes.
   To get only the bytes, without a download, pass `triggerDownload: false`.
 - To look at the canvas, call `getThumbnail`. By default, its longest side is 256 pixels.
+- The agent tool saves images as files and prints only their paths. Open a
+  file with your image tool; do not print its bytes.
 
 ```js
 const env = await LayersAgent.exportImage({ format: 'png' })   // starts the download
@@ -137,6 +247,9 @@ state: {
 }
 ```
 
+Through a session, the state has no `foreground`, `jobs`, `recentExports` or
+`settings`, `project` is `{ canUndo, canRedo }`, and `media` has no `filename`.
+
 `sourceType` is one of `effect | drawing | media | text`. `selection.kind` is
 `rectangle | oval | lasso | polygon | wand | color-range`. `jobs.status` is
 `queued | running | succeeded | failed | cancelled`.
@@ -223,8 +336,15 @@ The commands cover these operations:
 | `CONFLICT_JOB_IN_PROGRESS` | a duplicate job is already running (e.g. installFontBundle) |
 | `JOB_LIMIT_EXCEEDED` | too many active jobs (cap = 20) |
 | `JOB_CANCELLED` | the job was cancelled (terminal state, not an error per se) |
-| `RESOURCE_DECODE_FAILED` | base64 / URL fetch / image decode failed |
+| `RESOURCE_DECODE_FAILED` | base64 / URL fetch / image decode failed, or the online session has no image `image:<sha256>` |
 | `RENDER_LAYER_COMPOSITE_FAILED` | the renderer could not isolate the layer (`getLayerThumbnail`) |
+| `NOT_FOUND_COMMAND` | a session request named a command that Layers does not have |
+| `REMOTE_UNAVAILABLE` | the command needs the person at the browser, and came through a session |
+| `CONFLICT_BEFORE_SESSION` | through a session, `undo` or `redo` would restore a state from before the session went online |
+| `IMAGE_LIMIT` | the tab already took 16 images in ten minutes. `details.retryAfter` is in seconds |
+| `IMAGE_AS_TEXT` | a session request or answer would carry an image as base64 text. Add the image with `image-put` and use `image:<sha256>` |
+| `OUTSIDE_LINK` | a session request names media by a link other than `image:<sha256>` |
+| `IMAGE_UPLOAD_FAILED` | the tab could not add an image to the session (a session holds up to 32 images of up to 8 MiB each) |
 | `INTERNAL_ERROR` | unexpected handler throw |
 
 `details` usually names the field or value that caused the error. Some conflict
@@ -441,6 +561,7 @@ Alternatively, wait for one or two `getThumbnail` calls before reading bytes.
 - Source of truth: `/js/agent/index.js` (registration), `/js/agent/commands.js`
   (handlers), `/js/agent/schemas.js` (input schemas), `/js/agent/descriptions.js`
   (command descriptions), `/js/agent/jobs.js` (job registry + `JOB_KINDS`),
-  `/js/agent/snapshot.js` (state builder)
+  `/js/agent/snapshot.js` (state builder), `/js/agent/session.js` (what a
+  session sees and may run), `/js/agent/relay.js` (the session relay)
 - Test/diagnostic back door: `window.__LAYERS_TEST_HOOKS.jobs` (Playwright
   specs only -- NOT a public API)

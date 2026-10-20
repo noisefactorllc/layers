@@ -575,7 +575,9 @@ function base64ToFile(data, mimeType, name) {
  * Add a new layer. `kind` selects the path:
  *   - 'effect'  — args: {effectId, params?, name?}
  *   - 'drawing' — args: {name?}
- *   - 'media'   — args: {source: {kind:'base64'|'url', ...}, mediaType, name?}
+ *   - 'media'   — args: {source: {kind:'base64'|'url', ...}, mediaType, name?};
+ *                 in an online session, a `url` source can be `image:<sha256>`
+ *                 to name an image the session holds
  *   - 'text'    — args: {text, params?, name?} (sugar over filter/text effect)
  *
  * @param {object} args
@@ -647,7 +649,7 @@ async function addMediaLayer({ source, mediaType, name }, app, mutationToken = n
         throw commandError('CONFLICT_MEDIA_BLOCKED_ONLINE',
             'Video layers are not supported while a Layers collaboration session is online', {})
     }
-    const file = await sourceToFile(source, name || 'media')
+    const file = await sourceToFile(source, name || 'media', app)
     let outcome
     try {
         outcome = await app._handleAddMediaLayer(
@@ -673,7 +675,10 @@ async function addMediaLayer({ source, mediaType, name }, app, mutationToken = n
     return { result: { layerId: outcome.layerId } }
 }
 
-async function sourceToFile(source, defaultName) {
+// An image that the online session holds, named by the SHA-256 of its bytes.
+const SESSION_IMAGE_REF = /^image:([a-f0-9]{64})$/
+
+async function sourceToFile(source, defaultName, app) {
     if (!source || typeof source !== 'object') {
         throw commandError('INVALID_ARGS_TYPE', 'source must be an object',
             { field: 'source', expected: 'object' })
@@ -696,6 +701,8 @@ async function sourceToFile(source, defaultName) {
             throw commandError('INVALID_ARGS_TYPE', 'source.value must be a URL string',
                 { field: 'source.value', expected: 'string' })
         }
+        const sessionImage = SESSION_IMAGE_REF.exec(source.value)
+        if (sessionImage) return sessionImageFile(sessionImage[1], defaultName, app)
         let response
         try {
             response = await fetch(source.value)
@@ -715,6 +722,26 @@ async function sourceToFile(source, defaultName) {
     throw commandError('INVALID_ARGS_ENUM',
         `source.kind must be 'base64' or 'url', got '${source.kind}'`,
         { field: 'source.kind', allowed: ['base64', 'url'], got: source.kind })
+}
+
+/**
+ * Fetch an image from the online session. The session checks that the bytes
+ * are the image that the id names.
+ */
+async function sessionImageFile(id, name, app) {
+    const ref = `image:${id}`
+    let blob
+    try {
+        blob = await app?._onlineAdapter?.getSessionImage?.(id)
+    } catch (err) {
+        throw commandError('RESOURCE_DECODE_FAILED',
+            `The session has no image ${ref}: ${err.message || err}`, { url: ref })
+    }
+    if (!blob) {
+        throw commandError('RESOURCE_DECODE_FAILED',
+            `${ref} names an image in an online session, and no session is online`, { url: ref })
+    }
+    return new File([blob], name, { type: blob.type })
 }
 
 async function addTextLayer({ text, params, name }, app) {
@@ -2481,11 +2508,29 @@ export async function discardRecoveryCopy({ id }, app) {
 }
 
 /**
+ * Through a session, undo and redo stay within the states recorded since this
+ * tab's session started. Earlier states hold the person's offline work, which
+ * may include images that never went into the session.
+ * @param {object} app
+ * @param {-1|1} step - -1 for undo, 1 for redo
+ * @throws CONFLICT_BEFORE_SESSION — when the step would restore an earlier state.
+ */
+function assertWithinSessionHistory(app, step) {
+    app._finalizePendingUndo?.()
+    if (!app._onlineAdapter?.reachesBeforeSession?.(step)) return
+    throw commandError('CONFLICT_BEFORE_SESSION',
+        `Through a session, ${step < 0 ? 'undo' : 'redo'} reaches only changes made since the session went online`,
+        {})
+}
+
+/**
  * Undo the most recent state change in the undo stack. No-op when canUndo is false.
  *
  * @returns {Promise<{result: {ok: true}}>}
+ * @throws CONFLICT_BEFORE_SESSION — through a session, when the previous state predates it.
  */
-export async function undo(_args, app) {
+export async function undo(_args, app, _mutationToken = null, context = {}) {
+    if (context.session) assertWithinSessionHistory(app, -1)
     requireCommittedMutationOutcome(await app._undo(), 'Failed to undo')
     return { result: { ok: true } }
 }
@@ -2494,8 +2539,10 @@ export async function undo(_args, app) {
  * Redo the most recently undone change. No-op when canRedo is false.
  *
  * @returns {Promise<{result: {ok: true}}>}
+ * @throws CONFLICT_BEFORE_SESSION — through a session, when the next state predates it.
  */
-export async function redo(_args, app) {
+export async function redo(_args, app, _mutationToken = null, context = {}) {
+    if (context.session) assertWithinSessionHistory(app, 1)
     requireCommittedMutationOutcome(await app._redo(), 'Failed to redo')
     return { result: { ok: true } }
 }

@@ -9,7 +9,7 @@
  */
 import { readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { COMMAND_GROUPS } from '../public/js/agent/descriptions.js'
+import { COMMAND_GROUPS, LOCAL_ONLY } from '../public/js/agent/descriptions.js'
 import { SCHEMAS } from '../public/js/agent/schemas.js'
 
 export const LLMS_PATH = fileURLToPath(new URL('../public/llms.txt', import.meta.url))
@@ -72,6 +72,9 @@ function commandSection(name, description) {
     const schema = SCHEMAS[name]
     const fields = schema ? fieldLines(schema, 0) : []
     const lines = [`#### ${code(name)}`, '', description, '']
+    if (LOCAL_ONLY.includes(name)) {
+        lines.push('Not available through a session: it answers `REMOTE_UNAVAILABLE`.', '')
+    }
     if (fields.length === 0) {
         lines.push(isClosed(schema)
             ? 'Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.'

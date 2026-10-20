@@ -11,6 +11,23 @@
  * @module agent/descriptions
  */
 
+/**
+ * Commands that an agent in the person's Seance session cannot run. They read
+ * or change what the person keeps in this browser (saved projects, settings,
+ * the foreground color, fonts, exports and their jobs), start a download, or
+ * replace the whole composition, which takes the session offline. The
+ * session's command list marks them `remote: false`, and through a session
+ * they answer REMOTE_UNAVAILABLE.
+ */
+export const LOCAL_ONLY = [
+    'getProjectInfo', 'listProjects', 'getSettings', 'getForegroundColor',
+    'getJob', 'waitForJob', 'cancelJob',
+    'exportImage', 'exportVideo', 'releaseExport',
+    'newProject', 'openProject', 'saveProject', 'saveProjectAs', 'deleteProject',
+    'setForegroundColor', 'setSettings',
+    'listInstalledFonts', 'installFontBundle',
+]
+
 export const COMMAND_GROUPS = [
     {
         title: 'Read state',
@@ -74,11 +91,11 @@ export const COMMAND_GROUPS = [
     {
         title: 'Images and export',
         commands: {
-            getCanvasImageBytes: 'Returns the full-size canvas as base64 image data. No download starts.',
-            getThumbnail: 'Returns a small canvas image as base64 data. The longest side is `maxDimension` (default 256).',
-            getLayerThumbnail: 'Returns a small image of one layer, with its child effects and mask, as base64 data.',
+            getCanvasImageBytes: 'Returns the full-size canvas as base64 image data. No download starts. Through a session, the image goes into the session as its own bytes, and `image` replaces `bytes`.',
+            getThumbnail: 'Returns a small canvas image as base64 data. The longest side is `maxDimension` (default 256). Through a session, the image goes into the session as its own bytes, and `image` replaces `bytes`.',
+            getLayerThumbnail: 'Returns a small image of one layer, with its child effects and mask, as base64 data. Through a session, the image goes into the session as its own bytes, and `image` replaces `bytes`.',
             exportImage: 'Exports the canvas as an image. By default, it starts a browser download. The result always includes the image as base64 in `bytes`.',
-            pasteImageFromBytes: 'Adds an image as a new media layer. `source` is `{kind: "base64", data, mimeType?}` or `{kind: "url", value}`. `data` is raw base64, without a `data:` prefix.',
+            pasteImageFromBytes: 'Adds an image as a new media layer. `source` is `{kind: "base64", data, mimeType?}` or `{kind: "url", value}`. `data` is raw base64, without a `data:` prefix. While a session is online, `value` can be `image:<sha256>`, an image in the session. Through a session, only that form is accepted.',
             exportVideo: 'Starts a video export job (MP4, or a ZIP of PNG frames) and returns its `jobId`. The file downloads when the job succeeds.',
             releaseExport: 'Frees the blob URL of a `captureOnly` video export. Call it after you read the bytes.',
         },
@@ -143,8 +160,8 @@ export const COMMAND_GROUPS = [
             listRecoveryCopies: 'Lists recoverable unsaved compositions with id, name, dimensions, layer count, and modification time.',
             restoreRecoveryCopy: 'Restores a recovery copy by id, replacing the current composition. Save current work first if needed.',
             discardRecoveryCopy: 'Permanently discards a recovery copy by id.',
-            undo: 'Undoes the last change. When `canUndo` is false, nothing changes.',
-            redo: 'Redoes the last undone change. When `canRedo` is false, nothing changes.',
+            undo: 'Undoes the last change. When `canUndo` is false, nothing changes. Through a session, it does not go back past the composition that the session started with.',
+            redo: 'Redoes the last undone change. When `canRedo` is false, nothing changes. Through a session, it does not restore a state from before the session.',
         },
     },
     {

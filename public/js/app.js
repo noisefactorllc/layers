@@ -22,7 +22,7 @@ import './layers/layer-stack.js'
 import { EffectParams } from './layers/effect-params.js'
 import { openDialog } from './ui/open-dialog.js'
 import { addLayerDialog } from './ui/add-layer-dialog.js'
-import { aboutDialog } from './ui/about-dialog.js'
+import { aboutDialog, APP_VERSION } from './ui/about-dialog.js'
 import { settingsDialog } from './ui/settings-dialog.js'
 import { welcomeDialog } from './ui/welcome-dialog.js'
 import { saveProjectDialog } from './ui/save-project-dialog.js'
@@ -58,9 +58,12 @@ import { getFontaineLoader, BASE_FONTS, previewFamilyFor } from './layers/fontai
 import * as strokeModel from './drawing/stroke-model.js'
 import { StrokeRenderer } from './drawing/stroke-renderer.js'
 import { autoLevels, autoContrast, autoWhiteBalance } from './utils/auto-adjust.js'
-import { bootstrapAgent } from './agent/index.js'
+import { bootstrapAgent, createSeanceAgentRelay } from './agent/index.js'
 import { captureProjectSnapshotOverride } from './agent/snapshot.js'
 import { SeanceDialog, formatShortcut, initEscapeHandler, initializeTooltips } from 'handfish'  // Register <seance-dialog> custom element
+// A namespace import: an older handfish without the connect-agent dialog
+// still loads the app, and the "connect agent..." item stays hidden.
+import * as handfish from 'handfish'
 import { LOGO_SVG, IMAGE_SUBMENUS, FILTER_CATEGORIES } from './menuData.js'
 import { createLayersOnlineAdapter } from './collab/onlineAdapter.js'
 import { assertRemoteNodeSemantics } from './collab/docModel.js'
@@ -1467,7 +1470,18 @@ class LayersApp {
     _initOnlineCollaboration() {
         if (!isFeatureEnabled(ONLINE_COLLABORATION_FEATURE)) return
 
-        this._onlineAdapter = createLayersOnlineAdapter(this)
+        this._onlineAdapter = createLayersOnlineAdapter(this, {
+            // A software agent that joins the session runs agent commands in
+            // this tab (agent/relay.js); "connect agent..." walks the person
+            // through it.
+            createAgentRelay: ({ uploadImage, onAgent }) =>
+                createSeanceAgentRelay({ appVersion: APP_VERSION, uploadImage, onAgent }),
+            agentPrompt: sessionUrl => handfish.agentConnectPrompt?.({
+                app: 'Layers',
+                contractUrl: 'https://layers.noisefactor.io/llms-full.txt',
+                sessionUrl,
+            }) || '',
+        })
         this._onlineAdapter.wireUi()
     }
 
@@ -4426,6 +4440,14 @@ class LayersApp {
                                 label: 'go online...',
                                 hidden: () => !isFeatureEnabled(ONLINE_COLLABORATION_FEATURE),
                                 onSelect: () => { document.getElementById('seanceDialog')?.show?.() },
+                            },
+                            {
+                                id: 'connectAgentMenuItem',
+                                label: 'connect agent...',
+                                hidden: () => !isFeatureEnabled(ONLINE_COLLABORATION_FEATURE)
+                                    || !customElements.get('agent-connect-dialog')
+                                    || !this._onlineAdapter?.canConnectAgent?.(),
+                                onSelect: () => { this._onlineAdapter?.openAgentDialog?.() },
                             },
                         ],
                     },

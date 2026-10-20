@@ -18,9 +18,11 @@
 import { API_VERSION } from './constants.js'
 export { API_VERSION }
 
-import { registerCommand } from './dispatcher.js'
+import { registerCommand, runCommand } from './dispatcher.js'
 import { buildSnapshot } from './snapshot.js'
 import * as commands from './commands.js'
+import { createAgentRelay } from './relay.js'
+import { catalog, checkSessionRequest, sessionEnvelope } from './session.js'
 
 let _readyResolve
 const _ready = new Promise((resolve) => { _readyResolve = resolve })
@@ -181,4 +183,30 @@ export function bootstrapAgent(app) {
         window.__buildSnapshot = buildSnapshot
     }
     _readyResolve()
+}
+
+/**
+ * The Seance relay for this tab (see relay.js): its WebSocket class goes to the
+ * Seance SDK, sessionCreated marks a session this tab took online, and onAgent
+ * hears the first request from each agent. A request runs the same command,
+ * validation and checks as the in-page API, within the limits of session.js.
+ *
+ * @param {{appVersion: string, uploadImage: (blob: Blob) => Promise<string>, onAgent?: Function}} options
+ * @returns {{ WebSocket: typeof WebSocket, tabId: string, sessionCreated: (sessionId: string) => void, answers: () => boolean }}
+ */
+export function createSeanceAgentRelay({ appVersion, uploadImage, onAgent }) {
+    return createAgentRelay({
+        app: 'layers',
+        appVersion,
+        catalog,
+        uploadImage,
+        onAgent,
+        async invoke(command, args) {
+            const refused = checkSessionRequest(command, args)
+            if (refused) return { envelope: refused }
+            await LayersAgent.ready
+            const { envelope, image } = await runCommand(command, args, { session: true })
+            return { envelope: sessionEnvelope(command, envelope, LayersAgent._app), image }
+        },
+    })
 }

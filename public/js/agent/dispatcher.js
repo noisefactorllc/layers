@@ -12,6 +12,9 @@ import { API_VERSION } from './constants.js'
 import { SCHEMAS, validate } from './schemas.js'
 import { buildSnapshot } from './snapshot.js'
 
+// The Seance relay (relay.js) reads the API version from here.
+export { API_VERSION }
+
 let _tail = Promise.resolve()
 const LIFECYCLE_EXEMPT_COMMANDS = new Set([
     'getJob', 'waitForJob', 'cancelJob', 'exportVideo',
