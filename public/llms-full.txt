@@ -1142,6 +1142,8 @@ Other fields fail with `INVALID_ARGS_UNKNOWN`.
 
 Reads up to 256 by 256 grayscale values from a selection, layer mask, or child effect mask. `values` is row-major. Pass `layerId` for a layer mask, and both `layerId` and `childId` for a child mask.
 
+Not available through a session: it answers `REMOTE_UNAVAILABLE`.
+
 Arguments:
 
 - `source` (required): string, one of `selection`, `layer-mask`, `child-mask`
@@ -1373,11 +1375,15 @@ Arguments:
 
 Lists recoverable unsaved compositions with id, name, dimensions, layer count, and modification time.
 
+Not available through a session: it answers `REMOTE_UNAVAILABLE`.
+
 Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.
 
 #### `restoreRecoveryCopy`
 
 Restores a recovery copy by id, replacing the current composition. Save current work first if needed.
+
+Not available through a session: it answers `REMOTE_UNAVAILABLE`.
 
 Arguments:
 
@@ -1388,6 +1394,8 @@ Other fields fail with `INVALID_ARGS_UNKNOWN`.
 #### `discardRecoveryCopy`
 
 Permanently discards a recovery copy by id.
+
+Not available through a session: it answers `REMOTE_UNAVAILABLE`.
 
 Arguments:
 
@@ -1543,11 +1551,15 @@ Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.
 
 Starts a shared session for the current composition when online collaboration is enabled. Returns the session id; state.collaboration includes the share URL.
 
+Not available through a session: it answers `REMOTE_UNAVAILABLE`.
+
 Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.
 
 #### `joinSession`
 
 Joins a session by id, replacing the current composition without a dialog. Save first if needed.
+
+Not available through a session: it answers `REMOTE_UNAVAILABLE`.
 
 Arguments:
 
@@ -1558,5 +1570,7 @@ Other fields fail with `INVALID_ARGS_UNKNOWN`.
 #### `goOffline`
 
 Leaves the active shared session without changing the composition.
+
+Not available through a session: it answers `REMOTE_UNAVAILABLE`.
 
 Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.

@@ -24,6 +24,9 @@ export const LOCAL_ONLY = [
     'getJob', 'waitForJob', 'cancelJob',
     'exportImage', 'exportVideo', 'releaseExport',
     'newProject', 'openProject', 'saveProject', 'saveProjectAs', 'deleteProject',
+    'listRecoveryCopies', 'restoreRecoveryCopy', 'discardRecoveryCopy',
+    'takeOnline', 'joinSession', 'goOffline',
+    'getRasterRegion',
     'setForegroundColor', 'setSettings',
     'listInstalledFonts', 'installFontBundle',
 ]

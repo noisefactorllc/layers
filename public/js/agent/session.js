@@ -30,7 +30,7 @@ const READ_ONLY = new Set([
     'listProjects', 'getSettings', 'getForegroundColor', 'searchEffects',
     'listEffectCategories', 'listCuratedEffects', 'getEffectDefinition',
     'getJob', 'waitForJob', 'getCanvasImageBytes', 'getThumbnail',
-    'getLayerThumbnail', 'listInstalledFonts',
+    'getLayerThumbnail', 'listInstalledFonts', 'getDrawingStrokes', 'getRasterRegion',
 ])
 
 // The state that a session sees. Everything else in a snapshot stays in this

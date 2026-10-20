@@ -35,7 +35,8 @@ test('a session runs every described command except the local-only ones', () => 
     assert.deepEqual([...REMOTE].sort(), described.filter(name => !LOCAL_ONLY.includes(name)).sort())
     // Stored projects, preferences, fonts, downloads and their jobs.
     for (const name of ['listProjects', 'openProject', 'saveProject', 'deleteProject', 'getSettings',
-        'setForegroundColor', 'installFontBundle', 'exportImage', 'exportVideo', 'getJob']) {
+        'setForegroundColor', 'installFontBundle', 'exportImage', 'exportVideo', 'getJob',
+        'listRecoveryCopies', 'restoreRecoveryCopy', 'discardRecoveryCopy', 'takeOnline', 'joinSession', 'goOffline', 'getRasterRegion']) {
         assert.ok(!REMOTE.has(name), name)
     }
     for (const name of ['getThumbnail', 'addLayer', 'undo', 'paintStroke']) assert.ok(REMOTE.has(name), name)
@@ -48,6 +49,8 @@ test('the session command list marks remote and read-only commands', () => {
     assert.equal(byName.exportImage.remote, false)
     assert.equal(byName.getThumbnail.remote, true)
     assert.equal(byName.getThumbnail.readOnly, true)
+    assert.equal(byName.getDrawingStrokes.readOnly, true)
+    assert.equal(byName.getRasterRegion.remote, false)
     assert.equal(byName.addLayer.readOnly, false)
     assert.equal(byName.addLayer.group, 'Layers')
     assert.deepEqual(byName.getState.args, { type: 'object', properties: {} })
@@ -69,6 +72,10 @@ test('argument schemas become JSON Schema without cached patterns', () => {
 test('a session request cannot reach local commands or bring media as text or by a link', () => {
     const code = (command, args = {}) => checkSessionRequest(command, args)?.error.code ?? null
     assert.equal(code('listProjects'), 'REMOTE_UNAVAILABLE')
+    for (const command of ['listRecoveryCopies', 'restoreRecoveryCopy', 'discardRecoveryCopy',
+        'takeOnline', 'joinSession', 'goOffline', 'getRasterRegion']) {
+        assert.equal(code(command), 'REMOTE_UNAVAILABLE', command)
+    }
     assert.equal(code('_ping'), 'NOT_FOUND_COMMAND')
     assert.equal(code('setProgram', { dsl: '' }), 'NOT_FOUND_COMMAND')
     assert.equal(code('getState', []), 'INVALID_ARGS_TYPE')
@@ -85,7 +92,7 @@ test('a session request cannot reach local commands or bring media as text or by
 
 test('every snapshot field is either shown to a session or kept in this tab', () => {
     // A field added to the snapshot stays out of sessions until it is listed here.
-    const kept = ['foreground', 'jobs', 'recentExports', 'settings']
+    const kept = ['foreground', 'jobs', 'recentExports', 'settings', 'collaboration']
     const snapshot = buildSnapshot({
         _layers: [{ id: 'layer-1', name: 'photo', sourceType: 'media', mediaType: 'image', mediaFile: { name: 'IMG_0001.jpg' } }],
     })
