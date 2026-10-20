@@ -320,6 +320,41 @@ test('an agent reads, changes and looks at the composition, and images cross onl
     }
 })
 
+test('an agent reply waits for a delayed binary image publication', async ({ page, baseURL }) => {
+    await openLayers(page)
+    const code = await takeOnline(page)
+    const { agent, tab } = await joinAgent(baseURL, code)
+    let releaseUpload
+    try {
+        const put = await agent.putImage(png(255, 0, 0), 'image/png')
+        let uploading = false
+        const held = new Promise(resolve => { releaseUpload = resolve })
+        await page.route('**/v1/sessions/*/images', async route => {
+            if (route.request().method() === 'POST') {
+                uploading = true
+                await held
+            }
+            await route.continue()
+        })
+        const pending = agent.call(tab, 'pasteImageFromBytes', {
+            source: { kind: 'url', value: `image:${put.id}` }, name: 'slow upload',
+        })
+        await expect.poll(() => uploading).toBe(true)
+        expect(await Promise.race([
+            pending.then(() => 'replied'),
+            new Promise(resolve => setTimeout(() => resolve('waiting'), 650)),
+        ])).toBe('waiting')
+        releaseUpload()
+        const reply = await pending
+        expect(reply.envelope.ok, JSON.stringify(reply.envelope.error)).toBe(true)
+        expect(agent.frames.some(frame => frame.type === 'poly-token-upsert'
+            && frame.text?.includes(put.id))).toBe(true)
+    } finally {
+        releaseUpload?.()
+        agent.close()
+    }
+})
+
 test('through a session, undo stops at the composition the session started with', async ({ page, baseURL }) => {
     await openLayers(page)
     // Offline, the person adds an image and deletes it again.

@@ -215,7 +215,18 @@ export function createSeanceAgentRelay({ appVersion, uploadImage, onAgent, curre
             if (session === null) return { envelope: ended(command) }
             const isCurrent = () => currentSession() === session
             await LayersAgent.ready
+            const adapter = LayersAgent._app?._onlineAdapter
+            const rejections = adapter?.publicationRejections
             const { envelope, image } = await runCommand(command, args, { session: true, isCurrent })
+            if (envelope.ok && !catalog().find(item => item.name === command)?.readOnly) {
+                try {
+                    await adapter?.waitForPublication(rejections)
+                } catch (error) {
+                    return { envelope: isCurrent()
+                        ? makeFailure(command, 'INTERNAL_ERROR', error.message)
+                        : ended(command) }
+                }
+            }
             // The answer, and any image, belong only to the session that asked.
             if (!isCurrent()) return { envelope: ended(command) }
             return { envelope: sessionEnvelope(command, envelope, LayersAgent._app), image }

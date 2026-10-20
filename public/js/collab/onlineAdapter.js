@@ -131,6 +131,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     const pendingSeedSnapshotApplies = new Set()
     let publishTimer = null
     let publishTask = null
+    let publicationRejections = 0
+    let lastPublicationRejection = ''
     let imageDraftHeld = false
     const preparedImages = new WeakMap()
     const preparedMasks = new WeakMap() // mask ImageData -> Promise<{file, asset}>
@@ -1091,6 +1093,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     // -- node-reject handling ---------------------------------------------
 
     function handleNodeReject({ id, reason }) {
+        publicationRejections += 1
+        lastPublicationRejection = reason
         // Never confirmed, so it must stop overriding the server's copy.
         pendingLocalWrites.delete(id)
         // Remember what we last tried to send for this id so a later,
@@ -1197,6 +1201,26 @@ export function createLayersOnlineAdapter(app, deps = {}) {
     }
 
     // -- publish funnel ---------------------------------------------------
+
+    async function waitForPublication(rejections = publicationRejections) {
+        const request = currentSessionRequest()
+        const deadline = Date.now() + 30000
+        while (isCurrentSession(request) && isOnline()
+            && (publishTimer !== null || publishTask !== null
+                || request.layer.getPendingNodeWrites?.().length > 0)) {
+            if (Date.now() >= deadline) throw new Error('Composition publication timed out')
+            await new Promise(resolve => setTimeout(resolve, 20))
+        }
+        if (!isCurrentSession(request) || !isOnline()) {
+            throw new Error('The session ended before the composition was shared')
+        }
+        if (publicationRejections !== rejections) {
+            throw new Error(`The session rejected a composition change: ${lastPublicationRejection}`)
+        }
+        if (imageDraftHeld || readOnlyDraftHeld) {
+            throw new Error('The composition has changes that could not be shared')
+        }
+    }
     //
     // One funnel, no per-command instrumentation: callers just call
     // schedulePublish() after a mutation settles. It diffs the current
@@ -2041,6 +2065,8 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         goOffline,
         copyShareUrl,
         schedulePublish,
+        waitForPublication,
+        get publicationRejections() { return publicationRejections },
         canConnectAgent,
         openAgentDialog,
         getSessionImage,

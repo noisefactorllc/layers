@@ -97,6 +97,7 @@ function setup(layers = [createEffectLayer('synth/gradient', 'Base')]) {
         holdDownload() { downloadGate = new Promise(resolve => { this.releaseDownload = resolve }) },
         failUpload(error) { uploadError = error },
         failCreation(...errors) { creationErrors.push(...errors) },
+        rejectNode(id, reason) { handlers.get('node-reject')?.({ id, reason }) },
     }
 }
 
@@ -105,6 +106,61 @@ async function run(task) {
     infoDialog.show = async () => {}
     try { await toast.suppress(task) } finally { infoDialog.show = oldShow }
 }
+
+test('an agent waits for delayed image publication before its command completes', () => run(async () => {
+    const h = setup()
+    try {
+        await h.adapter.takeOnline()
+        h.app._layers.push(createMediaLayer(file('agent'), 'image', 'agent image'))
+        h.holdUpload()
+        h.adapter.schedulePublish()
+        let completed = false
+        const publication = h.adapter.waitForPublication().then(() => { completed = true })
+        await waitFor(() => h.uploads.length > 0)
+        await delay(650)
+        assert.equal(completed, false)
+        h.releaseUpload()
+        await publication
+        assert.ok(h.writes.some(node => node.kind === 'layers-layer'
+            && JSON.parse(node.text).name === 'agent image'))
+    } finally {
+        h.releaseUpload?.()
+        h.adapter.goOffline()
+    }
+}))
+
+test('an agent waits for queued node writes to be acknowledged', () => run(async () => {
+    const h = setup()
+    try {
+        await h.adapter.takeOnline()
+        let pending = [{ op: 'upsert', id: 'pending-layer' }]
+        h.sdk.getPendingNodeWrites = () => pending
+        let completed = false
+        const publication = h.adapter.waitForPublication().then(() => { completed = true })
+        await delay(40)
+        assert.equal(completed, false)
+        pending = []
+        await publication
+    } finally {
+        h.adapter.goOffline()
+    }
+}))
+
+test('an agent receives a publication failure when a queued node is rejected', () => run(async () => {
+    const h = setup()
+    try {
+        await h.adapter.takeOnline()
+        let pending = [{ op: 'delete', id: 'rejected-layer' }]
+        h.sdk.getPendingNodeWrites = () => pending
+        const publication = h.adapter.waitForPublication()
+        const rejected = assert.rejects(publication, /limit/)
+        h.rejectNode('rejected-layer', 'limit')
+        pending = []
+        await rejected
+    } finally {
+        h.adapter.goOffline()
+    }
+}))
 
 test('taking an image online seeds original bytes outside the node doc', () => run(async () => {
     const original = file()
