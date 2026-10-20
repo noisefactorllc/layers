@@ -1739,6 +1739,41 @@ test('take-online rechecks the video gate after acquiring the lifecycle lease', 
     })
 })
 
+test('agent take-online never opens an unsupported-media dialog after a queued mutation', async ({ page }) => {
+    await bootSolid(page)
+    const result = await page.evaluate(async () => {
+        const app = window.layersApp
+        const { createLayersOnlineAdapter } = await import('/js/collab/onlineAdapter.js')
+        const { createMediaLayer } = await import('/js/layers/layer-model.js')
+        const { infoDialog } = await import('/js/ui/info-dialog.js')
+        let takeCalls = 0
+        let showCalls = 0
+        const online = {
+            on() {}, getStatus: () => 'offline', getSessionId: () => 'unused',
+            getShareUrl: () => '', writeSessionToUrl: url => url,
+            takeOnline: async () => { takeCalls++ }, goOffline() {},
+        }
+        const adapter = createLayersOnlineAdapter(app, {
+            location: new URL('https://layers.test/'),
+            history: { replaceState() {} }, dialog: null,
+            importSdk: async () => ({ createOnlineDslLayer: () => online }),
+        })
+        const originalShow = infoDialog.show
+        infoDialog.show = async () => { showCalls++; throw new Error('Dialog opened') }
+        try {
+            const blocker = await app._acquireProjectLifecycle()
+            const pending = adapter.takeOnline({ skipUnsupportedDialogs: true })
+            await new Promise(resolve => setTimeout(resolve, 0))
+            app._layers.push(createMediaLayer(null, 'video', 'Queued video'))
+            blocker.release()
+            return { sessionId: await pending, takeCalls, showCalls }
+        } finally {
+            infoDialog.show = originalShow
+        }
+    })
+    expect(result).toEqual({ sessionId: null, takeCalls: 0, showCalls: 0 })
+})
+
 test('a rejected node deletion is retried on the next publish', async ({ page }) => {
     await bootSolid(page)
 

@@ -57,6 +57,58 @@ async function prepareHiddenSplitDrawing(page) {
 }
 
 test.describe('paintStroke', () => {
+    test('returns existing stroke geometry for inspection', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const added = await window.LayersAgent.paintStroke({
+                points: [[10, 10], [20, 20]], size: 4, color: '#123456',
+            })
+            const read = await window.LayersAgent.getDrawingStrokes({
+                layerId: added.result.layerId,
+            })
+            return { added, read }
+        })
+        expect(result.read.ok).toBe(true)
+        expect(result.read.result.strokes).toMatchObject([{
+            id: result.added.result.strokeId,
+            color: '#123456', size: 4,
+            points: [{ x: 10, y: 10 }, { x: 20, y: 20 }],
+        }])
+        expect(result.read.result.total).toBe(1)
+        expect(result.read.result.nextOffset).toBeNull()
+    })
+    test('pages stroke geometry without exposing live stroke objects', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const first = await window.LayersAgent.paintStroke({
+                points: [[1, 1], [2, 2]], size: 2, color: '#123456',
+            })
+            const layerId = first.result.layerId
+            await window.LayersAgent.paintStroke({
+                layerId, points: [[3, 3], [4, 4]], size: 2, color: '#123456',
+            })
+            await window.LayersAgent.paintStroke({
+                layerId, points: [[5, 5], [6, 6]], size: 2, color: '#123456',
+            })
+            const firstPage = await window.LayersAgent.getDrawingStrokes({ layerId, limit: 2 })
+            firstPage.result.strokes[0].points[0].x = 999
+            const secondPage = await window.LayersAgent.getDrawingStrokes({
+                layerId, offset: firstPage.result.nextOffset, limit: 2,
+            })
+            return {
+                total: firstPage.result.total,
+                firstCount: firstPage.result.strokes.length,
+                nextOffset: firstPage.result.nextOffset,
+                secondCount: secondPage.result.strokes.length,
+                finalOffset: secondPage.result.nextOffset,
+                liveX: window.layersApp._layers.find(layer => layer.id === layerId).strokes[0].points[0].x,
+            }
+        })
+        expect(result).toEqual({
+            total: 3, firstCount: 2, nextOffset: 2,
+            secondCount: 1, finalOffset: null, liveX: 1,
+        })
+    })
     test('paints a stroke onto a new drawing layer (auto-created)', async ({ page }) => {
         await bootApp(page)
         const before = await page.evaluate(() => window.layersApp._layers.length)

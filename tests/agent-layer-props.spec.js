@@ -22,6 +22,21 @@ async function bootApp(page) {
 }
 
 test.describe('setLayerProps', () => {
+    test('rejects misspelled mutation fields without changing the layer', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const layerId = window.layersApp._layers[0].id
+            const before = window.layersApp._layers[0].opacity
+            const envelope = await window.LayersAgent.setLayerProps({
+                layerId, props: { opactiy: 25 },
+            })
+            return { envelope, before, after: window.layersApp._layers[0].opacity }
+        })
+        expect(result.envelope.ok).toBe(false)
+        expect(result.envelope.error.code).toBe('INVALID_ARGS_UNKNOWN')
+        expect(result.envelope.error.details.field).toBe('props.opactiy')
+        expect(result.after).toBe(result.before)
+    })
     test('updates opacity', async ({ page }) => {
         await bootApp(page)
         const id = await page.evaluate(() => window.layersApp._layers[0].id)

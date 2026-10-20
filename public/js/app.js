@@ -3291,6 +3291,7 @@ class LayersApp {
         const overlay = document.getElementById('maskOverlay')
         if (!overlay || !layer.mask) return
 
+        overlay.dataset.layerId = layer.id
         overlay.width = layer.mask.width
         overlay.height = layer.mask.height
         // Match CSS size to selection overlay so they align exactly
@@ -3324,8 +3325,11 @@ class LayersApp {
      * @param {object} stroke - Stroke object from drawing tools
      * @param {boolean} isEraser - True if erasing (paint black/hide)
      */
-    async _handleMaskStroke(stroke, isEraser) {
-        const layer = this._layers.find(l => l.id === this._maskEditLayerId)
+    async _handleMaskStroke(stroke, isEraser, {
+        layerId = this._maskEditLayerId,
+        canvasCoordinates = false,
+    } = {}) {
+        const layer = this._layers.find(l => l.id === layerId)
         if (!layer?.mask) return
         return this._commitMaskMutation(layer, () => {
             // Rasterize the stroke to a temporary canvas
@@ -3334,8 +3338,10 @@ class LayersApp {
             }
 
             // Scale stroke from overlay coordinates to mask coordinates
-            const scaleX = layer.mask.width / this._selectionOverlay.width
-            const scaleY = layer.mask.height / this._selectionOverlay.height
+            const scaleX = layer.mask.width / (canvasCoordinates
+                ? this._canvas.width : this._selectionOverlay.width)
+            const scaleY = layer.mask.height / (canvasCoordinates
+                ? this._canvas.height : this._selectionOverlay.height)
             const maskStroke = {
                 ...stroke,
                 color: isEraser ? '#000000' : '#ffffff',
@@ -3359,7 +3365,9 @@ class LayersApp {
 
             // Update texture and overlay
             this._renderer.uploadMaskTexture(layer.id, layer.mask)
-            this._renderMaskOverlay(layer)
+            if (this._maskEditMode && this._maskEditLayerId === layer.id) {
+                this._renderMaskOverlay(layer)
+            }
         }, { pushUndo: 'debounced' })
     }
 

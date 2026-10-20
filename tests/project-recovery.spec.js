@@ -375,6 +375,26 @@ test('restoring a deferred copy adopts its slot, preserves it on failed save, an
     expect(await page.evaluate(async () => (await (await import('/js/utils/project-recovery.js')).listRecoveries()).map(row => row.id))).not.toContain(original)
 })
 
+test('agent restores a retained recovery copy through the project loader', async ({ page }) => {
+    await boot(page)
+    await waitForCheckpoint(page)
+    const result = await page.evaluate(async () => {
+        const app = window.layersApp
+        const originalId = await app._recovery._id
+        await app._recovery.retain()
+        const fresh = await window.LayersAgent.newProject({ width: 64, height: 64 })
+        const listed = await window.LayersAgent.listRecoveryCopies()
+        const restored = await window.LayersAgent.restoreRecoveryCopy({ id: originalId })
+        return { fresh, listed, restored, originalId,
+            width: app._canvas.width, layerCount: app._layers.length }
+    })
+    expect(result.fresh.ok).toBe(true)
+    expect(result.listed.result.copies.some(copy => copy.id === result.originalId)).toBe(true)
+    expect(result.restored.ok).toBe(true)
+    expect(result.width).toBe(512)
+    expect(result.layerCount).toBe(1)
+})
+
 test('failed restore preserves its source, and another live owner prevents source adoption', async ({ page, context }) => {
     await recoveryHarness(page)
     const initial = await page.evaluate(async () => {

@@ -1482,19 +1482,19 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         }
     }
 
-    async function takeOnline() {
+    async function takeOnline({ skipUnsupportedDialogs = false } = {}) {
         const intentGeneration = ++transitionIntentGeneration
         return runSessionTransition(intentGeneration, () =>
-            takeOnlineForIntent(intentGeneration))
+            takeOnlineForIntent(intentGeneration, { skipUnsupportedDialogs }))
     }
 
-    async function takeOnlineForIntent(intentGeneration) {
+    async function takeOnlineForIntent(intentGeneration, { skipUnsupportedDialogs = false } = {}) {
         if (hasVideoLayer()) {
-            await showUnsupportedMediaMessage()
+            if (!skipUnsupportedDialogs) await showUnsupportedMediaMessage()
             return null
         }
         if (hasMaskedChildEffect()) {
-            await showUnsupportedChildMaskMessage()
+            if (!skipUnsupportedDialogs) await showUnsupportedChildMaskMessage()
             return null
         }
         const transition = await prepareSessionTransition(
@@ -1514,12 +1514,12 @@ export function createLayersOnlineAdapter(app, deps = {}) {
             // composition is the one that must satisfy the session gate.
             if (hasVideoLayer()) {
                 abandonSessionTransition(transition.layer)
-                await showUnsupportedMediaMessage()
+                if (!skipUnsupportedDialogs) await showUnsupportedMediaMessage()
                 return null
             }
             if (hasMaskedChildEffect()) {
                 abandonSessionTransition(transition.layer)
-                await showUnsupportedChildMaskMessage()
+                if (!skipUnsupportedDialogs) await showUnsupportedChildMaskMessage()
                 return null
             }
             const { layer, previous } = transition

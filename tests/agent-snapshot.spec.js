@@ -29,7 +29,7 @@ test.describe('snapshot scaffolding', () => {
             return window.__buildSnapshot(window.layersApp)
         })
         expect(snap.apiVersion).toBe('1.0')
-        expect(snap.schemaVersion).toBe('1.0')
+        expect(snap.schemaVersion).toBe('1.1')
         expect(snap.project).toMatchObject({
             id: null,
             isDirty: expect.any(Boolean),

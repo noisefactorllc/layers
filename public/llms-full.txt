@@ -118,22 +118,32 @@ state: {
     apiVersion, schemaVersion,
     project:        { id, name, isDirty, canUndo, canRedo, canSaveAs },
     canvas:         { width, height },
-    view:           { zoomMode, isPlaying, loopDuration },
+    view:           { zoomMode, tool, selectionTool, maskEditLayerId,
+                      maskOverlayLayerId, scrollX, scrollY,
+                      scrollMaxX, scrollMaxY, isPlaying, loopDuration },
     foreground:     { color },
-    selection:      null | { kind, bounds, isEmpty, polygonPoints? },
+    selection:      null | { kind, bounds, isEmpty, polygonPoints?, mask? },
     layers:         [{ id, name, sourceType, visible, opacity, blendMode,
-                       locked, transform, media, effect, drawing, children, mask }],
+                       locked, transform, media, effect,
+                       drawing: { strokeCount, strokeIds, strokeIdsTruncated } | null,
+                       children: [{ id, name, effectId, visible, params, mask }],
+                       mask }],
     selectedLayerIds, activeLayerId,
     jobs:           [{ id, kind, status, startedAt, updatedAt, completedAt,
                        progress, result, error }],   // most recent 20
     recentExports:  [{ id, kind, filename, mimeType, sizeBytes, createdAt }],
-    settings:       { theme?, exportImage?, exportVideo? }
+    settings:       { theme?, exportImage?, exportVideo? },
+    collaboration:  { available, status, sessionId, shareUrl }
 }
 ```
 
 `sourceType` is one of `effect | drawing | media | text`. `selection.kind` is
 `rectangle | oval | lasso | polygon | wand | color-range`. `jobs.status` is
 `queued | running | succeeded | failed | cancelled`.
+`mask` on a layer or child effect is null or a summary with `width`, `height`,
+`coverage`, and `bounds`. A layer mask also has `enabled` and `visible`.
+Raster selections have the same summary in `selection.mask`. Use
+`getRasterRegion` for exact pixels; summaries do not contain pixel arrays.
 
 ---
 
@@ -159,17 +169,22 @@ console.log(SCHEMAS.addLayer)
 A command whose `SCHEMAS` entry is null takes no arguments.
 Skip `_`-prefixed names. They are not public commands.
 
-Most commands ignore fields that their schema does not declare, without an error.
-Check the spelling of each field: a misspelled field has no effect.
+New commands and nested layer, transform, and child property objects reject
+undeclared keys with `INVALID_ARGS_UNKNOWN`. Most existing command argument roots
+remain permissive for compatibility; `llms-full.txt` marks closed schemas.
+Free-form effect parameter and media source objects remain open.
+`setSettings` keeps its `UNKNOWN_SETTING_KEY` warning for unknown settings.
 
 The commands cover these operations:
 
 - Create, read, update, and delete layers. Set layer properties and transforms.
 - Set effect parameters and child effects.
-- Draw with `paintStroke` and `drawShape`. Fill an area with `fillRegion`. Edit masks.
+- Draw with `paintStroke` and `drawShape`. Read existing strokes with
+  `getDrawingStrokes`. Fill an area with `fillRegion`. Read and paint masks.
 - Create and modify rectangle, oval, polygon, lasso, wand, and color-range selections.
 - Manage projects, undo, and redo.
-- Control the view, foreground, settings, zoom, and playback.
+- Control the view, foreground, toolbar tool, selection tool, pan, settings,
+  zoom, and playback.
 - Resize the canvas or image. Adjust levels, contrast, and white balance automatically.
 - Export images and videos. Install and list fonts. Manage jobs.
 
@@ -201,6 +216,10 @@ The commands cover these operations:
 | `CONFLICT_NO_MASK` | the layer has no mask |
 | `CONFLICT_MEDIA_BLOCKED_ONLINE` | a video layer while a collaboration session is online |
 | `CONFLICT_PROJECT_REPLACEMENT` | `newProject` or `openProject` did not complete (`details.status` gives the reason) |
+| `NOT_FOUND_RECOVERY` | a recovery copy id is no longer available |
+| `CONFLICT_RECOVERY_IN_USE` | another browser tab owns that recovery copy |
+| `CONFLICT_FEATURE_UNAVAILABLE` | online collaboration is disabled in this build |
+| `CONFLICT_SESSION_TRANSITION` | taking the project online or joining a session did not complete |
 | `CONFLICT_JOB_IN_PROGRESS` | a duplicate job is already running (e.g. installFontBundle) |
 | `JOB_LIMIT_EXCEEDED` | too many active jobs (cap = 20) |
 | `JOB_CANCELLED` | the job was cancelled (terminal state, not an error per se) |
@@ -351,6 +370,49 @@ await LayersAgent.setRectangleSelection({ x: 50, y: 50, width: 200, height: 200 
 await LayersAgent.addMaskFromSelection({ layerId: '...' })
 ```
 
+**Inspect and edit existing drawing and mask content:**
+
+```js
+const layerId = '...'
+const layer = (await LayersAgent.getLayer({ layerId })).result
+// layer.drawing.strokeIds lists the first 20 ids; page through all strokes below.
+const page = (await LayersAgent.getDrawingStrokes({ layerId, limit: 20 })).result
+// Follow page.nextOffset until it is null; strokes include their geometry.
+
+const tile = (await LayersAgent.getRasterRegion({
+    source: 'layer-mask', layerId, x: 0, y: 0, width: 64, height: 64
+})).result
+// tile.values is row-major, one grayscale value per pixel (0 hides, 255 reveals).
+await LayersAgent.paintLayerMask({
+    layerId, mode: 'hide', points: [[10, 10], [30, 30]], size: 8
+})
+```
+
+For `getRasterRegion`, `source` can be `selection`, `layer-mask`, or
+`child-mask`. A child mask also needs `childId`. Read large rasters in tiles of
+at most 256 by 256 pixels. Selection pixels use alpha values; layer and child
+masks use grayscale values. A child effect captures the active selection when
+it is added; `deleteChildEffectMask` removes that captured mask.
+
+When online collaboration is enabled, `takeOnline` starts a shared session and
+`joinSession({sessionId})` joins one. Joining replaces the current composition
+without a dialog; save work first if needed. `goOffline` leaves the session.
+Read `state.collaboration` for availability, status, session id, and share URL.
+
+**Recover unsaved work:**
+
+```js
+const { copies } = (await LayersAgent.listRecoveryCopies()).result
+if (copies.length) {
+    const restored = await LayersAgent.restoreRecoveryCopy({ id: copies[0].id })
+    if (!restored.ok) throw new Error(restored.error.message)
+}
+```
+
+`restoreRecoveryCopy` replaces the current composition. `discardRecoveryCopy`
+permanently removes a copy by id. Each list entry reports its name, dimensions,
+layer count, and modification time without returning embedded media.
+
 **Look at the canvas:**
 
 ```js
@@ -387,7 +449,7 @@ Alternatively, wait for one or two `getThumbnail` calls before reading bytes.
 
 ## Command reference
 
-Layers has 87 public commands. Call a command as `await window.LayersAgent.<name>(args)`.
+Layers has 103 public commands. Call a command as `await window.LayersAgent.<name>(args)`.
 You can omit the argument object: `getState()` is the same as `getState({})`.
 
 ### Read state
@@ -597,7 +659,7 @@ Sets the name, visible, opacity, blendMode or locked property of a layer.
 Arguments:
 
 - `layerId` (required): string
-- `props` (required): object with these fields
+- `props` (required): object with only these fields
   - `name`: string
   - `visible`: boolean
   - `opacity`: number, from 0 to 100
@@ -611,7 +673,7 @@ Sets the offset, scale, rotation or flip of a layer. Only media and drawing laye
 Arguments:
 
 - `layerId` (required): string
-- `transform` (required): object with these fields
+- `transform` (required): object with only these fields
   - `offsetX`: number
   - `offsetY`: number
   - `scaleX`: number, from 0.01 to 100
@@ -663,13 +725,13 @@ Arguments:
 
 #### `setChildEffectProps`
 
-Sets the `visible` or `name` property of a child effect. Other keys have no effect.
+Sets the `visible` or `name` property of a child effect. Unknown keys fail validation.
 
 Arguments:
 
 - `layerId` (required): string
 - `childId` (required): string
-- `props` (required): object with these fields
+- `props` (required): object with only these fields
   - `visible`: boolean
   - `name`: string
 
@@ -683,6 +745,17 @@ Arguments:
 - `childId` (required): string
 - `params` (required): object
 - `replace`: boolean
+
+#### `deleteChildEffectMask`
+
+Removes the selection mask captured when a child effect was added.
+
+Arguments:
+
+- `layerId` (required): string
+- `childId` (required): string
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
 
 ### Images and export
 
@@ -911,6 +984,46 @@ Arguments:
 
 - `layerId` (required): string
 
+#### `selectFromLayerMask`
+
+Creates a raster selection from the visible values of a layer mask.
+
+Arguments:
+
+- `layerId` (required): string
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+#### `getRasterRegion`
+
+Reads up to 256 by 256 grayscale values from a selection, layer mask, or child effect mask. `values` is row-major. Pass `layerId` for a layer mask, and both `layerId` and `childId` for a child mask.
+
+Arguments:
+
+- `source` (required): string, one of `selection`, `layer-mask`, `child-mask`
+- `layerId`: string
+- `childId`: string
+- `x` (required): integer, 0 or more
+- `y` (required): integer, 0 or more
+- `width` (required): integer, from 1 to 256
+- `height` (required): integer, from 1 to 256
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+#### `paintLayerMask`
+
+Paints a stroke on a layer mask in canvas coordinates. `mode` is `hide` (black) or `reveal` (white).
+
+Arguments:
+
+- `layerId` (required): string
+- `points` (required): array
+- `size` (required): integer, from 1 to 200
+- `opacity`: number, from 0 to 1
+- `mode` (required): string, one of `hide`, `reveal`
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
 #### `invertLayerMask`
 
 Inverts the mask of a layer.
@@ -927,6 +1040,28 @@ Arguments:
 
 - `layerId` (required): string
 - `enabled` (required): boolean
+
+#### `setMaskVisible`
+
+Shows or hides the layer mask overlay without changing its effect on the image. Only one overlay can be shown; read its owner from `state.view.maskOverlayLayerId`.
+
+Arguments:
+
+- `layerId` (required): string
+- `visible` (required): boolean
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+#### `setMaskEditMode`
+
+Enters the existing mask brush mode with `enabled: true, layerId`, or exits it with `enabled: false`. The active mask edit layer is in `state.view.maskEditLayerId`.
+
+Arguments:
+
+- `enabled` (required): boolean
+- `layerId`: string, at least 1 character
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
 
 #### `featherMask`
 
@@ -978,6 +1113,18 @@ Arguments:
 - `opacity`: number, from 0 to 1
 - `color` (required): string
 - `mode`: string, one of `brush`, `eraser`
+
+#### `getDrawingStrokes`
+
+Returns up to `limit` editable strokes (default 100) from `offset` (default 0), including ids and geometry. `nextOffset` is null on the last page.
+
+Arguments:
+
+- `layerId` (required): string
+- `offset`: integer, 0 or more
+- `limit`: integer, from 1 to 100
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
 
 #### `eraseStroke`
 
@@ -1068,6 +1215,32 @@ Arguments:
 
 - `projectId` (required): string, at least 1 character
 
+#### `listRecoveryCopies`
+
+Lists recoverable unsaved compositions with id, name, dimensions, layer count, and modification time.
+
+Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.
+
+#### `restoreRecoveryCopy`
+
+Restores a recovery copy by id, replacing the current composition. Save current work first if needed.
+
+Arguments:
+
+- `id` (required): string, at least 1 character
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+#### `discardRecoveryCopy`
+
+Permanently discards a recovery copy by id.
+
+Arguments:
+
+- `id` (required): string, at least 1 character
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
 #### `undo`
 
 Undoes the last change. When `canUndo` is false, nothing changes.
@@ -1097,6 +1270,37 @@ Sets the zoom mode.
 Arguments:
 
 - `mode` (required): string, one of `fit`, `50`, `100`, `200`
+
+#### `setPan`
+
+Scrolls the canvas viewport to `x`, `y` pixels. The browser clamps the result to the available scroll range.
+
+Arguments:
+
+- `x` (required): integer, 0 or more
+- `y` (required): integer, 0 or more
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+#### `setTool`
+
+Activates a toolbar tool. Transform requires an active media or drawing layer.
+
+Arguments:
+
+- `tool` (required): string, one of `selection`, `move`, `clone`, `transform`, `brush`, `eraser`, `shape`, `fill`, `eyedropper`, `pan`
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+#### `setSelectionTool`
+
+Activates a marquee selection tool and switches to selection mode.
+
+Arguments:
+
+- `tool` (required): string, one of `rectangle`, `oval`, `lasso`, `polygon`, `wand`
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
 
 #### `play`
 
@@ -1168,5 +1372,29 @@ Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.
 #### `installFontBundle`
 
 Starts a job that downloads the font bundle (about 140 MB) into browser storage. Returns its `jobId`.
+
+Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.
+
+### Online collaboration
+
+#### `takeOnline`
+
+Starts a shared session for the current composition when online collaboration is enabled. Returns the session id; state.collaboration includes the share URL.
+
+Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.
+
+#### `joinSession`
+
+Joins a session by id, replacing the current composition without a dialog. Save first if needed.
+
+Arguments:
+
+- `sessionId` (required): string, at least 1 character
+
+Other fields fail with `INVALID_ARGS_UNKNOWN`.
+
+#### `goOffline`
+
+Leaves the active shared session without changing the composition.
 
 Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.

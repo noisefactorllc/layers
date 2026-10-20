@@ -58,6 +58,8 @@ function _validate(value, schema, path) {
             const r = _validate(value[key], sub, path ? `${path}.${key}` : key)
             if (!r.ok) return r
         }
+        // Existing command roots remain permissive for compatibility. Closed
+        // mutation objects and new commands opt in explicitly below.
         if (schema.additionalProperties === false) {
             const allowed = schema.properties || {}
             for (const key of Object.keys(value)) {
@@ -332,6 +334,7 @@ export const SCHEMAS = {
             layerId: { type: 'string' },
             props: {
                 type: 'object',
+                additionalProperties: false,
                 properties: {
                     name: { type: 'string' },
                     visible: { type: 'boolean' },
@@ -349,6 +352,7 @@ export const SCHEMAS = {
             layerId: { type: 'string' },
             transform: {
                 type: 'object',
+                additionalProperties: false,
                 properties: {
                     offsetX: { type: 'number' },
                     offsetY: { type: 'number' },
@@ -404,6 +408,7 @@ export const SCHEMAS = {
             childId: { type: 'string' },
             props: {
                 type: 'object',
+                additionalProperties: false,
                 properties: {
                     visible: { type: 'boolean' },
                     name: { type: 'string' }
@@ -420,6 +425,11 @@ export const SCHEMAS = {
             params: { type: 'object' },
             replace: { type: 'boolean' }
         }
+    },
+    deleteChildEffectMask: {
+        type: 'object', required: ['layerId', 'childId'],
+        properties: { layerId: { type: 'string' }, childId: { type: 'string' } },
+        additionalProperties: false
     },
     getCanvasImageBytes: {
         type: 'object',
@@ -562,6 +572,35 @@ export const SCHEMAS = {
         required: ['layerId'],
         properties: { layerId: { type: 'string' } }
     },
+    selectFromLayerMask: {
+        type: 'object', required: ['layerId'],
+        properties: { layerId: { type: 'string' } },
+        additionalProperties: false
+    },
+    getRasterRegion: {
+        type: 'object', required: ['source', 'x', 'y', 'width', 'height'],
+        properties: {
+            source: { type: 'string', enum: ['selection', 'layer-mask', 'child-mask'] },
+            layerId: { type: 'string' },
+            childId: { type: 'string' },
+            x: { type: 'integer', min: 0 },
+            y: { type: 'integer', min: 0 },
+            width: { type: 'integer', min: 1, max: 256 },
+            height: { type: 'integer', min: 1, max: 256 },
+        },
+        additionalProperties: false
+    },
+    paintLayerMask: {
+        type: 'object', required: ['layerId', 'points', 'size', 'mode'],
+        properties: {
+            layerId: { type: 'string' },
+            points: { type: 'array' },
+            size: { type: 'integer', min: 1, max: 200 },
+            opacity: { type: 'number', min: 0, max: 1 },
+            mode: { type: 'string', enum: ['hide', 'reveal'] },
+        },
+        additionalProperties: false
+    },
     invertLayerMask: {
         type: 'object',
         required: ['layerId'],
@@ -574,6 +613,22 @@ export const SCHEMAS = {
             layerId: { type: 'string' },
             enabled: { type: 'boolean' }
         }
+    },
+    setMaskVisible: {
+        type: 'object', required: ['layerId', 'visible'],
+        properties: {
+            layerId: { type: 'string' },
+            visible: { type: 'boolean' },
+        },
+        additionalProperties: false
+    },
+    setMaskEditMode: {
+        type: 'object', required: ['enabled'],
+        properties: {
+            enabled: { type: 'boolean' },
+            layerId: { type: 'string', minLength: 1 },
+        },
+        additionalProperties: false
     },
     featherMask: {
         type: 'object',
@@ -618,6 +673,15 @@ export const SCHEMAS = {
             color: { type: 'string' },
             mode: { type: 'string', enum: ['brush', 'eraser'] }
         }
+    },
+    getDrawingStrokes: {
+        type: 'object', required: ['layerId'],
+        properties: {
+            layerId: { type: 'string' },
+            offset: { type: 'integer', min: 0 },
+            limit: { type: 'integer', min: 1, max: 100 },
+        },
+        additionalProperties: false
     },
     eraseStroke: {
         type: 'object',
@@ -688,6 +752,17 @@ export const SCHEMAS = {
         required: ['projectId'],
         properties: { projectId: { type: 'string', minLength: 1 } }
     },
+    listRecoveryCopies: { type: 'object', properties: {}, additionalProperties: false },
+    restoreRecoveryCopy: {
+        type: 'object', required: ['id'],
+        properties: { id: { type: 'string', minLength: 1 } },
+        additionalProperties: false
+    },
+    discardRecoveryCopy: {
+        type: 'object', required: ['id'],
+        properties: { id: { type: 'string', minLength: 1 } },
+        additionalProperties: false
+    },
     undo: null,
     redo: null,
     setForegroundColor: {
@@ -702,10 +777,35 @@ export const SCHEMAS = {
             mode: { type: 'string', enum: ['fit', '50', '100', '200'] }
         }
     },
+    setPan: {
+        type: 'object', required: ['x', 'y'],
+        properties: {
+            x: { type: 'integer', min: 0 },
+            y: { type: 'integer', min: 0 },
+        },
+        additionalProperties: false
+    },
+    setTool: {
+        type: 'object', required: ['tool'],
+        properties: { tool: { type: 'string', enum: [
+            'selection', 'move', 'clone', 'transform', 'brush', 'eraser',
+            'shape', 'fill', 'eyedropper', 'pan'
+        ] } },
+        additionalProperties: false
+    },
+    setSelectionTool: {
+        type: 'object', required: ['tool'],
+        properties: { tool: { type: 'string', enum: [
+            'rectangle', 'oval', 'lasso', 'polygon', 'wand'
+        ] } },
+        additionalProperties: false
+    },
     play: null,
     pause: null,
     setSettings: {
         type: 'object',
+        // Preserve the command's structured UNKNOWN_SETTING_KEY warnings.
+        additionalProperties: true,
         properties: {
             theme: {
                 type: 'string',
@@ -769,4 +869,11 @@ export const SCHEMAS = {
         },
         additionalProperties: false
     },
+    takeOnline: { type: 'object', properties: {}, additionalProperties: false },
+    joinSession: {
+        type: 'object', required: ['sessionId'],
+        properties: { sessionId: { type: 'string', minLength: 1 } },
+        additionalProperties: false
+    },
+    goOffline: { type: 'object', properties: {}, additionalProperties: false },
 }

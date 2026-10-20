@@ -1,6 +1,6 @@
 {
   "apiVersion": "1.0",
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "project": {
     "id": null,
     "name": null,
@@ -15,6 +15,14 @@
   },
   "view": {
     "zoomMode": "fit",
+    "tool": "selection",
+    "selectionTool": "rectangle",
+    "maskEditLayerId": null,
+    "maskOverlayLayerId": null,
+    "scrollX": 0,
+    "scrollY": 0,
+    "scrollMaxX": 0,
+    "scrollMaxY": 0,
     "isPlaying": true,
     "loopDuration": 10
   },
@@ -64,5 +72,11 @@
   "activeLayerId": "<id>",
   "jobs": [],
   "recentExports": [],
-  "settings": {}
+  "settings": {},
+  "collaboration": {
+    "available": true,
+    "status": "offline",
+    "sessionId": null,
+    "shareUrl": null
+  }
 }

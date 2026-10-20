@@ -11,6 +11,11 @@ import { API_VERSION, SCHEMA_VERSION, safeClone } from './constants.js'
 import { getRecentExports } from './exports-state.js'
 import { listJobs } from './jobs.js'
 
+// Layer/selection mask mutations replace their ImageData. Reuse the summary
+// while that object is unchanged; large masks need not be scanned for every
+// command envelope. Return a copy so callers cannot alter cached bounds.
+const maskSummaries = new WeakMap()
+
 export function buildSnapshot(app) {
     const override = app?._projectSnapshotCanvasOverride
     const part = (key, build) => override && Object.hasOwn(override, key)
@@ -42,7 +47,8 @@ export function buildSnapshot(app) {
             .sort((a, b) => b.updatedAt - a.updatedAt)
             .slice(0, 20),
         recentExports: getRecentExports(),
-        settings: buildSettings(app)
+        settings: buildSettings(app),
+        collaboration: buildCollaboration(app)
     }
 }
 
@@ -90,10 +96,35 @@ function buildCanvas(app) {
 }
 
 function buildView(app) {
+    const panel = typeof document !== 'undefined'
+        ? document.getElementById('canvas-panel') : null
+    const maskOverlay = typeof document !== 'undefined'
+        ? document.getElementById('maskOverlay') : null
     return {
         zoomMode: app?._zoomMode ?? 'fit',
+        tool: app?._currentTool ?? 'selection',
+        selectionTool: app?._selectionManager?.currentTool ?? 'rectangle',
+        maskEditLayerId: app?._maskEditMode ? app._maskEditLayerId : null,
+        maskOverlayLayerId: maskOverlay && !maskOverlay.classList.contains('hidden')
+            ? maskOverlay.dataset.layerId || null : null,
+        scrollX: panel?.scrollLeft || 0,
+        scrollY: panel?.scrollTop || 0,
+        scrollMaxX: panel ? Math.max(0, panel.scrollWidth - panel.clientWidth) : 0,
+        scrollMaxY: panel ? Math.max(0, panel.scrollHeight - panel.clientHeight) : 0,
         isPlaying: !!app?._renderer?.isRunning,
         loopDuration: app?._renderer?.loopDuration ?? 10
+    }
+}
+
+function buildCollaboration(app) {
+    const adapter = app?._onlineAdapter
+    const status = adapter?.getStatus?.() || 'offline'
+    const connected = status === 'online' || status === 'readonly'
+    return {
+        available: !!adapter,
+        status: adapter ? status : 'unavailable',
+        sessionId: connected ? adapter.online?.getSessionId?.() || null : null,
+        shareUrl: connected ? adapter.online?.getShareUrl?.() || null : null,
     }
 }
 
@@ -187,7 +218,12 @@ function buildEffect(layer) {
 
 function buildDrawing(layer) {
     if (layer.sourceType !== 'drawing') return null
-    return { strokeCount: (layer.strokes || []).length }
+    const strokes = layer.strokes || []
+    return {
+        strokeCount: strokes.length,
+        strokeIds: strokes.slice(0, 20).map(stroke => stroke.id),
+        strokeIdsTruncated: strokes.length > 20,
+    }
 }
 
 function buildChildEffect(child) {
@@ -198,13 +234,24 @@ function buildChildEffect(child) {
         name: child.name,
         effectId: child.effectId,
         visible: child.visible !== false,
-        params: child.effectParams ? safeClone(child.effectParams) : {}
+        params: child.effectParams ? safeClone(child.effectParams) : {},
+        mask: child.mask ? summarizeMask(child.mask) : null
     }
 }
 
 function buildMask(layer) {
     if (!layer.mask) return null
-    const { width, height, data } = layer.mask
+    return {
+        enabled: layer.maskEnabled !== false,
+        visible: !!layer.maskVisible,
+        ...summarizeMask(layer.mask)
+    }
+}
+
+function summarizeMask(mask, channel = 0) {
+    const cached = maskSummaries.get(mask)?.[channel]
+    if (cached) return { ...cached, bounds: { ...cached.bounds } }
+    const { width, height, data } = mask
     let nonZero = 0
     let minX = width, minY = height, maxX = -1, maxY = -1
 
@@ -212,7 +259,7 @@ function buildMask(layer) {
     for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
             const idx = (y * width + x) * 4
-            if (data[idx] > 0) {
+            if (data[idx + channel] > (channel === 3 ? 127 : 0)) {
                 nonZero++
                 if (x < minX) minX = x
                 if (x > maxX) maxX = x
@@ -227,13 +274,11 @@ function buildMask(layer) {
         ? { x: 0, y: 0, width: 0, height: 0 }
         : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
 
-    return {
-        enabled: layer.maskEnabled !== false,
-        visible: !!layer.maskVisible,
-        width, height,
-        coverage,
-        bounds
-    }
+    const summary = { width, height, coverage, bounds }
+    const entries = maskSummaries.get(mask) || {}
+    entries[channel] = summary
+    maskSummaries.set(mask, entries)
+    return { ...summary, bounds: { ...summary.bounds } }
 }
 
 function buildSelection(app) {
@@ -244,10 +289,13 @@ function buildSelection(app) {
     if (!path) return null
 
     const kind = SELECTION_KIND_MAP[path.type] || path.type
-    const bounds = computeSelectionBounds(path)
+    const mask = path.type === 'wand' ? path.mask : path.type === 'mask' ? path.data : null
+    const maskSummary = mask ? summarizeMask(mask, 3) : null
+    const bounds = maskSummary?.bounds || computeSelectionBounds(path)
     if (!bounds) return null
 
     const out = { kind, bounds, isEmpty: bounds.width === 0 || bounds.height === 0 }
+    if (maskSummary) out.mask = maskSummary
     if (path.type === 'polygon' || path.type === 'lasso') {
         out.polygonPoints = path.points.map(p => [p.x, p.y])
     }
@@ -290,31 +338,5 @@ function computeSelectionBounds(path) {
             height: Math.round(maxY - minY)
         }
     }
-    if (path.type === 'wand' && path.mask) {
-        return computeImageDataAABB(path.mask)
-    }
-    if (path.type === 'mask' && path.data) {
-        return computeImageDataAABB(path.data)
-    }
     return null
-}
-
-function computeImageDataAABB(imageData) {
-    const { width, height, data } = imageData
-    let minX = width, minY = height, maxX = -1, maxY = -1
-    let any = false
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            // Mask convention: R=G=B holds value, A is always 255. Read R (idx 0).
-            if (data[(y * width + x) * 4] > 0) {
-                any = true
-                if (x < minX) minX = x
-                if (x > maxX) maxX = x
-                if (y < minY) minY = y
-                if (y > maxY) maxY = y
-            }
-        }
-    }
-    if (!any) return { x: 0, y: 0, width: 0, height: 0 }
-    return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
 }

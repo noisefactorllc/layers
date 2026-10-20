@@ -66,8 +66,9 @@ export const COMMAND_GROUPS = [
             addChildEffect: 'Adds a child effect to a layer and returns its id. A child effect applies on top of the output of its layer.',
             removeChildEffect: 'Removes a child effect from a layer.',
             reorderChildEffect: 'Moves a child effect to `toIndex` in the child list of its layer.',
-            setChildEffectProps: 'Sets the `visible` or `name` property of a child effect. Other keys have no effect.',
+            setChildEffectProps: 'Sets the `visible` or `name` property of a child effect. Unknown keys fail validation.',
             setChildEffectParams: 'Changes the parameters of a child effect. The new values merge into the old values. `replace: true` clears the old values first.',
+            deleteChildEffectMask: 'Removes the selection mask captured when a child effect was added.',
         },
     },
     {
@@ -107,8 +108,13 @@ export const COMMAND_GROUPS = [
             addLayerMask: 'Adds a white mask to a layer. A white mask shows the full layer.',
             deleteLayerMask: 'Removes the mask of a layer. The layer pixels do not change.',
             addMaskFromSelection: 'Adds a mask to a layer. The mask starts as a copy of the current selection.',
+            selectFromLayerMask: 'Creates a raster selection from the visible values of a layer mask.',
+            getRasterRegion: 'Reads up to 256 by 256 grayscale values from a selection, layer mask, or child effect mask. `values` is row-major. Pass `layerId` for a layer mask, and both `layerId` and `childId` for a child mask.',
+            paintLayerMask: 'Paints a stroke on a layer mask in canvas coordinates. `mode` is `hide` (black) or `reveal` (white).',
             invertLayerMask: 'Inverts the mask of a layer.',
             setMaskEnabled: 'Turns the mask of a layer on or off. A disabled mask stays on the layer.',
+            setMaskVisible: 'Shows or hides the layer mask overlay without changing its effect on the image. Only one overlay can be shown; read its owner from `state.view.maskOverlayLayerId`.',
+            setMaskEditMode: 'Enters the existing mask brush mode with `enabled: true, layerId`, or exits it with `enabled: false`. The active mask edit layer is in `state.view.maskEditLayerId`.',
             featherMask: 'Softens the mask edge over `radius` pixels.',
             expandMask: 'Grows the mask by `radius` pixels.',
             contractMask: 'Shrinks the mask by `radius` pixels.',
@@ -119,6 +125,7 @@ export const COMMAND_GROUPS = [
         title: 'Drawing',
         commands: {
             paintStroke: 'Paints a stroke through 2 or more `points` (`[x, y]` or `{x, y}`) on a drawing layer. With `mode: "eraser"`, the stroke paints transparency. Without `layerId`, see drawShape.',
+            getDrawingStrokes: 'Returns up to `limit` editable strokes (default 100) from `offset` (default 0), including ids and geometry. `nextOffset` is null on the last page.',
             eraseStroke: 'Removes one stroke, by its `strokeId`, from a drawing layer.',
             clearDrawingLayer: 'Removes all strokes from a drawing layer and returns the number it removed.',
             drawShape: 'Draws a rectangle or ellipse, filled or outlined, on a drawing layer. Without `layerId`, it uses the active layer if that is a drawing layer. Otherwise it adds a drawing layer above the active layer.',
@@ -133,6 +140,9 @@ export const COMMAND_GROUPS = [
             saveProject: 'Saves the current project. `name` renames it. When the project has no name yet, `name` is necessary.',
             saveProjectAs: 'Saves the current state as a new project named `name` and returns its id.',
             deleteProject: 'Deletes a saved project. When it is the open project, the canvas keeps its content.',
+            listRecoveryCopies: 'Lists recoverable unsaved compositions with id, name, dimensions, layer count, and modification time.',
+            restoreRecoveryCopy: 'Restores a recovery copy by id, replacing the current composition. Save current work first if needed.',
+            discardRecoveryCopy: 'Permanently discards a recovery copy by id.',
             undo: 'Undoes the last change. When `canUndo` is false, nothing changes.',
             redo: 'Redoes the last undone change. When `canRedo` is false, nothing changes.',
         },
@@ -142,6 +152,9 @@ export const COMMAND_GROUPS = [
         commands: {
             setForegroundColor: 'Sets the foreground color from a `#rrggbb` string.',
             setZoom: 'Sets the zoom mode.',
+            setPan: 'Scrolls the canvas viewport to `x`, `y` pixels. The browser clamps the result to the available scroll range.',
+            setTool: 'Activates a toolbar tool. Transform requires an active media or drawing layer.',
+            setSelectionTool: 'Activates a marquee selection tool and switches to selection mode.',
             play: 'Starts the animation of time-based effects.',
             pause: 'Stops the animation. The current frame stays visible.',
             setSettings: 'Changes settings. Only `theme` has an effect.',
@@ -162,6 +175,14 @@ export const COMMAND_GROUPS = [
         commands: {
             listInstalledFonts: 'Returns the state of the font bundle: installed, version, count, and each font as id, family and category.',
             installFontBundle: 'Starts a job that downloads the font bundle (about 140 MB) into browser storage. Returns its `jobId`.',
+        },
+    },
+    {
+        title: 'Online collaboration',
+        commands: {
+            takeOnline: 'Starts a shared session for the current composition when online collaboration is enabled. Returns the session id; state.collaboration includes the share URL.',
+            joinSession: 'Joins a session by id, replacing the current composition without a dialog. Save first if needed.',
+            goOffline: 'Leaves the active shared session without changing the composition.',
         },
     },
 ]

@@ -14,7 +14,8 @@ import { buildSnapshot } from './snapshot.js'
 
 let _tail = Promise.resolve()
 const LIFECYCLE_EXEMPT_COMMANDS = new Set([
-    'getJob', 'waitForJob', 'cancelJob', 'exportVideo', '_sleep'
+    'getJob', 'waitForJob', 'cancelJob', 'exportVideo',
+    'takeOnline', 'joinSession', 'goOffline', '_sleep'
 ])
 const CONCURRENT_COMMANDS = new Set(['getJob', 'waitForJob', 'cancelJob'])
 

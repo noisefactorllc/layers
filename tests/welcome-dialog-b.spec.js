@@ -254,7 +254,7 @@ test.describe('Welcome dialog', () => {
                 await page.locator('.welcome-tile[data-action="open"]').click()
                 await acceptOnlineGuard(page)
                 await (await chooserPromise).setFiles(path.resolve('public/img/og-image.png'))
-                await expect.poll(() => page.evaluate(() => window.layersApp._layers.length)).toBe(1)
+                await expect.poll(() => page.evaluate(() => window.layersApp._layers[0]?.name)).toBe('og-image')
             }
 
             expect(await page.evaluate(() => window.__welcomeWentOffline)).toBe(true)

@@ -16,6 +16,7 @@ export const LLMS_PATH = fileURLToPath(new URL('../public/llms.txt', import.meta
 export const LLMS_FULL_PATH = fileURLToPath(new URL('../public/llms-full.txt', import.meta.url))
 
 const code = (value) => `\`${value}\``
+const isClosed = schema => schema?.additionalProperties === false
 
 function describeRange(schema) {
     const { min, max } = schema
@@ -39,13 +40,13 @@ function describeType(schema) {
     if (schema.type === 'array' && schema.items) {
         const item = describeType(schema.items)
         parts[0] = schema.items.type === 'object' && schema.items.properties
-            ? (schema.items.additionalProperties === false
+            ? (isClosed(schema.items)
                 ? 'array of objects with only these fields'
                 : 'array of objects with these fields')
             : item === schema.items.type ? `array of ${item}s` : `array, each item ${item}`
     }
     if (schema.type === 'object' && schema.properties && Object.keys(schema.properties).length > 0) {
-        parts[0] = schema.additionalProperties === false
+        parts[0] = isClosed(schema)
             ? 'object with only these fields'
             : 'object with these fields'
     }
@@ -72,12 +73,12 @@ function commandSection(name, description) {
     const fields = schema ? fieldLines(schema, 0) : []
     const lines = [`#### ${code(name)}`, '', description, '']
     if (fields.length === 0) {
-        lines.push(schema?.additionalProperties === false
+        lines.push(isClosed(schema)
             ? 'Arguments: none. Any field fails with `INVALID_ARGS_UNKNOWN`.'
             : 'Arguments: none.')
     } else {
         lines.push('Arguments:', '', ...fields)
-        if (schema.additionalProperties === false) {
+        if (isClosed(schema)) {
             lines.push('', 'Other fields fail with `INVALID_ARGS_UNKNOWN`.')
         }
     }

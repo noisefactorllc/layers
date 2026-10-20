@@ -18,7 +18,7 @@ async function beginTinyZipExport(page) {
 }
 
 async function cancelExport(page) {
-    await page.click('#exportProgressCancelBtn')
+    await page.evaluate(() => window.layersApp._exportVideoDialog.cancel())
     await page.waitForFunction(() => window.layersApp._exportVideoDialog.state === 'idle')
     await expect(page.locator('#exportModal')).not.toBeVisible()
 }

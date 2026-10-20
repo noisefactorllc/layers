@@ -32,7 +32,7 @@ test.describe('LayersAgent.getState', () => {
         expect(env.apiVersion).toBe('1.0')
         expect(env.state).toMatchObject({
             apiVersion: '1.0',
-            schemaVersion: '1.0',
+            schemaVersion: '1.1',
             project: expect.any(Object),
             canvas: expect.any(Object),
             view: expect.any(Object),

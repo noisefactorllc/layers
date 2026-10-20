@@ -22,6 +22,31 @@ async function bootApp(page) {
 }
 
 test.describe('addChildEffect / removeChildEffect', () => {
+    test('reports and deletes a child effect mask captured from selection', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const layerId = window.layersApp._layers[0].id
+            await window.LayersAgent.setRectangleSelection({ x: 2, y: 3, width: 8, height: 9 })
+            const added = await window.LayersAgent.addChildEffect({ layerId, effectId: 'filter/blur' })
+            const before = added.state.layers[0].children[0].mask
+            const selectionTile = await window.LayersAgent.getRasterRegion({
+                source: 'selection', x: 2, y: 3, width: 2, height: 2,
+            })
+            const childTile = await window.LayersAgent.getRasterRegion({
+                source: 'child-mask', layerId, childId: added.result.childId,
+                x: 2, y: 3, width: 2, height: 2,
+            })
+            const deleted = await window.LayersAgent.deleteChildEffectMask({
+                layerId, childId: added.result.childId,
+            })
+            return { before, selectionTile, childTile, deleted, childId: added.result.childId }
+        })
+        expect(result.before.bounds).toEqual({ x: 2, y: 3, width: 8, height: 9 })
+        expect(result.selectionTile.result.values).toEqual([255, 255, 255, 255])
+        expect(result.childTile.result.values).toEqual([255, 255, 255, 255])
+        expect(result.deleted.ok).toBe(true)
+        expect(result.deleted.state.layers[0].children[0].mask).toBeNull()
+    })
     test('addChildEffect attaches an effect under a layer', async ({ page }) => {
         await bootApp(page)
         const id = await page.evaluate(() => window.layersApp._layers[0].id)

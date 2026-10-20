@@ -265,6 +265,7 @@
         justify-content: flex-start;
         overflow-x: hidden;
         overflow-y: auto;
+        scrollbar-width: none;
         overscroll-behavior: contain;
         --ui-titlebar-base: color-mix(in srgb,
                 var(--hf-color-2) 65%,

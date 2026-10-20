@@ -921,7 +921,7 @@ const SET_LAYER_PROPS_FIELDS = ['name', 'visible', 'opacity', 'blendMode', 'lock
 /**
  * Update one or more layer-level properties. Only keys in
  * `SET_LAYER_PROPS_FIELDS` (name, visible, opacity, blendMode, locked) are
- * honored; unknown keys are silently ignored.
+ * honored; unknown keys fail schema validation.
  *
  * @param {{layerId: string, props: object}} args
  * @returns {Promise<{result: {layerId: string}}>}
@@ -1094,7 +1094,7 @@ export async function reorderChildEffect({ layerId, childId, toIndex }, app) {
 
 /**
  * Update child-effect properties — currently `visible` and `name`. Other
- * keys in `props` are silently ignored.
+ * keys in `props` fail schema validation.
  *
  * @param {{layerId: string, childId: string, props: object}} args
  * @returns {Promise<{result: {layerId: string, childId: string}}>}
@@ -1135,6 +1135,19 @@ export async function setChildEffectParams({ layerId, childId, params, replace }
         value: next
     }), 'Failed to update child effect parameters')
     return { result: { layerId, childId, params: next } }
+}
+
+/** Remove the selection mask captured when a child effect was added. */
+export async function deleteChildEffectMask({ layerId, childId }, app) {
+    const { child } = requireChildEffect(layerId, childId, app)
+    if (!child.mask) {
+        throw commandError('CONFLICT_NO_MASK', `Child effect ${childId} has no mask`,
+            { layerId, childId })
+    }
+    requireCommittedMutationOutcome(
+        await toast.suppress(() => app._deleteChildEffectMask(childId)),
+        'Failed to delete child effect mask')
+    return { result: { layerId, childId } }
 }
 
 const FORMAT_TO_MIME = {
@@ -1853,6 +1866,65 @@ export async function addMaskFromSelection({ layerId }, app) {
     return { result: { layerId } }
 }
 
+/** Create an exact raster selection from the visible values of a layer mask. */
+export async function selectFromLayerMask({ layerId }, app) {
+    const layer = requireMaskedLayer(layerId, app)
+    app._selectionManager.setSelection({
+        type: 'mask',
+        data: app._maskToSelectionFormat(layer.mask),
+    })
+    return { result: { layerId } }
+}
+
+/** Read exact grayscale values from a bounded selection or layer/child mask tile. */
+export async function getRasterRegion({ source, layerId, childId, x, y, width, height }, app) {
+    let raster
+    let channel
+    if (source === 'selection') {
+        raster = requireSelection(app).rasterizeSelection()
+        channel = 3
+    } else if (source === 'child-mask') {
+        const { child } = requireChildEffect(layerId, childId, app)
+        raster = child.mask
+        channel = 0
+    } else {
+        raster = requireLayer(layerId, app).mask
+        channel = 0
+    }
+    if (!raster) {
+        throw commandError('CONFLICT_NO_MASK', `${source} has no raster mask`,
+            { source, layerId, childId })
+    }
+    if (x + width > raster.width || y + height > raster.height) {
+        throw commandError('INVALID_ARGS_RANGE', 'Requested region exceeds raster bounds', {
+            field: 'region', x, y, width, height,
+            rasterWidth: raster.width, rasterHeight: raster.height,
+        })
+    }
+    const values = []
+    for (let row = y; row < y + height; row++) {
+        for (let column = x; column < x + width; column++) {
+            values.push(raster.data[(row * raster.width + column) * 4 + channel])
+        }
+    }
+    return { result: { source, layerId: layerId || null, childId: childId || null,
+        x, y, width, height, values } }
+}
+
+/** Paint white (reveal) or black (hide) on an existing layer mask. */
+export async function paintLayerMask({ layerId, points, size, opacity, mode }, app) {
+    requireMaskedLayer(layerId, app)
+    const stroke = createPathStroke({
+        points: normalizePoints(points, 'points', 2),
+        size, opacity: opacity ?? 1,
+        color: mode === 'hide' ? '#000000' : '#ffffff',
+    })
+    requireCommittedMutationOutcome(await app._handleMaskStroke(
+        stroke, mode === 'hide', { layerId, canvasCoordinates: true }),
+    'Failed to paint layer mask')
+    return { result: { layerId } }
+}
+
 /**
  * Invert a layer's mask values.
  *
@@ -1889,6 +1961,57 @@ export async function setMaskEnabled({ layerId, enabled }, app) {
         await app._setMaskEnabled(layerId, enabled),
         'Failed to update mask enabled state')
     return { result: { layerId, enabled } }
+}
+
+/** Show or hide the mask overlay without changing the mask's effect. */
+export async function setMaskVisible({ layerId, visible }, app) {
+    const layer = requireMaskedLayer(layerId, app)
+    if (app._maskEditMode && (app._maskEditLayerId !== layerId || !visible)) {
+        requireCommittedMutationOutcome(await app._exitMaskEditMode(),
+            'Failed to exit mask edit mode')
+    }
+    if (visible) {
+        // One overlay canvas can display only one mask. Re-selecting an already
+        // flagged layer must render it again after another layer used the canvas.
+        for (const other of app._layers || []) {
+            if (other !== layer) other.maskVisible = false
+        }
+        layer.maskVisible = true
+        app._renderMaskOverlay(layer)
+    } else {
+        layer.maskVisible = false
+        const overlay = document.getElementById('maskOverlay')
+        if (overlay?.dataset.layerId === layerId) overlay.classList.add('hidden')
+    }
+    app._updateLayerStack()
+    return { result: { layerId, visible } }
+}
+
+/** Enter or exit the editor's existing mask brush mode. */
+export async function setMaskEditMode({ enabled, layerId }, app) {
+    if (enabled) {
+        if (!layerId) {
+            throw commandError('INVALID_ARGS_REQUIRED',
+                'layerId is required when enabling mask edit mode', { field: 'layerId' })
+        }
+        const layer = requireMaskedLayer(layerId, app)
+        if (app._maskEditMode && app._maskEditLayerId !== layerId) {
+            requireCommittedMutationOutcome(await app._exitMaskEditMode(),
+                'Failed to exit previous mask edit mode')
+        }
+        if (!app._maskEditMode) {
+            for (const other of app._layers || []) {
+                if (other !== layer) {
+                    other.maskVisible = false
+                }
+            }
+            app._enterMaskEditMode(layerId)
+        }
+    } else if (app._maskEditMode) {
+        requireCommittedMutationOutcome(await app._exitMaskEditMode(),
+            'Failed to exit mask edit mode')
+    }
+    return { result: { enabled, layerId: enabled ? layerId : null } }
 }
 
 /**
@@ -1969,6 +2092,18 @@ function requireDrawingLayer(layerId, app) {
             { layerId, sourceType: layer.sourceType })
     }
     return layer
+}
+
+/** Return editable drawing strokes, including geometry, without exposing model references. */
+export async function getDrawingStrokes({ layerId, offset = 0, limit = 100 }, app) {
+    const layer = requireDrawingLayer(layerId, app)
+    const strokes = layer.strokes || []
+    const end = Math.min(strokes.length, offset + limit)
+    return { result: {
+        layerId, total: strokes.length, offset,
+        nextOffset: end < strokes.length ? end : null,
+        strokes: safeClone(strokes.slice(offset, end)),
+    } }
 }
 
 /**
@@ -2306,6 +2441,64 @@ export async function deleteProject({ projectId }, app) {
     return { result: { projectId } }
 }
 
+/** List recoverable unsaved compositions without returning embedded media. */
+export async function listRecoveryCopies(_args, app) {
+    const records = await app._recovery.list()
+    return { result: { copies: records.map(record => ({
+        id: record.id,
+        name: record.name || null,
+        width: record.canvasWidth,
+        height: record.canvasHeight,
+        layerCount: record.layers?.length || 0,
+        modifiedAt: record.modifiedAt,
+    })) } }
+}
+
+function recoveryError(error, id) {
+    if (error?.code === 'RECOVERY_IN_USE') {
+        throw commandError('CONFLICT_RECOVERY_IN_USE', error.message, { id })
+    }
+    if (error?.code === 'RECOVERY_NOT_FOUND') {
+        throw commandError('NOT_FOUND_RECOVERY', error.message, { id })
+    }
+    throw error
+}
+
+/** Restore an unsaved copy through the same atomic project loader as the UI. */
+export async function restoreRecoveryCopy({ id }, app, mutationToken = null) {
+    const { leaveOnline, warnings } = onlineReplacementState(app)
+    let restored
+    try {
+        restored = await app._recovery.restore(id, async source => {
+            const status = await app._loadProject(null, {
+                recovery: source, leaveOnline, mutationToken,
+            })
+            return status === 'opened'
+        })
+    } catch (error) {
+        recoveryError(error, id)
+    }
+    if (!restored) {
+        throw commandError('CONFLICT_PROJECT_REPLACEMENT',
+            'Recovery copy could not replace the current project', { id })
+    }
+    return { result: { id }, warnings }
+}
+
+/** Discard one recoverable copy by id. */
+export async function discardRecoveryCopy({ id }, app) {
+    const records = await app._recovery.list()
+    if (!records.some(record => record.id === id)) {
+        throw commandError('NOT_FOUND_RECOVERY', `Recovery copy not found: ${id}`, { id })
+    }
+    try {
+        await app._recovery.discard(id)
+    } catch (error) {
+        recoveryError(error, id)
+    }
+    return { result: { id } }
+}
+
 /**
  * Undo the most recent state change in the undo stack. No-op when canUndo is false.
  *
@@ -2354,6 +2547,96 @@ export async function setForegroundColor({ color }, app) {
 export async function setZoom({ mode }, app) {
     app._setZoom(mode)
     return { result: { mode } }
+}
+
+/** Scroll the canvas viewport, returning the browser-clamped position. */
+export async function setPan({ x, y }) {
+    const panel = document.getElementById('canvas-panel')
+    if (!panel) throw commandError('INTERNAL_ERROR', 'Canvas panel is unavailable', {})
+    panel.scrollLeft = x
+    panel.scrollTop = y
+    return { result: { x: panel.scrollLeft, y: panel.scrollTop } }
+}
+
+/** Select a toolbar tool through the same application path as the human UI. */
+export async function setTool({ tool }, app) {
+    if (tool === 'transform') {
+        const layer = app._getActiveLayer()
+        if (!layer || (layer.sourceType !== 'media' && layer.sourceType !== 'drawing')) {
+            throw commandError('CONFLICT_NOT_TRANSFORMABLE_LAYER',
+                'Select a media or drawing layer before using the transform tool',
+                { layerId: layer?.id || null })
+        }
+    }
+    app._setToolMode(tool)
+    return { result: { tool } }
+}
+
+/** Select a marquee tool and activate selection mode. */
+export async function setSelectionTool({ tool }, app) {
+    app._setSelectionTool(tool)
+    return { result: { tool } }
+}
+
+function requireOnlineAdapter(app) {
+    if (!app?._onlineAdapter) {
+        throw commandError('CONFLICT_FEATURE_UNAVAILABLE',
+            'Online collaboration is not enabled in this application', {})
+    }
+    return app._onlineAdapter
+}
+
+function unsupportedOnlineComposition(app) {
+    if ((app._layers || []).some(layer =>
+        layer.sourceType === 'media' && layer.mediaType !== 'image')) {
+        return {
+            message: 'Video layers are not supported in shared sessions',
+            reason: 'unsupported-media',
+        }
+    }
+    if ((app._layers || []).some(layer =>
+        (layer.children || []).some(child => child.mask))) {
+        return {
+            message: 'Child effect masks are not supported in shared sessions',
+            reason: 'unsupported-child-mask',
+        }
+    }
+    return null
+}
+
+/** Start sharing the current composition through the configured session adapter. */
+export async function takeOnline(_args, app) {
+    const adapter = requireOnlineAdapter(app)
+    const before = unsupportedOnlineComposition(app)
+    if (before) throw commandError('CONFLICT_SESSION_TRANSITION',
+        before.message, { reason: before.reason })
+    const sessionId = await adapter.takeOnline({ skipUnsupportedDialogs: true })
+    if (!sessionId) {
+        const after = unsupportedOnlineComposition(app)
+        if (after) throw commandError('CONFLICT_SESSION_TRANSITION',
+            after.message, { reason: after.reason })
+        throw commandError('CONFLICT_SESSION_TRANSITION',
+            'The composition could not be taken online', {})
+    }
+    return { result: { sessionId } }
+}
+
+/** Join a session, replacing the current composition as the browser UI does. */
+export async function joinSession({ sessionId }, app) {
+    const joined = await requireOnlineAdapter(app).joinSession(sessionId, {
+        skipConfirm: true,
+    })
+    if (!joined) {
+        throw commandError('CONFLICT_SESSION_TRANSITION',
+            'The session could not be joined', { sessionId })
+    }
+    return { result: { sessionId: joined } }
+}
+
+/** Leave the current collaboration session. */
+export async function goOffline(_args, app) {
+    requireOnlineAdapter(app).goOffline()
+    return { result: { status: 'offline' } }
 }
 
 /**

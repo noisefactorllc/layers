@@ -20,7 +20,7 @@ export const API_VERSION = '1.0'
  * change to the snapshot shape (new fields are minor; renamed/removed fields
  * are breaking).
  */
-export const SCHEMA_VERSION = '1.0'
+export const SCHEMA_VERSION = '1.1'
 
 /**
  * How many recent export entries to retain in the in-memory ring. Older

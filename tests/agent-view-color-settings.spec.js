@@ -37,6 +37,31 @@ test.describe('setForegroundColor', () => {
 })
 
 test.describe('setZoom', () => {
+    test('reports the actual viewport position after panning', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            await window.LayersAgent.setZoom({ mode: '200' })
+            return window.LayersAgent.setPan({ x: 50, y: 30 })
+        })
+        expect(result.ok).toBe(true)
+        expect(result.state.view.scrollX).toBe(result.result.x)
+        expect(result.state.view.scrollY).toBe(result.result.y)
+        expect(result.result.x).toBeGreaterThanOrEqual(0)
+        expect(result.result.y).toBeGreaterThanOrEqual(0)
+    })
+    test('controls and reports the active tool and selection tool', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const brush = await window.LayersAgent.setTool({ tool: 'brush' })
+            const oval = await window.LayersAgent.setSelectionTool({ tool: 'oval' })
+            return { brush, oval }
+        })
+        expect(result.brush.ok).toBe(true)
+        expect(result.brush.state.view.tool).toBe('brush')
+        expect(result.oval.ok).toBe(true)
+        expect(result.oval.state.view.tool).toBe('selection')
+        expect(result.oval.state.view.selectionTool).toBe('oval')
+    })
     test('sets zoom mode to 100', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() =>
