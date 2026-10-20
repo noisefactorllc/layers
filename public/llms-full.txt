@@ -74,7 +74,7 @@ How it works, so you can explain it to the person:
   jobs (`exportImage`, `exportVideo`, `releaseExport`, `getJob`,
   `waitForJob`, `cancelJob`). `newProject` would also take the session
   offline. These commands answer `REMOTE_UNAVAILABLE`, and `commands` marks
-  them. Suggest that the person goes offline (File, **go online...**, then
+  them. Suggest that the person goes offline (File, **go offline...**, then
   **Go Offline**) when you are done.
 - In each answer, `state` leaves out `foreground`, `jobs`, `recentExports`
   and `settings`. `state.project` keeps only `canUndo` and `canRedo`, and the

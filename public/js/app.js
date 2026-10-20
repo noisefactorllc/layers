@@ -1481,6 +1481,8 @@ class LayersApp {
                 contractUrl: 'https://layers.noisefactor.io/llms-full.txt',
                 sessionUrl,
             }) || '',
+            // "go online..." reads "go offline..." while a session is online.
+            onStatusChange: () => this._menuBar?.refresh?.(),
         })
         this._onlineAdapter.wireUi()
     }
@@ -4437,7 +4439,8 @@ class LayersApp {
                             },
                             {
                                 id: 'goOnlineMenuItem',
-                                label: 'go online...',
+                                // Online, the same dialog shows the share link and Go Offline.
+                                label: () => this._onlineAdapter?.isOnline?.() ? 'go offline...' : 'go online...',
                                 hidden: () => !isFeatureEnabled(ONLINE_COLLABORATION_FEATURE),
                                 onSelect: () => { document.getElementById('seanceDialog')?.show?.() },
                             },

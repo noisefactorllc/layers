@@ -93,7 +93,8 @@ export function resolveOnlineConfig(options = {}) {
  * @param {object} [deps] - overrides for testability (location/importSdk/dialog),
  *   and the agent connection: `createAgentRelay` builds this tab's agent relay
  *   (agent/index.js createSeanceAgentRelay), `agentPrompt(sessionUrl)` gives the
- *   prompt that <agent-connect-dialog> copies, and `agentDialog` is that dialog.
+ *   prompt that <agent-connect-dialog> copies, `agentDialog` is that dialog, and
+ *   `onStatusChange` hears every change of the session status.
  */
 export function createLayersOnlineAdapter(app, deps = {}) {
     const location = deps.location || globalThis.location
@@ -108,6 +109,7 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         : (globalThis.document?.getElementById?.('agentConnectDialog') || null)
     const createAgentRelay = typeof deps.createAgentRelay === 'function' ? deps.createAgentRelay : null
     const agentPrompt = typeof deps.agentPrompt === 'function' ? deps.agentPrompt : null
+    const onStatusChange = typeof deps.onStatusChange === 'function' ? deps.onStatusChange : null
     // The agent relay rides the SDK's own socket (agent/relay.js). One relay
     // serves every session this tab takes online or joins.
     let agentRelay = null
@@ -182,6 +184,9 @@ export function createLayersOnlineAdapter(app, deps = {}) {
         if (agentDialog) {
             agentDialog.state = state
             agentDialog.prompt = shareUrl && agentPrompt ? agentPrompt(shareUrl) : ''
+        }
+        if (onStatusChange) {
+            bestEffortSessionEffect('Failed to report collaboration status', () => onStatusChange(status))
         }
     }
 

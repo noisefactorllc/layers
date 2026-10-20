@@ -176,6 +176,33 @@ test('connect agent walks the person through going online, copying the prompt an
     }
 })
 
+test('the go online item reads go offline while the session is online', async ({ page }) => {
+    await openLayers(page)
+    const item = page.locator('#goOnlineMenuItem')
+    await openFileMenu(page)
+    await expect(item).toHaveText('go online...')
+    await closeMenu(page)
+
+    await takeOnline(page)
+    await openFileMenu(page)
+    await expect(item).toHaveText('go offline...')
+    // The same dialog: online, it shows the session link and Go Offline.
+    await item.click()
+    const dialog = page.locator('#seanceDialog')
+    await expect(dialog.locator('dialog')).toBeVisible()
+    await expect(dialog.locator('[data-action="go-offline"]')).toBeVisible()
+    await dialog.locator('[data-action="go-offline"]').click()
+    await expect.poll(() => page.evaluate(() => window.layersApp._onlineAdapter.getStatus())).toBe('offline')
+    await page.keyboard.press('Escape')
+    await expect(dialog.locator('dialog')).toBeHidden()
+
+    await openFileMenu(page)
+    await expect(item).toHaveText('go online...')
+    // With the menu open, the label follows the status as it changes.
+    await takeOnline(page)
+    await expect(item).toHaveText('go offline...')
+})
+
 test('only the tab that took the session online answers agents', async ({ page, newContext, baseURL }) => {
     await openLayers(page)
     const code = await takeOnline(page)
