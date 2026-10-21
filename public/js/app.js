@@ -1420,7 +1420,7 @@ class LayersApp {
         // Apply default zoom mode
         this._applyZoom()
 
-        // Seance online collaboration — wire the adapter + "go online..."
+        // Seance online collaboration — wire the adapter + "live collab..."
         // menu item (cheap, no network). A `?seance=` boot join (if present)
         // applies directly with no confirm, while the loading screen stays
         // up for it exactly as it would for any other boot path; on success
@@ -1481,7 +1481,7 @@ class LayersApp {
                 contractUrl: 'https://layers.noisefactor.io/llms-full.txt',
                 sessionUrl,
             }) || '',
-            // "go online..." reads "go offline..." while a session is online.
+            // "live collab..." reads "stop live collab" while a session is online.
             onStatusChange: () => this._menuBar?.refresh?.(),
         })
         this._onlineAdapter.wireUi()
@@ -4440,7 +4440,7 @@ class LayersApp {
                             {
                                 id: 'goOnlineMenuItem',
                                 // Online, the same dialog shows the share link and Go Offline.
-                                label: () => this._onlineAdapter?.isOnline?.() ? 'go offline...' : 'go online...',
+                                label: () => this._onlineAdapter?.isOnline?.() ? 'stop live collab' : 'live collab...',
                                 hidden: () => !isFeatureEnabled(ONLINE_COLLABORATION_FEATURE),
                                 onSelect: () => { document.getElementById('seanceDialog')?.show?.() },
                             },

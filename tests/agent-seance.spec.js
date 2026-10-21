@@ -180,12 +180,12 @@ test('the go online item reads go offline while the session is online', async ({
     await openLayers(page)
     const item = page.locator('#goOnlineMenuItem')
     await openFileMenu(page)
-    await expect(item).toHaveText('go online...')
+    await expect(item).toHaveText('live collab...')
     await closeMenu(page)
 
     await takeOnline(page)
     await openFileMenu(page)
-    await expect(item).toHaveText('go offline...')
+    await expect(item).toHaveText('stop live collab')
     // The same dialog: online, it shows the session link and Go Offline.
     await item.click()
     const dialog = page.locator('#seanceDialog')
@@ -197,10 +197,10 @@ test('the go online item reads go offline while the session is online', async ({
     await expect(dialog.locator('dialog')).toBeHidden()
 
     await openFileMenu(page)
-    await expect(item).toHaveText('go online...')
+    await expect(item).toHaveText('live collab...')
     // With the menu open, the label follows the status as it changes.
     await takeOnline(page)
-    await expect(item).toHaveText('go offline...')
+    await expect(item).toHaveText('stop live collab')
 })
 
 test('only the tab that took the session online answers agents', async ({ page, newContext, baseURL }) => {
