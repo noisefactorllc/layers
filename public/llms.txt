@@ -15,9 +15,9 @@ it shares nothing with other apps. A Layers session joins only Layers, and
 programs and images do not move between Layers and Noisedeck, Polymorphic,
 Visualize, HD4, Foundry or Shade.
 
-For the roles and control paths of the other Noise Factor visual products,
-including Timeline's project-folder CLI and Layers' separate document, read
-the product map at https://noisedeck.app/llms-full.txt.
+For the roles and control paths of the other Noise Factor products,
+including Timeline's project-folder CLI and Layers' separate document, start
+from the platform guide at https://noisefactor.io/llms.txt.
 
 ## Connect to the person's Layers
 
