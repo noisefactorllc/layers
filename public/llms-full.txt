@@ -27,7 +27,7 @@ person already has open: their composition and their canvas.
 1. Ask the person to open https://layers.noisefactor.io, choose
    **connect agent...** in the File menu, click **Go Online**, then
    **Copy Prompt**, and paste the prompt to you. The prompt names this file and
-   the session link. (Without that dialog: File, **go online...**,
+   the session link. (Without that dialog: File, **live collab...**,
    **Take Online**, then send the link or the six-character code.)
 2. Get the agent tool. It needs Node 22.4 or later and nothing else:
    `curl -fsSLO https://noisedeck.app/agent/seance-agent.mjs`
@@ -39,14 +39,15 @@ person already has open: their composition and their canvas.
 |---|---|
 | `node seance-agent.mjs commands` | Lists Layers' commands and their arguments. `[not available remotely]` marks the commands that a session cannot run. |
 | `node seance-agent.mjs call <command> [JSON]` | Runs one command in the person's tab and prints its envelope, for example `call addLayer '{"kind":"effect","effectId":"synth/gradient"}'`. |
-| `node seance-agent.mjs look [--size N] [--format png\|jpg] [--out FILE]` | Saves an image of the person's canvas (`getThumbnail`). Prints its path. Open the file with your image tool. |
+| `node seance-agent.mjs look [--size N] [--format png\|jpg] [--out FILE]` | Saves an image of the person's canvas (`getThumbnail`). Its path is `result.envelope.result.image.path`; open the file with your image tool. |
 | `node seance-agent.mjs status` | Lists the joined sessions. For a Layers session, `rev` counts the changes to its document. |
 | `node seance-agent.mjs wait [--since REV] [--timeout S]` | Waits until the person changes the composition. With `--since`, a change after that `rev` from `status` returns at once. |
-| `node seance-agent.mjs image-put <file>` | Adds a PNG, JPEG, GIF or WebP file to the session. Prints `image:<id>`. |
+| `node seance-agent.mjs image-put <file>` | Adds a PNG, JPEG, GIF or WebP file to the session. `result.ref` is its `image:<id>`. |
 | `node seance-agent.mjs image-get <id> [--out FILE]` | Saves an image that the session holds to a file. |
 | `node seance-agent.mjs leave` / `stop` | Leaves the session / stops the background process. |
 
-Every command prints JSON. The exit code is 0 for success, 1 when Layers
+Every command prints JSON, except `commands`, which prints text (`--json`
+gives JSON). The exit code is 0 for success, 1 when Layers
 refused the command (read `result.envelope.error.code`), and 2 when the tool
 could not run it (read `error.code`; the codes are listed below). The tool
 leaves `state` out of the envelopes that it prints; `--state` keeps it.
@@ -58,7 +59,9 @@ text: `program` answers `NO_DOCUMENT`, and `set` and `validate` answer
 
 To follow the person: read `rev` from `status`, do your work, then run
 `wait --since <rev>`. It returns when the person changes the composition.
-Your own commands do not count as the person's changes.
+Your own commands do not count as the person's changes. A change that the
+person makes while one of your commands runs counts as yours, so `wait` does
+not report it: read the composition again before each edit.
 
 How it works, so you can explain it to the person:
 
@@ -76,11 +79,14 @@ How it works, so you can explain it to the person:
   (`getProjectInfo`, `listProjects`, `openProject`, `saveProject`,
   `saveProjectAs`, `deleteProject`), settings and the foreground color
   (`getSettings`, `setSettings`, `getForegroundColor`, `setForegroundColor`),
-  fonts (`listInstalledFonts`, `installFontBundle`), and exports and their
+  fonts (`listInstalledFonts`, `installFontBundle`), exports and their
   jobs (`exportImage`, `exportVideo`, `releaseExport`, `getJob`,
-  `waitForJob`, `cancelJob`). `newProject` would also take the session
+  `waitForJob`, `cancelJob`), recovery copies (`listRecoveryCopies`,
+  `restoreRecoveryCopy`, `discardRecoveryCopy`), the session itself
+  (`takeOnline`, `joinSession`, `goOffline`) and exact pixels
+  (`getRasterRegion`). `newProject` would also take the session
   offline. These commands answer `REMOTE_UNAVAILABLE`, and `commands` marks
-  them. Suggest that the person goes offline (File, **go offline...**, then
+  them. Suggest that the person goes offline (File, **stop live collab**, then
   **Go Offline**) when you are done.
 - In each answer, `state` leaves out `foreground`, `jobs`, `recentExports`
   and `settings`. `state.project` keeps only `canUndo` and `canRedo`, and the
@@ -115,13 +121,23 @@ Agent tool errors (exit code 2, `error.code`):
 - `NO_APP_TAB`: the tab that took the session online did not answer. Ask the
   person to keep it open, or to go online again and send the new code.
 - `TIMEOUT`: the tab did not answer in time. Check `status`, then try again.
-- `READONLY`: the session lets this agent only read.
+- `READONLY`: the session lets this agent only watch: `wait` and `status`
+  work, and every app command, `commands` and `look` included, is refused.
+  Ask the person to allow guests to edit.
 - `SESSION_CLOSED`, `SESSION_REFUSED`: the connection closed, or the session
   server refused a request (the message says why).
 - `ISLAND`: a `transfer` to or from a Layers session. Layers shares nothing
   with other apps.
 - `IMAGE_FAILED`, `NO_DOCUMENT`, `USAGE`, `INVALID_JSON`: an image transfer
   failed, a document is missing, or the command line was wrong.
+- `CONNECT_FAILED`, `RATE_LIMITED`: `join` could not reach the session server,
+  or the server is limiting joins from this address. Wait a minute, then join
+  again.
+- `INVALID_IMAGE`, `BAD_RESPONSE`: an image id is malformed, or the app sent
+  an answer that the tool could not read.
+- `DAEMON_FAILED`, `INTERNAL_ERROR`: the tool's background process did not
+  start, or the tool failed. If it happens again, run `stop` and join again.
+- A file that the tool cannot read gives the system's code, such as `ENOENT`.
 
 ## Control Layers in a browser you drive
 
@@ -262,7 +278,8 @@ Through a session, the state has no `foreground`, `jobs`, `recentExports` or
 `mask` on a layer or child effect is null or a summary with `width`, `height`,
 `coverage`, and `bounds`. A layer mask also has `enabled` and `visible`.
 Raster selections have the same summary in `selection.mask`. Use
-`getRasterRegion` for exact pixels; summaries do not contain pixel arrays.
+`getRasterRegion` for exact pixels in a browser you drive; a session cannot
+read them. Summaries do not contain pixel arrays.
 
 ---
 
@@ -352,7 +369,7 @@ The commands cover these operations:
 | `IMAGE_AS_TEXT` | a session request or answer would carry an image as base64 text. Add the image with `image-put` and use `image:<sha256>` |
 | `OUTSIDE_LINK` | a session request names media by a link other than `image:<sha256>` |
 | `IMAGE_UPLOAD_FAILED` | the tab could not add an image to the session (a session holds up to 32 images of up to 8 MiB each) |
-| `INTERNAL_ERROR` | unexpected handler throw |
+| `INTERNAL_ERROR` | unexpected handler throw. Through a session it also means the session rejected a change that the tab already made; read the state before trying again |
 
 `details` usually names the field or value that caused the error. Some conflict
 errors send an empty `details`. From `getEffectDefinition`, `NOT_FOUND_EFFECT`
