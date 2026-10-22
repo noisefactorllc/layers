@@ -59,9 +59,9 @@ text: `program` answers `NO_DOCUMENT`, and `set` and `validate` answer
 
 To follow the person: read `rev` from `status`, do your work, then run
 `wait --since <rev>`. It returns when the person changes the composition.
-Your own commands do not count as the person's changes. A change that the
-person makes while one of your commands runs counts as yours, so `wait` does
-not report it: read the composition again before each edit.
+Your own commands do not count as the person's changes. If the person uses
+the app while one of your commands runs, `wait` counts that command's change as
+theirs too. Read the composition again before each edit.
 
 How it works, so you can explain it to the person:
 

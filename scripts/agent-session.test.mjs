@@ -12,7 +12,7 @@ import { registerCommand, runCommand } from '../public/js/agent/dispatcher.js'
 
 // Every app that answers agents in a Seance session runs this relay, byte for
 // byte. Change it in all of them together, then update this digest.
-const RELAY_SHA256 = 'fe245367d3432f8ee4481d6dd820ecb3700d1b765fcbe43bfed90039600c2828'
+const RELAY_SHA256 = '976b8550a2ec439e8d79b61fac1a32fabb2eb53e80e6cd73e2a2d20fc1b8a867'
 
 const described = COMMAND_GROUPS.flatMap(group => Object.keys(group.commands))
 
