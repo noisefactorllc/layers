@@ -204,8 +204,14 @@ jobs:
           # the whole window. Drop the source rather than keep asking it.
           sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
                      /etc/apt/sources.list.d/google-chrome*.sources
+          # A mirror can also stall mid-download instead of failing: apt then
+          # waits until the job's own limit cancels it, and the retry below
+          # never runs. Bound each request, and each whole attempt, so a stall
+          # becomes a failure the retry can recover from.
+          printf 'Acquire::http::Timeout "60";\nAcquire::https::Timeout "60";\nAcquire::Retries "3";\n' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-timeouts > /dev/null
           for attempt in 1 2 3; do
-            if npx --no-install playwright install --with-deps ${{ matrix.browser }}; then
+            if timeout --kill-after=30s 6m npx --no-install playwright install --with-deps ${{ matrix.browser }}; then
               exit 0
             fi
             echo "::warning::browser install attempt $attempt failed; retrying"
