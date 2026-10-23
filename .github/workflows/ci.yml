@@ -208,13 +208,25 @@ jobs:
           # waits until the job's own limit cancels it, and the retry below
           # never runs. Bound each request, and each whole attempt, so a stall
           # becomes a failure the retry can recover from.
-          printf 'Acquire::http::Timeout "60";\nAcquire::https::Timeout "60";\nAcquire::Retries "3";\n' \
+          printf 'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "2";\n' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-timeouts > /dev/null
           for attempt in 1 2 3; do
             if timeout --kill-after=30s 6m npx --no-install playwright install --with-deps ${{ matrix.browser }}; then
               exit 0
             fi
             echo "::warning::browser install attempt $attempt failed; retrying"
+            # A stopped attempt can leave its apt-get running under sudo with
+            # apt's locks held, so every retry fails at once on the lock. Stop
+            # exactly the processes that hold those locks, then let dpkg finish
+            # whatever the stopped attempt left half done.
+            holders=$(sudo lslocks -n -o PID,PATH 2>/dev/null \
+              | awk '$2 ~ /^\/var\/(lib\/dpkg|lib\/apt|cache\/apt)\// { print $1 }' | sort -u)
+            if [ -n "$holders" ]; then
+              sudo kill $holders 2>/dev/null || true
+              sleep 5
+              sudo kill -9 $holders 2>/dev/null || true
+            fi
+            sudo dpkg --configure -a || true
             sudo apt-get update || true
             sleep $((attempt * 15))
           done
