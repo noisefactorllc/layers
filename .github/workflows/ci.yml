@@ -185,6 +185,16 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Require collaboration harness
         run: node --input-type=module -e "import { hasLocalSeanceHarness } from './tests/seanceLocal.js'; if (!hasLocalSeanceHarness()) throw new Error('Seance harness unavailable')"
+      # --with-deps downloads the browser's system packages from the runner's
+      # Ubuntu mirror on every run, and a slow mirror can take longer than the
+      # job to serve them. Keep the downloaded packages between runs so the
+      # install reads them from the cache instead.
+      - name: Restore browser system packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: browser-apt-${{ runner.os }}-${{ matrix.browser }}-${{ hashFiles('layers/package-lock.json') }}
+          restore-keys: browser-apt-${{ runner.os }}-${{ matrix.browser }}-
       - name: Install locked browser
         # `--with-deps` runs apt, so this step depends on external mirrors
         # being consistent. One of them was not, and it cost four consecutive
@@ -210,9 +220,15 @@ jobs:
           # becomes a failure the retry can recover from.
           printf 'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "2";\n' \
             | sudo tee /etc/apt/apt.conf.d/80-ci-timeouts > /dev/null
+          # Download into the cached directory and keep what was downloaded.
+          mkdir -p "$HOME/apt-archives/partial"
+          printf 'Dir::Cache::Archives "%s/apt-archives/";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME" \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-archives > /dev/null
+          installed=
           for attempt in 1 2 3; do
             if timeout --kill-after=30s 6m npx --no-install playwright install --with-deps ${{ matrix.browser }}; then
-              exit 0
+              installed=1
+              break
             fi
             echo "::warning::browser install attempt $attempt failed; retrying"
             # A stopped attempt can leave its apt-get running under sudo with
@@ -220,7 +236,7 @@ jobs:
             # exactly the processes that hold those locks, then let dpkg finish
             # whatever the stopped attempt left half done.
             holders=$(sudo lslocks -n -o PID,PATH 2>/dev/null \
-              | awk '$2 ~ /^\/var\/(lib\/dpkg|lib\/apt|cache\/apt)\// { print $1 }' | sort -u)
+              | awk '$2 ~ /^\/var\/(lib\/dpkg|lib\/apt|cache\/apt)\/|\/apt-archives\// { print $1 }' | sort -u)
             if [ -n "$holders" ]; then
               sudo kill $holders 2>/dev/null || true
               sleep 5
@@ -230,8 +246,14 @@ jobs:
             sudo apt-get update || true
             sleep $((attempt * 15))
           done
-          echo "::error::browser install failed after 3 attempts"
-          exit 1
+          # apt wrote the packages as root; hand them to the runner user so the
+          # cache can save them, without the incomplete downloads.
+          sudo rm -rf "$HOME/apt-archives/partial" "$HOME/apt-archives/lock"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives"
+          if [ -z "$installed" ]; then
+            echo "::error::browser install failed after 3 attempts"
+            exit 1
+          fi
       - name: Record shader release before testing
         run: |
           mkdir -p dependency-evidence
