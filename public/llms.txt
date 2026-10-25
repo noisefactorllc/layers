@@ -569,7 +569,8 @@ return env.result   // { bytes, mimeType, format, width, height, sizeBytes }
 ## Caveats
 
 **Font registration is async.** If a layer's requested `font` is not registered
-in the browser, the first render uses Nunito as the fallback.
+in the browser, the first render uses the browser's fallback font.
+Nunito is the default when no `font` is requested.
 Layers renders again after the font loads.
 The agent's snapshot reports the requested font immediately.
 The rendered pixels still use the fallback for at least one frame.

@@ -139,15 +139,18 @@ test.describe('Marching ants clock', () => {
         // nudge the compositor with pointer movement while polling for the
         // quantized dash offset to advance (ants actually marching).
         let marched = false
+        let phaseAdvanced = false
+        let observedOffset = 0
         for (let i = 0; i < 20 && !marched; i++) {
             await page.mouse.move(400 + i, 300 + i)
             await page.waitForTimeout(100)
-            // March detection: the phase/offset has advanced off zero (the
-            // selection starts at offset 0).
-            marched = await page.evaluate(() => {
+            const sample = await page.evaluate(() => {
                 const sm = window.layersApp._selectionManager
-                return sm._dashOffset !== 0 || sm._marchPhase !== 0
+                return { offset: sm._dashOffset, phase: sm._marchPhase }
             })
+            phaseAdvanced ||= sample.phase !== 0
+            observedOffset = sample.offset
+            marched = observedOffset !== 0
         }
         // The loop repainted with a new grid-aligned offset (or, if the headless
         // compositor produced no frame, the initial paint still shows the ants).
@@ -166,8 +169,9 @@ test.describe('Marching ants clock', () => {
         expect(during.painted).toBe(true)
         expect(during.running).toBe(true)
         expect(during.offset % 0.5).toBe(0)
-        if (marched) {
-            expect(during.offset).not.toBe(0)
+        if (phaseAdvanced) {
+            expect(observedOffset).not.toBe(0)
+            expect(observedOffset % 0.5).toBe(0)
         }
 
         const after = await page.evaluate(() => {
