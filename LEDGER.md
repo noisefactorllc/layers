@@ -3,12 +3,12 @@
 <!-- ai-contract-checkpoint:start -->
 ## AI contract checkpoint
 
-Last good source revision: `5674bb8d5a0e2574d111ba2e784496eb3bda55d6`.
+Last good source revision: `8b72c60cbdf2a0c837586f537aecec2e51380407`.
 
 The tracked AI contracts were independently audited against that source revision.
 
-- `public/llms-full.txt`: `ea333da6997c5134273e6627560e91ac55ca5318`
-- `public/llms.txt`: `5db744dc6ad12cf300ce0699376a971b1c0ecded`
+- `public/llms-full.txt`: `fcc163ea7ccb8ad7b27a33dffbfeaa86e0365714`
+- `public/llms.txt`: `7c425b407c18483960d1bc5bc9bfbcbb00634f80`
 
 ```json
 {
@@ -16,22 +16,22 @@ The tracked AI contracts were independently audited against that source revision
   "repository": "noisefactorllc/layers",
   "branch": "main",
   "last_good": {
-    "revision": "5674bb8d5a0e2574d111ba2e784496eb3bda55d6",
+    "revision": "8b72c60cbdf2a0c837586f537aecec2e51380407",
     "contracts": [
       {
         "path": "public/llms-full.txt",
-        "sha": "ea333da6997c5134273e6627560e91ac55ca5318"
+        "sha": "fcc163ea7ccb8ad7b27a33dffbfeaa86e0365714"
       },
       {
         "path": "public/llms.txt",
-        "sha": "5db744dc6ad12cf300ce0699376a971b1c0ecded"
+        "sha": "7c425b407c18483960d1bc5bc9bfbcbb00634f80"
       }
     ],
-    "verified_at": "2026-10-23T21:49:53.820Z",
+    "verified_at": "2026-10-25T04:37:30.683Z",
     "audit": {
-      "job_id": "19c5658b-a56f-4562-9d2e-463ad259ee4f",
-      "review_id": "ae571dbf-8a29-4669-a06e-1144b4c3b2e9",
-      "reviewer_session_id": "20261023_214924_8df7dc"
+      "job_id": "088e2edc-d480-428d-a4d2-efd7638f545a",
+      "review_id": "15187798-759a-43e1-ab65-bcdbc31d8094",
+      "reviewer_session_id": "20261025_043649_792cff"
     }
   }
 }
