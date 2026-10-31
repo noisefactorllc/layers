@@ -93,22 +93,25 @@ async function generateMediaId(blob) {
     return hashHex.substring(0, 16)
 }
 
+/** Delete unreferenced media, inside an existing write transaction. */
+function cleanupUnusedMediaInTx(tx) {
+    const projects = tx.objectStore(STORE_PROJECTS).getAll()
+    projects.onsuccess = () => {
+        const usedIds = new Set(projects.result.flatMap(project =>
+            project.layers.map(layer => layer.mediaId).filter(Boolean)))
+        const cursor = tx.objectStore(STORE_MEDIA).openCursor()
+        cursor.onsuccess = () => {
+            if (!cursor.result) return
+            if (!usedIds.has(cursor.result.key)) cursor.result.delete()
+            cursor.result.continue()
+        }
+    }
+}
+
 /** Delete unreferenced media under the same lock used to commit projects. */
 async function cleanupUnusedMedia() {
     const database = await initDB()
-    return writeTransaction(database, [STORE_PROJECTS, STORE_MEDIA], tx => {
-        const projects = tx.objectStore(STORE_PROJECTS).getAll()
-        projects.onsuccess = () => {
-            const usedIds = new Set(projects.result.flatMap(project =>
-                project.layers.map(layer => layer.mediaId).filter(Boolean)))
-            const cursor = tx.objectStore(STORE_MEDIA).openCursor()
-            cursor.onsuccess = () => {
-                if (!cursor.result) return
-                if (!usedIds.has(cursor.result.key)) cursor.result.delete()
-                cursor.result.continue()
-            }
-        }
-    })
+    return writeTransaction(database, [STORE_PROJECTS, STORE_MEDIA], cleanupUnusedMediaInTx)
 }
 
 /**
@@ -171,7 +174,7 @@ export async function saveProject(projectData, existingId = null) {
     const project = {
         id: projectId,
         name: projectData.name,
-        createdAt: existingId ? (await getProject(existingId))?.createdAt || now : now,
+        createdAt: now,
         modifiedAt: now,
         canvasWidth: projectData.canvasWidth,
         canvasHeight: projectData.canvasHeight,
@@ -181,7 +184,25 @@ export async function saveProject(projectData, existingId = null) {
     return writeTransaction(database, [STORE_PROJECTS, STORE_MEDIA], (tx) => {
         const media = tx.objectStore(STORE_MEDIA)
         for (const record of mediaRecords.values()) media.put(record)
-        tx.objectStore(STORE_PROJECTS).put(project)
+        const projects = tx.objectStore(STORE_PROJECTS)
+        if (existingId) {
+            // IDB serializes an object when put() is called, so the put must
+            // wait for this get: issue it from the get's success handler. IDB
+            // runs a transaction's requests in issue order, so the get sees
+            // the pre-put value; racing saves for the same id then agree on
+            // one createdAt, and no separate full-record read is needed.
+            const existing = projects.get(existingId)
+            existing.onsuccess = () => {
+                const createdAt = existing.result?.createdAt
+                if (typeof createdAt === 'number') project.createdAt = createdAt
+                projects.put(project)
+                // Replacing a project can orphan the previous version's media;
+                // reclaim it after the replacement record is staged.
+                cleanupUnusedMediaInTx(tx)
+            }
+        } else {
+            projects.put(project)
+        }
         return projectId
     })
 }

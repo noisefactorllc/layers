@@ -256,8 +256,9 @@ export class PanTool {
             this._glideRaf = null
             return
         }
-        const dt = Math.min(now - this._glideLastT, MAX_FRAME_DT_MS)
-        this._glideLastT = now
+        const nextT = Math.max(now, this._glideLastT)
+        const dt = Math.min(nextT - this._glideLastT, MAX_FRAME_DT_MS)
+        this._glideLastT = nextT
 
         // Exponential decay of velocity over the elapsed frame.
         const decay = Math.exp(-dt / GLIDE_HALF_LIFE_MS)

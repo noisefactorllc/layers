@@ -166,3 +166,74 @@ test('media and its project commit atomically', async ({ page }) => {
     })
     expect(result).toEqual({ rejected: true, projects: [], mediaCount: 0 })
 })
+
+test('overwriting a project preserves createdAt and orphans no media', async ({ page }) => {
+    await page.goto('/js/utils/project-storage.js')
+    const result = await page.evaluate(async () => {
+        const { saveProject, getProject, loadProject } = await import('/js/utils/project-storage.js')
+
+        const mediaFile = (content, name) =>
+            new File([content], name, { type: 'image/png' })
+
+        const id = await saveProject({
+            name: 'overwrite-me', canvasWidth: 1, canvasHeight: 1,
+            layers: [{ id: 'old-media', sourceType: 'media', mediaType: 'image',
+                mediaFile: mediaFile('old pixels', 'old.png') }],
+        })
+        const first = await getProject(id)
+
+        // Replace the project: different name, old media dropped, new media added.
+        await saveProject({
+            name: 'overwritten', canvasWidth: 1, canvasHeight: 1,
+            layers: [{ id: 'new-media', sourceType: 'media', mediaType: 'image',
+                mediaFile: mediaFile('new pixels', 'new.png') }],
+        }, id)
+
+        const second = await getProject(id)
+        const reloaded = await loadProject(id)
+        const mediaCount = await new Promise((resolve, reject) => {
+            const request = indexedDB.open('layers-projects')
+            request.onsuccess = () => resolve(request.result)
+            request.onerror = () => reject(request.error)
+        }).then(db => new Promise((resolve, reject) => {
+            const request = db.transaction('media').objectStore('media').count()
+            request.onsuccess = () => resolve(request.result)
+            request.onerror = () => reject(request.error)
+            db.close()
+        }))
+
+        return {
+            createdAtPreserved: second.createdAt === first.createdAt,
+            nameUpdated: second.name,
+            reloadedMedia: reloaded.mediaFiles.size,
+            // The old blob was orphaned by the replacement and must be gone.
+            mediaCount,
+        }
+    })
+    expect(result).toEqual({
+        createdAtPreserved: true, nameUpdated: 'overwritten', reloadedMedia: 1, mediaCount: 1,
+    })
+})
+
+
+test('concurrent first saves preserve the first committed creation time', async ({ page }) => {
+    await page.goto('/js/utils/project-storage.js')
+    const result = await page.evaluate(async () => {
+        const { saveProject, getProject } = await import('/js/utils/project-storage.js')
+        const originalNow = Date.now
+        let clock = 100
+        Date.now = () => { const now = clock; clock += 100; return now }
+        try {
+            const data = name => ({ name, canvasWidth: 1, canvasHeight: 1, layers: [] })
+            await Promise.all([
+                saveProject(data('first'), 'shared-new'),
+                saveProject(data('second'), 'shared-new'),
+            ])
+            const project = await getProject('shared-new')
+            return { createdAt: project.createdAt, modifiedAt: project.modifiedAt }
+        } finally {
+            Date.now = originalNow
+        }
+    })
+    expect(result).toEqual({ createdAt: 100, modifiedAt: 200 })
+})
