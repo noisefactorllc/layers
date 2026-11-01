@@ -151,7 +151,7 @@ test.describe('LayersAgent envelopes', () => {
         expect(result.called).toBe(0)
     })
     test('successful command returns ok envelope with apiVersion', async ({ page }) => {
-        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.goto('/', { waitUntil: 'domcontentloaded' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await page.evaluate(async () => { await window.LayersAgent.ready })
         const env = await page.evaluate(() => window.LayersAgent._ping())
@@ -162,7 +162,7 @@ test.describe('LayersAgent envelopes', () => {
     })
 
     test('serializes parallel calls in order', async ({ page }) => {
-        await page.goto('/', { waitUntil: 'networkidle' })
+        await page.goto('/', { waitUntil: 'domcontentloaded' })
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await page.evaluate(async () => { await window.LayersAgent.ready })
         const order = await page.evaluate(async () => {

@@ -94,7 +94,7 @@ export class ExportImageDialog {
         if (e.key === 'Escape') {
             e.preventDefault()
             this._cancel()
-        } else if (e.key === 'Enter' && !e.repeat) {
+        } else if (e.key === 'Enter' && !e.repeat && !e.target.closest('#exportImageCancelBtn')) {
             e.preventDefault()
             this._export()
         }

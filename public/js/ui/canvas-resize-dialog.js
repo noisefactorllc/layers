@@ -112,7 +112,7 @@ class CanvasResizeDialog {
         })
 
         this._dialog.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.target.closest('.dialog-close, #canvas-resize-cancel')) {
                 e.preventDefault()
                 this._handleConfirm()
             }

@@ -90,7 +90,7 @@ class SelectionParamDialog {
         this._dialog.querySelector('#selection-param-ok').addEventListener('click', () => this._confirm())
 
         this._dialog.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.target.closest('.dialog-close, #selection-param-cancel')) {
                 e.preventDefault()
                 this._confirm()
             }

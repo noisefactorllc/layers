@@ -7,7 +7,7 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 test.describe.configure({ mode: 'parallel' })
 
 async function bootApp(page) {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
     await reopenNewProjectDialog(page)
@@ -209,7 +209,7 @@ test.describe('agent effect parameter command boundary', () => {
 
     for (const operation of ['add', 'update']) {
         test(`${operation} rejects string colors for the base solid layer without mutation`, async ({ page }) => {
-            await page.goto('/', { waitUntil: 'networkidle' })
+            await page.goto('/', { waitUntil: 'domcontentloaded' })
             await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
             await page.evaluate(async () => { await window.LayersAgent.ready })
             if (operation === 'update') {

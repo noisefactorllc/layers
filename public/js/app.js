@@ -76,6 +76,7 @@ const MAX_CANVAS_DIMENSION = 8192
 // The picked foreground color survives a reload the same way the theme does
 // (`layers-theme` in settings-dialog): every set writes here, boot reads back.
 const FOREGROUND_COLOR_STORAGE_KEY = 'layers-foreground-color'
+const DRAWING_PREFERENCES_STORAGE_KEY = 'layers-drawing-preferences'
 
 /**
  * Feature-flag check for online collaboration. Ships enabled by default;
@@ -133,6 +134,7 @@ class LayersApp {
 
         // Global foreground color
         this._foregroundColor = '#000000'
+        this._drawingPreferences = {}
 
         // Drawing layer counter
         this._drawingLayerCounter = 0
@@ -1314,6 +1316,7 @@ class LayersApp {
             width: this._canvas.width || 1024,
             height: this._canvas.height || 1024,
             loopDuration: 10,
+            onContextRestored: (canvas, renderer) => this._adoptRendererCanvas(canvas, renderer),
             onError: (err) => {
                 console.error('[Layers] Render error:', err)
                 toast.error('Render error: ' + err.message)
@@ -1351,6 +1354,7 @@ class LayersApp {
         // theme's initTheme above): app state, the well swatch, and the
         // native color input all come back as the user left them.
         this._restoreForegroundColor()
+        this._restoreDrawingPreferences()
 
         // Export system
         this._files = new Files()
@@ -3943,6 +3947,18 @@ class LayersApp {
         return result
     }
 
+    _adoptRendererCanvas(canvas, renderer) {
+        if (renderer !== this._renderer || canvas !== renderer.canvas
+            || !canvas?.isConnected || canvas !== document.getElementById('canvas')) return false
+        this._canvas = canvas
+        this._selectionManager?.setSourceCanvas(canvas)
+        if (this._fillTool) this._fillTool._canvas = canvas
+        if (this._eyedropperTool) this._eyedropperTool._canvas = canvas
+        if (this._exportImageDialog) this._exportImageDialog.canvas = canvas
+        if (this._exportVideoDialog) this._exportVideoDialog.canvas = canvas
+        return true
+    }
+
     /** Render pending updates once, optionally capturing original-resolution pixels. @private */
     _renderCurrentFrame({ capture = false, ...options } = {}) {
         if (capture) return this._renderer.renderFullResolution(options)
@@ -4954,6 +4970,9 @@ class LayersApp {
             const size = parseInt(e.target.value, 10)
             if (this._brushTool) this._brushTool.size = size
             if (this._shapeTool) this._shapeTool.size = size
+            this._rememberDrawingPreferences({ size: {
+                brush: this._brushTool?.size, shape: this._shapeTool?.size
+            } })
         })
 
         document.getElementById('drawingOpacityInput')?.addEventListener('input', (e) => {
@@ -4961,6 +4980,7 @@ class LayersApp {
             if (this._brushTool) this._brushTool.opacity = opacity
             if (this._shapeTool) this._shapeTool.opacity = opacity
             document.getElementById('drawingOpacityValue').textContent = `${e.target.value}%`
+            this._rememberDrawingPreferences({ opacity: parseInt(e.target.value, 10) })
         })
 
         document.getElementById('drawingFilledInput')?.addEventListener('change', (e) => {
@@ -4969,6 +4989,7 @@ class LayersApp {
 
         document.getElementById('drawingToleranceInput')?.addEventListener('input', (e) => {
             if (this._fillTool) this._fillTool.tolerance = parseInt(e.target.value, 10)
+            this._rememberDrawingPreferences({ tolerance: this._fillTool?.tolerance })
         })
 
         // Drawing options bar close button
@@ -5619,6 +5640,9 @@ class LayersApp {
                     if (input) input.value = this._brushTool.size
                 }
                 if (this._shapeTool) this._shapeTool.size -= 5
+                this._rememberDrawingPreferences({ size: {
+                    brush: this._brushTool?.size, shape: this._shapeTool?.size
+                } })
                 return
             }
             if (!e.ctrlKey && !e.metaKey && e.key === ']') {
@@ -5628,6 +5652,9 @@ class LayersApp {
                     if (input) input.value = this._brushTool.size
                 }
                 if (this._shapeTool) this._shapeTool.size += 5
+                this._rememberDrawingPreferences({ size: {
+                    brush: this._brushTool?.size, shape: this._shapeTool?.size
+                } })
                 return
             }
 
@@ -6649,6 +6676,63 @@ class LayersApp {
             const mask = selectionPath.type === 'wand' ? selectionPath.mask : selectionPath.data
             // For mask-based selections, we need to translate the putImageData
             ctx.putImageData(mask, offsetX, offsetY)
+        }
+    }
+
+    _sanitizeDrawingPreferences(value) {
+        const preferences = {}
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return preferences
+        const integerInRange = (number, min, max) =>
+            Number.isInteger(number) && number >= min && number <= max
+        const size = {}
+        for (const tool of ['brush', 'shape']) {
+            if (integerInRange(value.size?.[tool], 1, 100)) size[tool] = value.size[tool]
+        }
+        if (Object.keys(size).length) preferences.size = size
+        if (integerInRange(value.opacity, 0, 100)) preferences.opacity = value.opacity
+        if (integerInRange(value.tolerance, 0, 255)) preferences.tolerance = value.tolerance
+        return preferences
+    }
+
+    _rememberDrawingPreferences(update) {
+        const preferences = this._sanitizeDrawingPreferences(update)
+        if (preferences.size) {
+            preferences.size = { ...this._drawingPreferences.size, ...preferences.size }
+        }
+        Object.assign(this._drawingPreferences, preferences)
+        try {
+            localStorage.setItem(DRAWING_PREFERENCES_STORAGE_KEY, JSON.stringify(this._drawingPreferences))
+        } catch { /* storage unavailable; keep the in-memory preferences */ }
+    }
+
+    _restoreDrawingPreferences() {
+        let saved
+        try {
+            saved = JSON.parse(localStorage.getItem(DRAWING_PREFERENCES_STORAGE_KEY))
+        } catch { return }
+        const preferences = this._sanitizeDrawingPreferences(saved)
+        this._drawingPreferences = preferences
+        if (preferences.size?.brush !== undefined) {
+            if (this._brushTool) this._brushTool.size = preferences.size.brush
+            const input = document.getElementById('drawingSizeInput')
+            if (input) input.value = String(preferences.size.brush)
+        }
+        if (preferences.size?.shape !== undefined && this._shapeTool) {
+            this._shapeTool.size = preferences.size.shape
+        }
+        if (preferences.opacity !== undefined) {
+            const opacity = preferences.opacity / 100
+            if (this._brushTool) this._brushTool.opacity = opacity
+            if (this._shapeTool) this._shapeTool.opacity = opacity
+            const input = document.getElementById('drawingOpacityInput')
+            if (input) input.value = String(preferences.opacity)
+            const label = document.getElementById('drawingOpacityValue')
+            if (label) label.textContent = `${preferences.opacity}%`
+        }
+        if (preferences.tolerance !== undefined) {
+            if (this._fillTool) this._fillTool.tolerance = preferences.tolerance
+            const input = document.getElementById('drawingToleranceInput')
+            if (input) input.value = String(preferences.tolerance)
         }
     }
 

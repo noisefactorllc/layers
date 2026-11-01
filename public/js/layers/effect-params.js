@@ -161,6 +161,18 @@ class EffectParams extends HTMLElement {
             const controlGroup = this._createControlGroup(paramName, spec)
             if (controlGroup) {
                 controlsContainer.appendChild(controlGroup)
+                // Custom controls create their focusable elements on connection.
+                // Preserve explicit companion names and picker popup labels.
+                const name = controlGroup.querySelector('.control-label').textContent
+                const controls = controlGroup.querySelectorAll(
+                    'slider-value, select-dropdown, color-picker, input, textarea, select, button, [tabindex], [contenteditable="true"]')
+                for (const control of controls) {
+                    if (!control.closest('dialog, [role="listbox"]')
+                        && !control.getAttribute('aria-label')?.trim()
+                        && !control.getAttribute('aria-labelledby')?.trim()) {
+                        control.setAttribute('aria-label', name)
+                    }
+                }
             }
         }
 

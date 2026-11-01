@@ -15,7 +15,7 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 // only after the compile succeeds.
 
 async function bootApp(page) {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
     await reopenNewProjectDialog(page)

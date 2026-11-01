@@ -285,9 +285,21 @@ test('an agent reads, changes and looks at the composition, and images cross onl
         // expose binary request bodies to the test.)
         expect(uploads.some(upload => upload.type === 'image/png'
             && (upload.body === null || upload.body.equals(image.bytes)))).toBe(true)
-        // No frame from the tab carried the image, or any image, as text.
-        expect(sent.filter(frame => frame.includes(image.bytes.toString('base64'))
-            || /data:image|[A-Za-z0-9+/]{200,}/.test(frame))).toEqual([])
+        // The hello credential is protocol text, not an image payload. Check
+        // every complete frame for the image and image data URLs, then exclude
+        // only that credential from the generic long-text image check.
+        expect(sent.some(frame => frame.includes(image.bytes.toString('base64'))
+            || /data:image/i.test(frame))).toBe(false)
+        const imageLikeFrame = sent.some(frame => {
+            try {
+                const message = JSON.parse(frame)
+                if (message.type === 'hello') delete message.anon_token
+                return /[A-Za-z0-9+/]{200,}/.test(JSON.stringify(message))
+            } catch {
+                return /[A-Za-z0-9+/]{200,}/.test(frame)
+            }
+        })
+        expect(imageLikeFrame).toBe(false)
 
         // The person's stored data, downloads and media from outside the
         // session are not reachable.

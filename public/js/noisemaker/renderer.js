@@ -234,6 +234,8 @@ export class LayersRenderer {
                 this._renderer.stop()
                 this._serializeCompileOp(() => {
                     if (generation !== this._contextGeneration || this._renderer.isContextLost) return
+                    this._canvas = this.canvas
+                    options.onContextRestored?.(this._canvas, this)
                     this._normalizeColorUniforms()
                     this._buildLayerStepMap()
                     this._uploadMediaTextures({ strict: true })

@@ -7,7 +7,7 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 const FIXTURE = path.resolve('tests/fixtures/agent-snapshot-blank.json')
 
 async function bootBlankProject(page) {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
     await reopenNewProjectDialog(page)

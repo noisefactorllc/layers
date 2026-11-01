@@ -84,7 +84,8 @@ test.describe('Image menu - Resize preserves animation', () => {
                 let raf = null
                 let timer = null
                 let settled = false
-                let first = null
+                let sawRed = false
+                let sawBlue = false
                 let lastSample = -Infinity
                 const cleanup = () => {
                     cancelAnimationFrame(raf)
@@ -119,9 +120,11 @@ test.describe('Image menu - Resize preserves animation', () => {
                             samples.push({ elapsedMs: Math.round(elapsedMs), rgba,
                                 videoTime: video?.currentTime ?? null })
                             lastSample = elapsedMs
-                            if (first && rgba.some((value, i) => value !== first[i])) return finish(true)
-                            first = rgba
+                            sawRed ||= rgba[0] > 192 && rgba[2] < 64
+                            sawBlue ||= rgba[2] > 192 && rgba[0] < 64
+                            if (sawRed && sawBlue && !video.paused) return finish(true)
                         }
+                        if (video.paused) return finish(false)
                         raf = requestAnimationFrame(sample)
                     } catch (error) {
                         settled = true

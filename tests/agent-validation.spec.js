@@ -6,7 +6,7 @@ import { test, expect } from './fixtures.js'
 test.describe.configure({ mode: 'parallel' })
 
 async function bootApp(page) {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
 }
