@@ -269,8 +269,8 @@ jobs:
             # engines that then time each other out.
             WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS=1 xvfb-run -a npm test -- --project=webkit --headed --workers=1 "$SHARD"
           elif [ '${{ matrix.browser }}' = 'firefox' ]; then
-            # Provide a display for WebGL2 in the Linux CI environment.
-            xvfb-run -a npm test -- --project=firefox --headed "$SHARD"
+            # Isolate headed pointer input: another worker's window can end a drag.
+            xvfb-run -a npm test -- --project=firefox --headed --workers=1 "$SHARD"
           else
             npm test -- --project=${{ matrix.browser }} "$SHARD"
           fi
