@@ -1200,8 +1200,9 @@ class LayersApp {
                 this._extractSelectionToLayer(destructive, shouldCancel),
             showNoLayerDialog: () => this._showNoLayerSelectedDialog(),
             selectTopmostLayer: () => this._selectTopmostLayer(),
+            // The clone tool keeps dragging a rendered copy of an effect layer.
             duplicateLayer: (shouldCancel) =>
-                this._duplicateActiveLayer(null, shouldCancel),
+                this._duplicateActiveLayer(null, shouldCancel, { rasterize: true }),
             onComplete: () => this._onCloneComplete(),
             acquireMutation: (existingToken) =>
                 this._tryAcquireProjectLifecycle(existingToken),
@@ -5858,10 +5859,14 @@ class LayersApp {
 
     /**
      * Duplicate the active layer
+     * @param {object|null} [layer] - The layer to duplicate; the active layer by default
+     * @param {Function|null} [shouldCancel]
+     * @param {{rasterize?: boolean}} [options] - rasterize: copy an effect
+     *   layer other than text as rendered pixels (the clone tool's copy)
      * @returns {Promise<boolean>} True if successful
      * @private
      */
-    async _duplicateActiveLayer(layer = null, shouldCancel = null) {
+    async _duplicateActiveLayer(layer = null, shouldCancel = null, { rasterize = false } = {}) {
         layer ||= this._getActiveLayer()
         if (!layer) return false
 
@@ -5873,12 +5878,13 @@ class LayersApp {
 
         let newLayer
         const mediaOverrides = new Map()
-        if (layer.effectId && this._isOverlayContentEffect(layer.effectId)) {
-            // Overlay-content layers (today: filter/text) duplicate as a
-            // model clone so the copy's text stays editable — their content
-            // lives in effectParams, not in the pixels below. Assumes the
-            // effect's external texture is fully reconstructible from
-            // effectParams (true for filter/text).
+        if (layer.sourceType === 'effect' && layer.effectId
+            && (!rasterize || this._isOverlayContentEffect(layer.effectId))) {
+            // An effect layer duplicates as a copy of the layer itself: the
+            // copy stays a live effect with the same effect, parameters, mask
+            // and child effects, so nothing is rendered. Its content lives in
+            // effectParams; the one effect layer with an external texture,
+            // filter/text, rebuilds that texture from effectParams.
             newLayer = cloneLayer(layer, newName)
         } else {
             // Render the layer to get its pixels

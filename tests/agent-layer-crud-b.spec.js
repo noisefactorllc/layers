@@ -278,6 +278,11 @@ test.describe('flatten/rasterize/flip', () => {
                 await window.LayersAgent.addLayer({
                     kind: 'effect', effectId: 'synth/gradient', name: 'Second',
                 })
+                // An effect layer duplicates as a live effect layer; a raster
+                // layer duplicates as a new image.
+                if (command === 'duplicateLayer') {
+                    await window.LayersAgent.rasterizeLayer({ layerId: app._layers[1].id })
+                }
                 const ids = app._layers.map(layer => layer.id)
                 app._onlineAdapter = { isOnline: () => true, schedulePublish() {} }
                 const envelope = await window.LayersAgent[command]({ layerId: ids[1], layerIds: ids })

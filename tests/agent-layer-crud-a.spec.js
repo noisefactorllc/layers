@@ -6,7 +6,7 @@ import { reopenNewProjectDialog } from './helpers/new-project.js'
 // file instead of pinning all of it to one runner.
 test.describe.configure({ mode: 'parallel' })
 
-async function bootApp(page) {
+async function bootApp(page, { width = '512' } = {}) {
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
     await page.evaluate(async () => { await window.LayersAgent.ready })
@@ -16,7 +16,7 @@ async function bootApp(page) {
     // 512 preset: quarters the composited frame cost on software-rendered CI
     // shards (same capacity trim as the other dialog-booting agent suites);
     // this suite reads no absolute canvas coordinates.
-    await page.click('.size-preset[data-width="512"]')
+    await page.click(`.size-preset[data-width="${width}"]`)
     await page.click('.canvas-size-dialog .action-btn.primary')
     await page.waitForSelector('.open-dialog-backdrop.visible', { state: 'hidden', timeout: 5000 })
 }
@@ -34,26 +34,57 @@ test.describe('duplicateLayer', () => {
         expect(after).toBe(2)
     })
 
-    test('duplicating a Blur effect layer on a canvas larger than its preview adds the copy above it', async ({ page }) => {
-        // Above a megapixel the preview renders smaller than the canvas, so
-        // the copy's pixels come from a full-resolution render, which first
-        // certifies the GPU memory of every texture in the effect graph.
-        // Blur's working texture names its format the WebGPU way, rgba8unorm.
-        await bootApp(page)
+    test('duplicating a Blur effect layer on the default 1920x1080 canvas copies the effect layer above it', async ({ page }) => {
+        await bootApp(page, { width: '1920' })
         const result = await page.evaluate(async () => {
-            const project = await window.LayersAgent.newProject({ width: 1200, height: 900 })
             const added = await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'filter/blur', name: 'Demo blur' })
+            const edited = await window.LayersAgent.setLayerEffectParams({
+                layerId: added.result.layerId, params: { radiusX: 12, radiusY: 3 },
+            })
             const duplicated = await window.LayersAgent.duplicateLayer({ layerId: added.result.layerId })
-            const pipeline = window.layersApp._renderer._renderer.pipeline
-            return { project, added, duplicated, preview: [pipeline.width, pipeline.height] }
+            return { added, edited, duplicated }
         })
-        expect(result.project.ok).toBe(true)
-        expect(result.added.ok).toBe(true)
-        expect(result.preview[0] * result.preview[1]).toBeLessThan(1200 * 900)
+        expect(result.edited.ok).toBe(true)
         expect(result.duplicated.error ?? null).toBe(null)
         expect(result.duplicated.ok).toBe(true)
-        expect(result.duplicated.state.layers.map(layer => layer.name)).toEqual(['Demo blur', 'Demo blur copy'])
-        expect(result.duplicated.result.layerId).toBe(result.duplicated.state.layers[1].id)
+
+        const layers = result.duplicated.state.layers
+        const original = layers.find(layer => layer.id === result.added.result.layerId)
+        const copy = layers.find(layer => layer.id === result.duplicated.result.layerId)
+        expect(layers.map(layer => layer.name)).toEqual(['Solid', 'Demo blur', 'Demo blur copy'])
+        expect(layers.indexOf(copy)).toBe(layers.indexOf(original) + 1)
+        expect(copy.sourceType).toBe('effect')
+        expect(copy.effect.id).toBe('filter/blur')
+        expect(copy.effect.params).toEqual(original.effect.params)
+        expect(copy.effect.params.radiusX).toBe(12)
+    })
+
+    test('undo and redo of an effect layer duplicate restore the live copy', async ({ page }) => {
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const added = await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'filter/blur', name: 'Demo blur' })
+            await window.LayersAgent.setLayerEffectParams({ layerId: added.result.layerId, params: { radiusX: 12 } })
+            const duplicated = await window.LayersAgent.duplicateLayer({ layerId: added.result.layerId })
+            const undone = await window.LayersAgent.undo()
+            const redone = await window.LayersAgent.redo()
+            const summary = env => env.state.layers.map(layer => ({
+                name: layer.name, sourceType: layer.sourceType,
+                effectId: layer.effect?.id ?? null, radiusX: layer.effect?.params?.radiusX ?? null,
+            }))
+            return {
+                ok: [added.ok, duplicated.ok, undone.ok, redone.ok],
+                undone: summary(undone), redone: summary(redone),
+                renderedCopy: window.layersApp._renderer.layers.some(layer => layer.id === duplicated.result.layerId),
+            }
+        })
+        expect(result.ok).toEqual([true, true, true, true])
+        expect(result.undone.map(layer => layer.name)).toEqual(['Solid', 'Demo blur'])
+        expect(result.redone).toEqual([
+            expect.objectContaining({ name: 'Solid' }),
+            { name: 'Demo blur', sourceType: 'effect', effectId: 'filter/blur', radiusX: 12 },
+            { name: 'Demo blur copy', sourceType: 'effect', effectId: 'filter/blur', radiusX: 12 },
+        ])
+        expect(result.renderedCopy).toBe(true)
     })
 
     test('duplicateLayer returns NOT_FOUND_LAYER for missing id', async ({ page }) => {

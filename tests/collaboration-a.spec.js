@@ -543,6 +543,43 @@ test('undo and redo reach the session instead of sitting local', async ({ page, 
         .toBe('filter/blur')
 })
 
+test('a duplicated effect layer reaches the session as a live effect layer', async ({ page, context }) => {
+    const pageA = page
+    const pageB = await context.newPage()
+    await preparePage(pageA)
+    await preparePage(pageB)
+
+    await gotoApp(pageA)
+    await createProject(pageA, 'solid', 128)
+    const sessionId = await takeOnline(pageA)
+
+    await gotoApp(pageB)
+    await createProject(pageB, 'solid', 128)
+    await joinById(pageB, sessionId)
+    await expect.poll(() => layersState(pageB).then(l => l.length), { timeout: 60000 }).toBe(1)
+
+    const duplicated = await pageA.evaluate(async () => {
+        const added = await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'filter/blur', name: 'Demo blur' })
+        await window.LayersAgent.setLayerEffectParams({ layerId: added.result.layerId, params: { radiusX: 12 } })
+        const copy = await window.LayersAgent.duplicateLayer({ layerId: added.result.layerId })
+        return { ok: copy.ok, error: copy.error ?? null, copyId: copy.result?.layerId }
+    })
+    expect(duplicated.error).toBe(null)
+    expect(duplicated.ok).toBe(true)
+
+    const peerCopy = () => pageB.evaluate((id) => {
+        const layers = window.layersApp._layers
+        const layer = layers.find(l => l.id === id)
+        return layer ? {
+            index: layers.indexOf(layer), name: layer.name, sourceType: layer.sourceType,
+            effectId: layer.effectId, radiusX: layer.effectParams?.radiusX,
+        } : null
+    }, duplicated.copyId)
+    await expect.poll(peerCopy, { timeout: 60000 }).toEqual({
+        index: 2, name: 'Demo blur copy', sourceType: 'effect', effectId: 'filter/blur', radiusX: 12,
+    })
+})
+
 test('read-only edits are held and published when write access returns', async ({ page, context }) => {
     const pageA = page
     const pageB = await context.newPage()

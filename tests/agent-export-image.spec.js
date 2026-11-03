@@ -84,6 +84,28 @@ test.describe('exportImage', () => {
         expect(result.pixel[3]).toBeGreaterThan(240)
     })
 
+    test('exports a Blur effect layer from a canvas larger than its preview', async ({ page }) => {
+        // Above a megapixel the preview renders smaller than the canvas, so the
+        // export renders the graph at full resolution after certifying the GPU
+        // memory of every texture in it. Blur names its working texture's
+        // format the WebGPU way, rgba8unorm.
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const project = await window.LayersAgent.newProject({ width: 1200, height: 900 })
+            const added = await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'filter/blur', name: 'Demo blur' })
+            const pipeline = window.layersApp._renderer._renderer.pipeline
+            const exported = await window.LayersAgent.exportImage({ format: 'png', triggerDownload: false })
+            return { project: project.ok, added: added.ok, preview: [pipeline.width, pipeline.height], exported }
+        })
+        expect(result.project).toBe(true)
+        expect(result.added).toBe(true)
+        expect(result.preview[0] * result.preview[1]).toBeLessThan(1200 * 900)
+        expect(result.exported.error ?? null).toBe(null)
+        expect(result.exported.ok).toBe(true)
+        expect(result.exported.result.width).toBe(1200)
+        expect(result.exported.result.height).toBe(900)
+    })
+
     test('exports JPG with custom quality', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() =>
