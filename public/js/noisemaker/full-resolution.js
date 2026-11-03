@@ -126,8 +126,11 @@ export async function createFullResolutionCapture(owner, {
         // This deliberately overestimates fixed storage rather than guessing
         // effect-specific sampling, volume or parameter-dependent dimensions.
         const ratio = Math.max(1, width / pipeline.width, height / pipeline.height)
+        // Definitions may spell a format the WebGPU way; the engine takes
+        // these spellings as the same WebGL2 formats.
         const formatBytes = { r8: 1, rg8: 2, rgba8: 4, r16f: 2, rg16f: 4, rgba16f: 8,
-            r32f: 4, rg32f: 8, rgba32f: 16 }
+            r32f: 4, rg32f: 8, rgba32f: 16,
+            r8unorm: 1, rgba8unorm: 4, r16float: 2, rgba16float: 8, r32float: 4, rgba32float: 16 }
         estimate = sourceBytes + renderWidth * renderHeight * 8
         for (const texture of textures.values()) {
             const bytes = formatBytes[texture.format]

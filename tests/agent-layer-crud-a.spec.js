@@ -34,6 +34,28 @@ test.describe('duplicateLayer', () => {
         expect(after).toBe(2)
     })
 
+    test('duplicating a Blur effect layer on a canvas larger than its preview adds the copy above it', async ({ page }) => {
+        // Above a megapixel the preview renders smaller than the canvas, so
+        // the copy's pixels come from a full-resolution render, which first
+        // certifies the GPU memory of every texture in the effect graph.
+        // Blur's working texture names its format the WebGPU way, rgba8unorm.
+        await bootApp(page)
+        const result = await page.evaluate(async () => {
+            const project = await window.LayersAgent.newProject({ width: 1200, height: 900 })
+            const added = await window.LayersAgent.addLayer({ kind: 'effect', effectId: 'filter/blur', name: 'Demo blur' })
+            const duplicated = await window.LayersAgent.duplicateLayer({ layerId: added.result.layerId })
+            const pipeline = window.layersApp._renderer._renderer.pipeline
+            return { project, added, duplicated, preview: [pipeline.width, pipeline.height] }
+        })
+        expect(result.project.ok).toBe(true)
+        expect(result.added.ok).toBe(true)
+        expect(result.preview[0] * result.preview[1]).toBeLessThan(1200 * 900)
+        expect(result.duplicated.error ?? null).toBe(null)
+        expect(result.duplicated.ok).toBe(true)
+        expect(result.duplicated.state.layers.map(layer => layer.name)).toEqual(['Demo blur', 'Demo blur copy'])
+        expect(result.duplicated.result.layerId).toBe(result.duplicated.state.layers[1].id)
+    })
+
     test('duplicateLayer returns NOT_FOUND_LAYER for missing id', async ({ page }) => {
         await bootApp(page)
         const env = await page.evaluate(() =>
