@@ -70,9 +70,10 @@ edit together in real time. Only Layers sessions are supported. Layers
 cannot open a session from another Seance-connected app. Those apps cannot
 open Layers sessions either.
 
-Shared sessions do not support media layers (images/video clips) yet.
-Their bytes live only in your browser's local storage. Remove any media
-layers before you take a composition online.
+Shared sessions include image layers: Layers sends each image's original
+file to the session. Video layers and effects confined to a selection
+(effect masks) are not supported in shared sessions yet. Remove them before
+you take a composition online.
 
 ## Third-Party Libraries
 
