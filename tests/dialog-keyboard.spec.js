@@ -107,5 +107,5 @@ test('Canvas Size: Enter on an anchor button keeps confirmation behavior', async
     await expect(page.locator(config.selector)).toBeHidden()
     await appState(page, () => !window.layersApp._projectLifecycleActive)
     expect((await projectState(page)).dimensions).toEqual([640, 256])
-    expect(await page.evaluate(() => [window.layersApp._layers[0].offsetX, window.layersApp._layers[0].offsetY])).toEqual([192, 0])
+    expect(await page.evaluate(() => [window.layersApp._layers[0].offsetX, window.layersApp._layers[0].offsetY])).toEqual([0, 0])
 })

@@ -8110,31 +8110,23 @@ class LayersApp {
         const deltaW = newWidth - oldWidth
         const deltaH = newHeight - oldHeight
 
-        // Calculate offset based on anchor
-        let shiftX = 0, shiftY = 0
-
-        // Horizontal positioning
-        if (anchor.includes('center') && !anchor.includes('left') && !anchor.includes('right')) {
-            shiftX = Math.round(deltaW / 2)
-        } else if (anchor.includes('right')) {
-            shiftX = deltaW
-        }
-        // else left: shiftX = 0
-
-        // Vertical positioning
-        if (anchor === 'center' || anchor.includes('middle')) {
-            shiftY = Math.round(deltaH / 2)
-        } else if (anchor.includes('bottom')) {
-            shiftY = deltaH
-        }
-        // else top: shiftY = 0
+        // Content shift in canvas pixels. The dialog names the edge anchors
+        // top-center and middle-left; the agent command names them top and left.
+        const parts = anchor.split('-')
+        const shiftX = parts.includes('left') ? 0
+            : parts.includes('right') ? deltaW
+                : Math.round(deltaW / 2)
+        const shiftY = parts.includes('top') ? 0
+            : parts.includes('bottom') ? deltaH
+                : Math.round(deltaH / 2)
 
         const layers = this._cloneLayers(this._layers)
 
-        // Adjust all layer offsets
+        // Layer offsets are relative to the canvas center, which itself moves
+        // by half the size change.
         for (const layer of layers) {
-            layer.offsetX = (layer.offsetX || 0) + shiftX
-            layer.offsetY = (layer.offsetY || 0) + shiftY
+            layer.offsetX = (layer.offsetX || 0) + shiftX - deltaW / 2
+            layer.offsetY = (layer.offsetY || 0) + shiftY - deltaH / 2
         }
 
         // Reposition masks onto new canvas dimensions
