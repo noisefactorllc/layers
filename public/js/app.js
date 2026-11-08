@@ -2699,10 +2699,12 @@ class LayersApp {
      * @param {ImageData} mask
      * @param {number} width
      * @param {number} height
+     * @param {{smoothing?: boolean}} [options] - smoothing false keeps every
+     *   mask pixel hard-edged
      * @returns {ImageData}
      * @private
      */
-    _maskAtCanvasSize(mask, width, height) {
+    _maskAtCanvasSize(mask, width, height, { smoothing = true } = {}) {
         if (mask.width === width && mask.height === height) return mask
         const source = document.createElement('canvas')
         source.width = mask.width
@@ -2712,6 +2714,7 @@ class LayersApp {
         scaled.width = width
         scaled.height = height
         const ctx = scaled.getContext('2d')
+        ctx.imageSmoothingEnabled = smoothing
         ctx.drawImage(source, 0, 0, width, height)
         return ctx.getImageData(0, 0, width, height)
     }
@@ -7958,6 +7961,14 @@ class LayersApp {
                     const ctx = resizedCanvas.getContext('2d')
                     ctx.drawImage(tempCanvas, 0, 0, newWidth, newHeight)
                     layer.mask = ctx.getImageData(0, 0, newWidth, newHeight)
+                }
+                // A child effect's mask is the selection it captured: resample it
+                // with the image, hard-edged, so it covers the same part of it.
+                for (const child of layer.children || []) {
+                    if (child.mask) {
+                        child.mask = this._maskAtCanvasSize(
+                            child.mask, newWidth, newHeight, { smoothing: false })
+                    }
                 }
             }
 
