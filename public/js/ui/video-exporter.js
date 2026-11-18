@@ -46,7 +46,7 @@ async function runVideoExportInner(opts) {
     let captureSession = null
     const videos = typeof renderer.getVideoMediaIterator === 'function'
         ? [...renderer.getVideoMediaIterator()].map(({ videoElement, duration }) => ({
-            element: videoElement, duration, currentTime: videoElement.currentTime, paused: videoElement.paused,
+            element: videoElement, duration, currentTime: videoElement.currentTime, paused: videoElement.paused, loop: videoElement.loop,
         })) : []
     if (videos.some(video => !Number.isFinite(video.duration) || video.duration <= 0)) {
         const error = new Error('Video export requires a finite source duration. Reimport a seekable video file with duration metadata.')
@@ -67,7 +67,14 @@ async function runVideoExportInner(opts) {
             stopRequested = true
             renderer.stop()
         }
-        for (const video of videos) video.element.pause()
+        // Hold each video paused and not looping while frames are captured. A
+        // paused seek into a looping video's last frame can make the engine
+        // treat it as the end and loop back to the start (WebKitGTK does), so
+        // the frame captured after `seeked` would be the first one.
+        for (const video of videos) {
+            video.element.pause()
+            video.element.loop = false
+        }
         if (captureOriginal) {
             exportCanvas = document.createElement('canvas')
             exportCanvas.width = settings.width
@@ -248,6 +255,7 @@ async function runVideoExportInner(opts) {
             await attemptRestore(() => renderer.render(pausedNormalizedTime))
         }
         for (const video of videos) {
+            video.element.loop = video.loop
             if (!video.paused) await attemptRestore(() => video.element.play())
         }
         if (restoreError) throw restoreError

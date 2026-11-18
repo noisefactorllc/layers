@@ -83,20 +83,24 @@ test('current-position video export freezes native video frames and restores the
         const { runVideoExport } = await import('/js/ui/video-exporter.js')
         const canvas=document.createElement('canvas'); canvas.width=64; canvas.height=64
         const video=new EventTarget(); let currentTime=2.25
-        Object.assign(video,{paused:false,seeking:false,pause(){this.paused=true},async play(){this.paused=false}})
+        let playedLooping=null
+        Object.assign(video,{paused:false,seeking:false,loop:true,pause(){this.paused=true},async play(){playedLooping=this.loop;this.paused=false}})
         Object.defineProperty(video,'currentTime',{get:()=>currentTime,set(value){currentTime=value;video.seeking=true;queueMicrotask(()=>{video.seeking=false;video.dispatchEvent(new Event('seeked'))})}})
         const captures=[]
         const renderer={isRunning:false,getPausedNormalizedTime:()=>0.25,updateVideoTextures(){},render(){},
             *getVideoMediaIterator(){yield{videoElement:video,duration:5}},
-            renderFullResolution:async()=>{captures.push({time:video.currentTime,paused:video.paused});return canvas}}
+            renderFullResolution:async()=>{captures.push({time:video.currentTime,paused:video.paused,loop:video.loop});return canvas}}
         const files={saveZip(){},addZipFrame(){},async endRecordingZip(){},cancelZIP(){}}
         await runVideoExport({settings:{width:64,height:64,framerate:2,duration:1,loopCount:1,format:'zip',playFrom:'current'},
             canvas,renderer,files,getResolution:()=>({width:64,height:64}),setResolution(){}})
-        return {captures,time:video.currentTime,paused:video.paused}
+        return {captures,time:video.currentTime,paused:video.paused,loop:video.loop,playedLooping}
     })
-    expect(result.captures).toEqual([{time:2.25,paused:true},{time:2.75,paused:true}])
+    // Frames are captured from a paused video that does not loop; looping and playback come back after.
+    expect(result.captures).toEqual([{time:2.25,paused:true,loop:false},{time:2.75,paused:true,loop:false}])
     expect(result.time).toBe(2.25)
     expect(result.paused).toBe(false)
+    expect(result.loop).toBe(true)
+    expect(result.playedLooping).toBe(true)
 })
 
 for (const duration of [Infinity, NaN, 0, -1]) {
@@ -138,6 +142,10 @@ test('reused native video capture preserves original single-pixel detail and ref
         if (!app._layers.length) throw new Error('Native video fixture did not import')
         const media = app._renderer.getMediaInfo(app._layers[0].id)
         const video = media.videoElement; video.pause()
+        // The test seeks the shared video itself, as the exporter does, so it
+        // holds it as the exporter does: paused and not looping. A paused seek
+        // into a looping video's last frame can loop back to the start (WebKitGTK).
+        video.loop = false
         const seek = time => new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error('Native fixture seek timed out')), 10000)
             video.addEventListener('seeked', () => { clearTimeout(timer); resolve() }, { once: true })
