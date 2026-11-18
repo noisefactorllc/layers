@@ -28,6 +28,12 @@ on:
         required: false
         default: false
         type: boolean
+      replay_mode:
+        description: 'Seek replay setup: the spec''s own path, the same with requestVideoFrameCallback armed, or one browser shared by every run'
+        required: false
+        default: spec-path
+        type: choice
+        options: [spec-path, with-rvfc, shared-browser]
 
 permissions:
   contents: read
@@ -137,120 +143,160 @@ jobs:
             npx playwright test "$SPEC" --project=chromium --retries=0 --repeat-each="$REPEAT_EACH"
           fi
       - name: Replay the native video seek with a log for each seek
-        # Each run logs, per seek: the video's state when seeked fires, the
-        # requestVideoFrameCallback firings, the drawImage tries the reference
-        # frame needed and every row drawn. The page reaches only its own
-        # server on loopback, as the app's pages do in the specs.
+        # The replay follows the spec's own path, a fresh browser for each run,
+        # and logs for each seek the video's state when seeked fires, every
+        # change in what drawImage drew and the media events. replay_mode
+        # turns on requestVideoFrameCallback or one shared browser instead.
+        # The page reaches only its own server on loopback.
         if: ${{ always() && inputs.seek_replay }}
         env:
           WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS: '1'
           DIAG_HEADED: '1'
+          REPLAY_MODE: ${{ inputs.replay_mode }}
         run: |
           set -euo pipefail
           mkdir -p test-results
-          cat > "$RUNNER_TEMP/diag.mjs" <<'EOF'
-          // Diagnostic replay of tests/video-full-resolution.spec.js:122: per seek,
-          // the video's state at seeked, requestVideoFrameCallback firings, the
-          // drawImage tries the reference needed (the spec allows 50, 100 ms apart),
-          // every distinct row drawn, and media events. Loopback: dev server only.
+          case "$REPLAY_MODE" in
+            spec-path) ;;
+            with-rvfc) export DIAG_RVFC=1 ;;
+            shared-browser) export DIAG_SHARED=1 ;;
+            *) echo "::error::unknown replay_mode"; exit 1 ;;
+          esac
+          cat > "$RUNNER_TEMP/diag-v2.mjs" <<'EOF'
+          // Diagnostic replay v2 of layers tests/video-full-resolution.spec.js:122,
+          // following the spec's own path: a fresh persistent browser per run (as the
+          // Layers test fixture gives WebKit), the spec's evaluate code in the spec's
+          // order, and no requestVideoFrameCallback unless DIAG_RVFC=1 asks for it.
+          // Observation is passive: what each drawImage try drew, the video's state at
+          // seeked and at the end, and the media events in between. A run stops at the
+          // first reference that never matches, as the spec does, and reports it.
+          //
+          //   node diag-v2.mjs <layers checkout> <dev server URL> <runs>
+          //   DIAG_HEADED=1  headed (CI runs WebKit headed under xvfb-run)
+          //   DIAG_RVFC=1    also arm requestVideoFrameCallback (v1's extra step)
+          //   DIAG_SHARED=1  one shared browser with a new context per run (v1's setup)
           import { createRequire } from 'node:module'
           import { readFileSync } from 'node:fs'
           import { join, resolve } from 'node:path'
-          const [layersDir, baseURL, runsArg, engine = 'webkit', parallelArg = '1'] = process.argv.slice(2)
+
+          const [layersDir, baseURL, runsArg] = process.argv.slice(2)
           const root = resolve(layersDir)
-          const pw = createRequire(join(root, 'package.json'))('playwright')
-          const runs = Number(runsArg || 10)
-          const parallel = Math.max(1, Number(parallelArg))
+          const { webkit } = createRequire(join(root, 'package.json'))('playwright')
+          const runs = Number(runsArg || 30)
+          const headless = process.env.DIAG_HEADED !== '1'
+          const armRvfc = process.env.DIAG_RVFC === '1'
+          const shared = process.env.DIAG_SHARED === '1'
           const devPort = new URL(baseURL).port
           const LOOPBACK = /^(?:https?|wss?):\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::(\d+))?\//
           const fixture = readFileSync(join(root, 'tests/fixtures/native-video-detail.webm')).toString('base64')
-          async function replay(browser) {
-              const context = await browser.newContext()
+
+          async function guard(context) {
               await context.route(LOOPBACK, (r) => (LOOPBACK.exec(r.request().url())[1] || '80') === devPort ? r.continue() : r.abort('connectionrefused'))
               await context.routeWebSocket(LOOPBACK, (ws) => ws.close())
-              try {
-                  const page = await context.newPage()
-                  await page.goto(baseURL, { waitUntil: 'networkidle' })
-                  return await page.evaluate(async (base64) => {
-                      const app = window.layersApp
-                      const source = document.createElement('canvas'); source.width = 1800; source.height = 1200
-                      const ctx = source.getContext('2d')
-                      const file = new File([Uint8Array.from(atob(base64), c => c.charCodeAt(0))], 'native-detail.webm', { type: 'video/webm' })
-                      await app._handleOpenMedia(file, 'video'); app._renderer.stop()
-                      const video = app._renderer.getMediaInfo(app._layers[0].id).videoElement
-                      const state = () => ({ t: +video.currentTime.toFixed(3), paused: video.paused, seeking: video.seeking, ready: video.readyState, connected: video.isConnected })
-                      const afterImport = state()
-                      video.pause()
-                      const events = []
-                      for (const type of ['seeking', 'seeked', 'pause', 'play', 'playing', 'waiting', 'stalled', 'suspend', 'emptied']) {
-                          video.addEventListener(type, () => events.push(`${type}@${video.currentTime.toFixed(3)}`))
-                      }
-                      let vfc = 0, lastMediaTime = null
-                      const onFrame = (_now, meta) => { vfc++; lastMediaTime = meta.mediaTime; video.requestVideoFrameCallback?.(onFrame) }
-                      video.requestVideoFrameCallback?.(onFrame)
-                      const seek = time => new Promise((ok, fail) => {
-                          const timer = setTimeout(() => fail(new Error('seek timed out')), 10000)
-                          video.addEventListener('seeked', () => { clearTimeout(timer); ok() }, { once: true })
-                          video.currentTime = time
-                      })
+          }
+
+          async function replay(context) {
+              const page = context.pages()[0] ?? await context.newPage()
+              await page.goto(baseURL, { waitUntil: 'networkidle' })
+              return page.evaluate(async ({ base64, armRvfc }) => {
+                  // The spec's code, in the spec's order, with passive logging added.
+                  const app = window.layersApp
+                  const bootAtStart = app._initialized === true
+                  const source = document.createElement('canvas'); source.width = 1800; source.height = 1200
+                  const ctx = source.getContext('2d')
+                  const file = new File([Uint8Array.from(atob(base64), c => c.charCodeAt(0))], 'native-detail.webm', { type: 'video/webm' })
+                  await app._handleOpenMedia(file, 'video'); app._renderer.stop()
+                  if (!app._layers.length) throw new Error('Native video fixture did not import')
+                  const media = app._renderer.getMediaInfo(app._layers[0].id)
+                  const video = media.videoElement
+                  // Passive checks for a boot that finishes during the import: is the app
+                  // initialized, how many layers are there, and does the renderer still
+                  // hold this same video element with its source?
+                  const holds = () => app._layers.length > 0 && app._renderer.getMediaInfo(app._layers[0].id)?.videoElement === video
+                  const state = () => ({ t: +video.currentTime.toFixed(3), paused: video.paused, seeking: video.seeking, ready: video.readyState, net: video.networkState,
+                      src: !!video.currentSrc, err: video.error?.code ?? null, boot: app._initialized === true, layers: app._layers.length, holds: holds() })
+                  const afterImport = state()
+                  video.pause()
+                  const events = []
+                  for (const type of ['seeking', 'seeked', 'pause', 'play', 'playing', 'waiting', 'stalled', 'suspend', 'emptied', 'timeupdate']) {
+                      video.addEventListener(type, () => events.push(`${type}@${video.currentTime.toFixed(3)}`))
+                  }
+                  let vfc = 0
+                  if (armRvfc) { const onFrame = () => { vfc++; video.requestVideoFrameCallback?.(onFrame) }; video.requestVideoFrameCallback?.(onFrame) }
+                  const seek = time => new Promise((resolve, reject) => {
+                      const timer = setTimeout(() => reject(new Error('Native fixture seek timed out')), 10000)
+                      video.addEventListener('seeked', () => { clearTimeout(timer); resolve() }, { once: true })
+                      video.currentTime = time
+                  })
+                  if (!Number.isFinite(video.duration) || video.duration <= 0) throw new Error('Native fixture duration was not resolved')
+                  const Original = app._renderer.constructor
+                  app._renderer.constructor = class extends Original { constructor(...args) { super(...args) } }
+                  const session = await app._renderer.createFullResolutionCapture()
+                  const log = { bootAtStart, afterImport, seeks: [], vfc: 0 }
+                  try {
                       const darkAt = (row, i) => row[i] < 50 && row[i + 1] < 50 && row[i + 2] < 50
                       const brightAt = (row, i) => row[i] > 200 && row[i + 1] > 200 && row[i + 2] > 200
-                      const session = await app._renderer.createFullResolutionCapture()
-                      const log = { afterImport, duration: video.duration, seeks: [] }
-                      try {
-                          for (const time of [0.2, 0.9]) {
-                              const vfcBefore = vfc
-                              events.length = 0
-                              const t0 = performance.now()
-                              await seek(time)
-                              const atSeeked = { ...state(), ms: Math.round(performance.now() - t0), vfc: vfc - vfcBefore }
-                              const darkIndex = time < 0.55 ? 4 : 8
-                              let tries = 0, row = null, ok = false
-                              const rowsSeen = new Set()
-                              for (; tries < 50 && !ok; tries++) {
-                                  ctx.clearRect(0, 0, 1800, 1200); ctx.drawImage(video, 0, 0)
-                                  row = [...ctx.getImageData(899, 600, 4, 1).data]
-                                  rowsSeen.add([row[0], row[4], row[8], row[12]].join(','))
-                                  ok = darkIndex === 4 ? darkAt(row, 4) && brightAt(row, 0) && brightAt(row, 8) : darkAt(row, 8) && brightAt(row, 0) && brightAt(row, 4)
-                                  if (!ok) await new Promise(r => setTimeout(r, 100))
-                              }
-                              log.seeks.push({ time, atSeeked, tries, ok, row: [row[0], row[4], row[8], row[12]], rowsSeen: [...rowsSeen], end: state(), vfc: vfc - vfcBefore, lastMediaTime, events: [...events] })
-                              if (!ok) break
-                              await session.render(time / video.duration)
+                      for (const time of [0.2, 0.9]) {
+                          events.length = 0
+                          const t0 = performance.now()
+                          await seek(time)
+                          const atSeeked = { ...state(), ms: Math.round(performance.now() - t0) }
+                          const darkIndex = time < 0.55 ? 4 : 8
+                          let expected = null, attempt = 0
+                          const seen = []
+                          for (; attempt < 50 && !expected; attempt++) {
+                              ctx.clearRect(0, 0, 1800, 1200); ctx.drawImage(video, 0, 0)
+                              const row = [...ctx.getImageData(899, 600, 4, 1).data]
+                              const key = [row[0], row[4], row[8], row[12], row[3]].join(',')
+                              if (seen[seen.length - 1]?.key === key) seen[seen.length - 1].n++
+                              else seen.push({ key, n: 1, at: Math.round(performance.now() - t0) })
+                              if (darkIndex === 4
+                                  ? darkAt(row, 4) && brightAt(row, 0) && brightAt(row, 8)
+                                  : darkAt(row, 8) && brightAt(row, 0) && brightAt(row, 4)) expected = row
+                              else await new Promise(resolve => setTimeout(resolve, 100))
                           }
-                      } finally { await session.dispose() }
-                      return log
-                  }, fixture)
-              } finally {
-                  await context.close()
-              }
+                          log.seeks.push({ time, ok: !!expected, tries: attempt, atSeeked, end: state(), seen, events: [...events] })
+                          if (!expected) break
+                          await session.render(time / video.duration)
+                      }
+                  } finally { await session.dispose(); app._renderer.constructor = Original }
+                  log.vfc = vfc
+                  return log
+              }, { base64: fixture, armRvfc })
           }
-          const browser = await pw[engine].launch({ headless: process.env.DIAG_HEADED !== '1' })
+
           let failed = 0
+          const sharedBrowser = shared ? await webkit.launch({ headless }) : null
           try {
-              for (let run = 0; run < runs; run += parallel) {
-                  const batch = Array.from({ length: Math.min(parallel, runs - run) }, (_, i) => replay(browser)
-                      .then((log) => ({ run: run + i, log }), (error) => ({ run: run + i, error: error.message })))
-                  for (const { run: n, log, error } of await Promise.all(batch)) {
-                      const ok = !error && log.seeks.every((s) => s.ok)
+              for (let run = 0; run < runs; run++) {
+                  // The Layers fixture gives each WebKit test a fresh persistent profile, so a fresh browser.
+                  const context = shared ? await sharedBrowser.newContext() : await webkit.launchPersistentContext('', { headless })
+                  try {
+                      await guard(context)
+                      const log = await replay(context)
+                      const ok = log.seeks.length === 2 && log.seeks.every((s) => s.ok)
                       if (!ok) failed++
-                      console.log(`${ok ? 'OK  ' : 'FAIL'} run ${n}: ${JSON.stringify(error ? { error } : log)}`)
+                      console.log(`${ok ? 'OK  ' : 'FAIL'} run ${run}: ${JSON.stringify(log)}`)
+                  } catch (error) {
+                      failed++
+                      console.log(`FAIL run ${run}: ${JSON.stringify({ error: error.message.split('\n')[0] })}`)
+                  } finally {
+                      await context.close()
                   }
               }
           } finally {
-              await browser.close()
+              await sharedBrowser?.close()
           }
-          console.log(`runs ${runs}, failed ${failed}, engine ${engine}, headed ${process.env.DIAG_HEADED === '1'}, parallel ${parallel}`)
+          console.log(`runs ${runs}, failed ${failed}, headed ${!headless}, rvfc ${armRvfc}, browser ${shared ? 'shared' : 'fresh persistent per run'}`)
           process.exitCode = failed ? 1 : 0
           EOF
           npx --no-install http-server public -a 127.0.0.1 -p 3102 -c-1 > test-results/diag-server.log 2>&1 &
           server=$!
           for _ in $(seq 1 30); do curl -sf http://127.0.0.1:3102/ > /dev/null && break; sleep 1; done
           status=0
-          xvfb-run -a node "$RUNNER_TEMP/diag.mjs" "$PWD" http://localhost:3102/ 30 webkit 1 > test-results/diag-webkit-parallel1.log 2>&1 || status=1
-          xvfb-run -a node "$RUNNER_TEMP/diag.mjs" "$PWD" http://localhost:3102/ 30 webkit 2 > test-results/diag-webkit-parallel2.log 2>&1 || status=1
+          xvfb-run -a node "$RUNNER_TEMP/diag-v2.mjs" "$PWD" http://localhost:3102/ "$REPEAT_EACH" > test-results/diag-v2-webkit.log 2>&1 || status=1
           kill "$server"
-          tail -n 1 test-results/diag-webkit-parallel1.log test-results/diag-webkit-parallel2.log
+          tail -n 1 test-results/diag-v2-webkit.log
           exit "$status"
       - name: Preserve browser evidence
         if: always()
