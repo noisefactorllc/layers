@@ -94,7 +94,7 @@ class OpenDialog {
         this._modal.innerHTML = `
             <div class="dialog-header">
                 <h2>New Project</h2>
-                <button class="dialog-close hidden" title="Cancel">
+                <button class="dialog-close hidden tooltip" data-title="Cancel">
                     <span class="icon-material">close</span>
                 </button>
             </div>

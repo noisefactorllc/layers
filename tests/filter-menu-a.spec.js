@@ -272,7 +272,7 @@ test.describe('Filter menu', () => {
             elements.map(element => {
                 const rect = element.getBoundingClientRect()
                 return {
-                    label: element.textContent.trim() || element.getAttribute('title'),
+                    label: element.textContent.trim() || element.getAttribute('data-title'),
                     left: rect.left,
                     right: rect.right,
                     top: rect.top,
@@ -303,7 +303,7 @@ test.describe('Filter menu', () => {
                         rect.left + rect.width / 2, rect.top + rect.height / 2)
                     return element.contains(hit)
                         ? []
-                        : [element.textContent.trim() || element.getAttribute('title') || 'logo']
+                        : [element.textContent.trim() || element.getAttribute('data-title') || 'logo']
                 }))
             expect(blockedControls).toEqual([])
 

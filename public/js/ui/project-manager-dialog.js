@@ -204,7 +204,7 @@ class ProjectManagerDialog {
                     <div class="project-item-name">${this._escapeHtml(project.name)}</div>
                     <div class="project-item-date">${this._formatDate(project.modifiedAt)}</div>
                 </div>
-                <button class="project-item-delete" data-id="${project.id}" title="Delete project">
+                <button class="project-item-delete tooltip" data-id="${project.id}" data-title="Delete project">
                     <span class="icon-material">delete</span>
                 </button>
             </div>

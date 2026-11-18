@@ -312,13 +312,15 @@ test.describe('Layer keyboard interaction', () => {
         const row = page.locator(`layer-item[data-layer-id="${topId}"]`)
 
         const handle = row.locator('.layer-drag-handle')
-        for (const attr of ['data-title', 'title', 'aria-label']) {
+        await expect(handle).not.toHaveAttribute('title')
+        for (const attr of ['data-title', 'aria-label']) {
             await expect(handle).toHaveAttribute(attr, /Drag to reorder/)
             await expect(handle).toHaveAttribute(attr, /Alt\+ArrowUp\/Down/)
         }
 
         await expect(row.locator('.layer-name'))
-            .toHaveAttribute('title', /Double-click or F2 to rename/)
+            .toHaveAttribute('data-title', /Double-click or F2 to rename/)
+        await expect(row.locator('.layer-name')).not.toHaveAttribute('title')
     })
 
     test('Alt+ArrowUp moves the focused layer toward the top of the stack', async ({ page }) => {
@@ -424,8 +426,8 @@ test.describe('Layer keyboard interaction', () => {
         const row = page.locator(`layer-item[data-layer-id="${middleId}"]`)
         const handle = row.locator('.layer-drag-handle')
 
-        // The documentation users see: the handle's tooltip (title,
-        // data-title and aria-label in lockstep), its accessible
+        // The documentation users see: the handle's tooltip (data-title and
+        // aria-label in lockstep, and no native title), its accessible
         // description, and the focusable row's aria-keyshortcuts and
         // accessible description.
         const doc = await page.evaluate((id) => {
@@ -440,11 +442,11 @@ test.describe('Layer keyboard interaction', () => {
                 keyshortcuts: item.getAttribute('aria-keyshortcuts'),
             }
         }, middleId)
-        expect(doc.dataTitle).toBe(doc.title)
-        expect(doc.ariaLabel).toBe(doc.title)
-        expect(doc.title).toContain('Drag to reorder')
+        expect(doc.title).toBeNull()
+        expect(doc.ariaLabel).toBe(doc.dataTitle)
+        expect(doc.dataTitle).toContain('Drag to reorder')
         for (const text of ['Enter', 'F2', 'Alt+ArrowUp/Down']) {
-            expect(doc.title, `handle tooltip names ${text}`).toContain(text)
+            expect(doc.dataTitle, `handle tooltip names ${text}`).toContain(text)
         }
         expect(doc.handleDescription).toBe(doc.rowDescription)
         for (const text of ['Enter', 'Space', 'F2', 'Alt+Up', 'Alt+Down']) {
@@ -456,7 +458,7 @@ test.describe('Layer keyboard interaction', () => {
         await handle.hover()
         const tooltipLayer = page.locator('#hf-tooltip-layer')
         await expect(tooltipLayer).toBeVisible({ timeout: 5000 })
-        await expect(tooltipLayer).toHaveText(doc.title)
+        await expect(tooltipLayer).toHaveText(doc.dataTitle)
         await page.mouse.move(0, 0)
         await expect(tooltipLayer).toBeHidden({ timeout: 5000 })
 

@@ -567,7 +567,8 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
         for (const c of controls) {
             expect(c.missing, `${c.sel} present`).toBeFalsy()
             expect(c.hasTooltip, `${c.sel} tooltip class`).toBe(true)
-            expect(c.dataTitle, `${c.sel} data-title matches title`).toBe(c.title)
+            expect(c.dataTitle, `${c.sel} data-title`).toBeTruthy()
+            expect(c.title, `${c.sel} has no native title`).toBeNull()
             expect(c.ariaLabel, `${c.sel} has aria-label`).toBeTruthy()
         }
 
@@ -635,7 +636,8 @@ test.describe('Handfish Design System CSS Token Compliance', () => {
             expect(btn.width, `${btn.id} width`).toBe(32)
             expect(btn.height, `${btn.id} height`).toBe(32)
             expect(btn.hasTooltip, `${btn.id} should have tooltip class`).toBe(true)
-            expect(btn.dataTitle, `${btn.id} data-title should match title`).toBe(btn.title)
+            expect(btn.dataTitle, `${btn.id} data-title`).toBeTruthy()
+            expect(btn.title, `${btn.id} has no native title`).toBeNull()
         }
 
         // 2. Handfish tooltip layer activates on hover

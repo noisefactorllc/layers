@@ -22,7 +22,7 @@ test.describe('Spacebar Pan Toggle and Hand Tool', () => {
     test('toolbar button #handToolBtn exists and activates pan tool on click', async ({ page }) => {
         const handBtn = page.locator('#handToolBtn')
         await expect(handBtn).toBeVisible()
-        await expect(handBtn).toHaveAttribute('title', /Hand Tool \(H\)/)
+        await expect(handBtn).toHaveAttribute('data-title', /Hand Tool \(H\)/)
 
         await handBtn.click()
         const tool = await page.evaluate(() => window.layersApp._currentTool)

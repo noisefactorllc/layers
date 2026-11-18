@@ -152,36 +152,36 @@ class LayerItem extends HTMLElement {
 
         this.innerHTML = `
             <div class="layer-row">
-                <div class="layer-drag-handle tooltip" data-title="${keyHelp.tooltip}" aria-label="${keyHelp.tooltip}" title="${keyHelp.tooltip}" aria-description="${keyHelp.description}">
+                <div class="layer-drag-handle tooltip" data-title="${keyHelp.tooltip}" aria-label="${keyHelp.tooltip}" aria-description="${keyHelp.description}">
                     <span class="icon-material">drag_indicator</span>
                 </div>
-                <button class="layer-visibility tooltip ${isVisible ? 'visible' : ''}" data-title="Toggle visibility" aria-label="Toggle visibility" title="Toggle visibility">
+                <button class="layer-visibility tooltip ${isVisible ? 'visible' : ''}" data-title="Toggle visibility" aria-label="Toggle visibility">
                     <span class="icon-material">${isVisible ? 'visibility' : 'visibility_off'}</span>
                 </button>
                 <div class="layer-thumbnail">
                     <span class="icon-material">${iconName}</span>
                 </div>
-                ${layer.mask ? `<div class="layer-mask-thumbnail ${layer.maskVisible ? 'mask-visible' : ''} ${(!this._isChild && !layer.maskEnabled) ? 'mask-disabled' : ''}" tabindex="0" role="button" aria-label="${this._isChild ? 'Effect mask options' : 'Layer mask. Enter: edit mask. Context menu key: mask options.'}" title="${this._isChild ? 'Effect mask (captured from selection) | Click: mask options' : 'Click: edit mask | Right-click or Context menu key: mask options'}">
+                ${layer.mask ? `<div class="layer-mask-thumbnail tooltip ${layer.maskVisible ? 'mask-visible' : ''} ${(!this._isChild && !layer.maskEnabled) ? 'mask-disabled' : ''}" tabindex="0" role="button" aria-label="${this._isChild ? 'Effect mask options' : 'Layer mask. Enter: edit mask. Context menu key: mask options.'}" data-title="${this._isChild ? 'Effect mask (captured from selection) | Click: mask options' : 'Click: edit mask | Right-click or Context menu key: mask options'}">
                     <canvas class="mask-thumb-canvas" width="36" height="36"></canvas>
                 </div>` : ''}
                 <div class="layer-info">
-                    <div class="layer-name" contenteditable="false" spellcheck="false" title="Double-click or F2 to rename">${this._escapeHtml(layer.name)}</div>
+                    <div class="layer-name tooltip" contenteditable="false" spellcheck="false" data-title="Double-click or F2 to rename">${this._escapeHtml(layer.name)}</div>
                     <div class="layer-type ${layer.sourceType}">${this._formatLayerType(layer)}</div>
                 </div>
-                ${!this._isChild ? `<button class="layer-add-child tooltip" data-title="Add effect" aria-label="Add effect" title="Add effect">
+                ${!this._isChild ? `<button class="layer-add-child tooltip" data-title="Add effect" aria-label="Add effect">
                     <span class="icon-material">add</span>
                 </button>` : ''}
-                <button class="layer-delete tooltip" data-title="Delete layer" aria-label="Delete layer" title="Delete layer">
+                <button class="layer-delete tooltip" data-title="Delete layer" aria-label="Delete layer">
                     <span class="icon-material">close</span>
                 </button>
             </div>
             <div class="layer-controls">
-                <button class="layer-params-toggle tooltip ${this._paramsExpanded ? 'expanded' : ''}" data-title="Toggle parameters" aria-label="Toggle parameters" title="Toggle parameters">
+                <button class="layer-params-toggle tooltip ${this._paramsExpanded ? 'expanded' : ''}" data-title="Toggle parameters" aria-label="Toggle parameters">
                     <span class="icon-material">arrow_right</span>
                 </button>
-                ${!this._isChild ? `<select-dropdown class="layer-blend-mode" title="Blend mode"></select-dropdown>
+                ${!this._isChild ? `<select-dropdown class="layer-blend-mode tooltip" data-title="Blend mode"></select-dropdown>
                 <div class="layer-opacity-container">
-                    <slider-value class="layer-opacity" min="0" max="100" step="1" type="int" value="${layer.opacity}" title="Opacity"></slider-value>
+                    <slider-value class="layer-opacity tooltip" min="0" max="100" step="1" type="int" value="${layer.opacity}" data-title="Opacity"></slider-value>
                 </div>` : ''}
             </div>
             <effect-params class="layer-effect-params"></effect-params>

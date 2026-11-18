@@ -79,7 +79,7 @@ class CanvasResizeDialog {
                 <div class="anchor-section">
                     <label>Anchor</label>
                     <div class="anchor-grid">
-                        ${ANCHORS.map(a => `<button class="anchor-btn${a === 'center' ? ' active' : ''}" data-anchor="${a}" title="${a}">
+                        ${ANCHORS.map(a => `<button class="anchor-btn tooltip${a === 'center' ? ' active' : ''}" data-anchor="${a}" data-title="${a}">
                             <span class="anchor-dot"></span>
                         </button>`).join('')}
                     </div>

@@ -185,23 +185,23 @@ test.describe('Drawing keyboard shortcuts', () => {
         await page.waitForSelector('#loading-screen', { state: 'hidden', timeout: 10000 })
         await createTransparentProject(page)
 
-        const moveTitle = await page.getAttribute('#moveToolBtn', 'title')
+        const moveTitle = await page.getAttribute('#moveToolBtn', 'data-title')
         expect(moveTitle).toContain('(V)')
 
-        const cloneTitle = await page.getAttribute('#cloneToolBtn', 'title')
+        const cloneTitle = await page.getAttribute('#cloneToolBtn', 'data-title')
         expect(cloneTitle).toContain('(S)')
 
-        const selTitleDefault = await page.getAttribute('#selectionToolBtn', 'title')
+        const selTitleDefault = await page.getAttribute('#selectionToolBtn', 'data-title')
         expect(selTitleDefault).toContain('(M)')
 
         // Switch to lasso
         await page.keyboard.press('l')
-        const selTitleLasso = await page.getAttribute('#selectionToolBtn', 'title')
+        const selTitleLasso = await page.getAttribute('#selectionToolBtn', 'data-title')
         expect(selTitleLasso).toContain('(L)')
 
         // Switch to wand
         await page.keyboard.press('w')
-        const selTitleWand = await page.getAttribute('#selectionToolBtn', 'title')
+        const selTitleWand = await page.getAttribute('#selectionToolBtn', 'data-title')
         expect(selTitleWand).toContain('(W)')
     })
 

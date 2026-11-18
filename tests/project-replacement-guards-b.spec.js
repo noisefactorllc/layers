@@ -165,8 +165,8 @@ test.describe('Atomic project replacement', () => {
                 hasStrokeHandler: Boolean(app._brushTool.onStrokeComplete),
                 bannerHidden: document.getElementById('maskEditBanner')
                     .classList.contains('hidden'),
-                brushTitle: document.getElementById('brushToolBtn').title,
-                eraserTitle: document.getElementById('eraserToolBtn').title,
+                brushTitle: document.getElementById('brushToolBtn').dataset.title,
+                eraserTitle: document.getElementById('eraserToolBtn').dataset.title,
                 overlayHidden: document.getElementById('maskOverlay')
                     .classList.contains('hidden'),
             }
@@ -187,8 +187,8 @@ test.describe('Atomic project replacement', () => {
                     hasStrokeHandler: Boolean(app._brushTool.onStrokeComplete),
                     bannerHidden: document.getElementById('maskEditBanner')
                         .classList.contains('hidden'),
-                    brushTitle: document.getElementById('brushToolBtn').title,
-                    eraserTitle: document.getElementById('eraserToolBtn').title,
+                    brushTitle: document.getElementById('brushToolBtn').dataset.title,
+                    eraserTitle: document.getElementById('eraserToolBtn').dataset.title,
                     overlayHidden: document.getElementById('maskOverlay')
                         .classList.contains('hidden'),
                 },

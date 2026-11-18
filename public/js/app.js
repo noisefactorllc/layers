@@ -3236,7 +3236,6 @@ class LayersApp {
         document.getElementById('maskEditBanner')?.classList.remove('hidden')
         const setToolTitle = (el, text) => {
             if (!el) return
-            el.title = text
             el.setAttribute('data-title', text)
             el.setAttribute('aria-label', text)
         }
@@ -3293,7 +3292,6 @@ class LayersApp {
         document.getElementById('maskEditBanner')?.classList.add('hidden')
         const setToolTitle = (el, text) => {
             if (!el) return
-            el.title = text
             el.setAttribute('data-title', text)
             el.setAttribute('aria-label', text)
         }
@@ -4707,7 +4705,7 @@ class LayersApp {
                         type: 'button',
                         id: 'playPauseBtn',
                         classes: 'menu-icon-btn tooltip',
-                        attrs: { title: 'Play/Pause', 'data-title': 'Play/Pause', 'aria-label': 'Play/Pause' },
+                        attrs: { 'data-title': 'Play/Pause', 'aria-label': 'Play/Pause' },
                         icon: () => (this._renderer?.isRunning ? 'pause' : 'play_arrow'),
                         onSelect: () => {
                             const mutationToken = this._tryAcquireProjectLifecycle()
@@ -5807,7 +5805,6 @@ class LayersApp {
                 wand: 'Magic Wand Tool (W)',
             }
             if (titles[tool]) {
-                selectionBtn.title = titles[tool]
                 selectionBtn.setAttribute('aria-label', titles[tool])
                 selectionBtn.setAttribute('data-title', titles[tool])
             }
