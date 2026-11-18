@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures.js'
+import { defaultProjectReady } from './waits.js'
 
 test('video export awaits full-resolution frames and encoder work, reads 2D pixels bottom-up, and restores a paused frame', async ({ page }) => {
     await page.goto('/')
@@ -121,6 +122,9 @@ for (const duration of [Infinity, NaN, 0, -1]) {
 
 test('reused native video capture preserves original single-pixel detail and refreshes each decoded frame', async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })
+    // Boot ends by committing its own default canvas. An import started before
+    // that commit races it, so import only once the default project is ready.
+    await defaultProjectReady(page)
     const { readFile } = await import('node:fs/promises')
     const bytes = await readFile(new URL('./fixtures/native-video-detail.webm', import.meta.url))
     const result = await page.evaluate(async base64 => {
@@ -190,6 +194,9 @@ test('reused native video capture preserves original single-pixel detail and ref
 
 test('native video export invokes the shader renderer once for each encoded frame and separately restores playback time', async ({ page }) => {
     await page.goto('/', { waitUntil: 'networkidle' })
+    // Boot ends by committing its own default canvas. An import started before
+    // that commit races it, so import only once the default project is ready.
+    await defaultProjectReady(page)
     const result = await page.evaluate(async () => {
         const { runVideoExport } = await import('/js/ui/video-exporter.js')
         const app = window.layersApp
