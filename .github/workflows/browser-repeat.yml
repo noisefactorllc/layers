@@ -1,0 +1,263 @@
+name: browser repeat
+
+# Runs one spec many times on one engine, set up as the ci browser job is, to
+# reproduce a test that fails only some of the time. It runs only when started
+# by hand, with no retries, and keeps the trace of every failed run. It deploys
+# nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec:
+        description: 'Spec file, with an optional line (tests/name.spec.js:122)'
+        required: true
+        type: string
+      browser:
+        description: 'Engine'
+        required: true
+        default: webkit
+        type: choice
+        options: [webkit, firefox, chromium]
+      repeat_each:
+        description: 'Times to run the spec'
+        required: true
+        default: '30'
+        type: string
+      seek_replay:
+        description: 'Also replay the native video seek of tests/video-full-resolution.spec.js:122 on WebKit, with a log for each seek'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: Repeat (${{ inputs.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: layers
+    env:
+      CI: 'true'
+      SEANCE_ROOT: ${{ github.workspace }}/seance
+      SEANCE_PYTHON: ${{ github.workspace }}/seance/.venv/bin/python
+      SPEC: ${{ inputs.spec }}
+      BROWSER: ${{ inputs.browser }}
+      REPEAT_EACH: ${{ inputs.repeat_each }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@ab7a9404c0f3da075243ca237b5fac12c98deaa5
+        with:
+          egress-policy: audit
+      - name: Check inputs
+        working-directory: .
+        run: |
+          [[ "$SPEC" =~ ^tests/[A-Za-z0-9._/-]+\.spec\.js(:[0-9]+)?$ ]] || { echo "::error::spec must be tests/<name>.spec.js with an optional :line"; exit 1; }
+          [[ "$REPEAT_EACH" =~ ^[1-9][0-9]{0,2}$ ]] || { echo "::error::repeat_each must be a number from 1 to 999"; exit 1; }
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          path: layers
+          persist-credentials: false
+      - name: Checkout pinned collaboration harness
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          repository: noisefactorllc/seance
+          ref: ab95c8b150c2d0be0d697c92bac117bb88031a99
+          path: seance
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: layers/package-lock.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.14'
+      - name: Build collaboration harness
+        working-directory: seance
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r requirements.txt
+          npm run build:sdk
+      - run: npm ci --ignore-scripts
+      - name: Restore browser system packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: browser-apt-${{ runner.os }}-${{ inputs.browser }}-${{ hashFiles('layers/package-lock.json') }}
+          restore-keys: browser-apt-${{ runner.os }}-${{ inputs.browser }}-
+      - name: Install locked browser
+        # The same install as the ci browser job, with its apt defences.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list \
+                     /etc/apt/sources.list.d/google-chrome*.sources
+          printf 'Acquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::Retries "2";\n' \
+            | sudo tee /etc/apt/apt.conf.d/80-ci-timeouts > /dev/null
+          mkdir -p "$HOME/apt-archives/partial"
+          printf 'Dir::Cache::Archives "%s/apt-archives/";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME" \
+            | sudo tee /etc/apt/apt.conf.d/81-ci-archives > /dev/null
+          installed=
+          for attempt in 1 2 3; do
+            if timeout --kill-after=30s 6m npx --no-install playwright install --with-deps "$BROWSER"; then
+              installed=1
+              break
+            fi
+            echo "::warning::browser install attempt $attempt failed; retrying"
+            holders=$(sudo lslocks -n -o PID,PATH 2>/dev/null \
+              | awk '$2 ~ /^\/var\/(lib\/dpkg|lib\/apt|cache\/apt)\/|\/apt-archives\// { print $1 }' | sort -u)
+            if [ -n "$holders" ]; then
+              # shellcheck disable=SC2086 # one PID per word
+              sudo kill $holders 2>/dev/null || true
+              sleep 5
+              # shellcheck disable=SC2086 # one PID per word
+              sudo kill -9 $holders 2>/dev/null || true
+            fi
+            sudo dpkg --configure -a || true
+            sudo apt-get update || true
+            sleep $((attempt * 15))
+          done
+          sudo rm -rf "$HOME/apt-archives/partial" "$HOME/apt-archives/lock"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives"
+          if [ -z "$installed" ]; then
+            echo "::error::browser install failed after 3 attempts"
+            exit 1
+          fi
+      - name: Run the spec repeatedly
+        # The browser flags match the ci browser job. --retries=0 keeps every
+        # failure a failure, and the config keeps each failed run's trace.
+        run: |
+          if [ "$BROWSER" = 'webkit' ]; then
+            WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS=1 xvfb-run -a npx playwright test "$SPEC" --project=webkit --headed --workers=1 --retries=0 --repeat-each="$REPEAT_EACH"
+          elif [ "$BROWSER" = 'firefox' ]; then
+            xvfb-run -a npx playwright test "$SPEC" --project=firefox --headed --workers=1 --retries=0 --repeat-each="$REPEAT_EACH"
+          else
+            npx playwright test "$SPEC" --project=chromium --retries=0 --repeat-each="$REPEAT_EACH"
+          fi
+      - name: Replay the native video seek with a log for each seek
+        # Each run logs, per seek: the video's state when seeked fires, the
+        # requestVideoFrameCallback firings, the drawImage tries the reference
+        # frame needed and every row drawn. The page reaches only its own
+        # server on loopback, as the app's pages do in the specs.
+        if: ${{ always() && inputs.seek_replay }}
+        env:
+          WEBKIT_GST_ALLOW_PLAYBACK_OF_INVISIBLE_VIDEOS: '1'
+          DIAG_HEADED: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          cat > "$RUNNER_TEMP/diag.mjs" <<'EOF'
+          // Diagnostic replay of tests/video-full-resolution.spec.js:122: per seek,
+          // the video's state at seeked, requestVideoFrameCallback firings, the
+          // drawImage tries the reference needed (the spec allows 50, 100 ms apart),
+          // every distinct row drawn, and media events. Loopback: dev server only.
+          import { createRequire } from 'node:module'
+          import { readFileSync } from 'node:fs'
+          import { join, resolve } from 'node:path'
+          const [layersDir, baseURL, runsArg, engine = 'webkit', parallelArg = '1'] = process.argv.slice(2)
+          const root = resolve(layersDir)
+          const pw = createRequire(join(root, 'package.json'))('playwright')
+          const runs = Number(runsArg || 10)
+          const parallel = Math.max(1, Number(parallelArg))
+          const devPort = new URL(baseURL).port
+          const LOOPBACK = /^(?:https?|wss?):\/\/(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::(\d+))?\//
+          const fixture = readFileSync(join(root, 'tests/fixtures/native-video-detail.webm')).toString('base64')
+          async function replay(browser) {
+              const context = await browser.newContext()
+              await context.route(LOOPBACK, (r) => (LOOPBACK.exec(r.request().url())[1] || '80') === devPort ? r.continue() : r.abort('connectionrefused'))
+              await context.routeWebSocket(LOOPBACK, (ws) => ws.close())
+              try {
+                  const page = await context.newPage()
+                  await page.goto(baseURL, { waitUntil: 'networkidle' })
+                  return await page.evaluate(async (base64) => {
+                      const app = window.layersApp
+                      const source = document.createElement('canvas'); source.width = 1800; source.height = 1200
+                      const ctx = source.getContext('2d')
+                      const file = new File([Uint8Array.from(atob(base64), c => c.charCodeAt(0))], 'native-detail.webm', { type: 'video/webm' })
+                      await app._handleOpenMedia(file, 'video'); app._renderer.stop()
+                      const video = app._renderer.getMediaInfo(app._layers[0].id).videoElement
+                      const state = () => ({ t: +video.currentTime.toFixed(3), paused: video.paused, seeking: video.seeking, ready: video.readyState, connected: video.isConnected })
+                      const afterImport = state()
+                      video.pause()
+                      const events = []
+                      for (const type of ['seeking', 'seeked', 'pause', 'play', 'playing', 'waiting', 'stalled', 'suspend', 'emptied']) {
+                          video.addEventListener(type, () => events.push(`${type}@${video.currentTime.toFixed(3)}`))
+                      }
+                      let vfc = 0, lastMediaTime = null
+                      const onFrame = (_now, meta) => { vfc++; lastMediaTime = meta.mediaTime; video.requestVideoFrameCallback?.(onFrame) }
+                      video.requestVideoFrameCallback?.(onFrame)
+                      const seek = time => new Promise((ok, fail) => {
+                          const timer = setTimeout(() => fail(new Error('seek timed out')), 10000)
+                          video.addEventListener('seeked', () => { clearTimeout(timer); ok() }, { once: true })
+                          video.currentTime = time
+                      })
+                      const darkAt = (row, i) => row[i] < 50 && row[i + 1] < 50 && row[i + 2] < 50
+                      const brightAt = (row, i) => row[i] > 200 && row[i + 1] > 200 && row[i + 2] > 200
+                      const session = await app._renderer.createFullResolutionCapture()
+                      const log = { afterImport, duration: video.duration, seeks: [] }
+                      try {
+                          for (const time of [0.2, 0.9]) {
+                              const vfcBefore = vfc
+                              events.length = 0
+                              const t0 = performance.now()
+                              await seek(time)
+                              const atSeeked = { ...state(), ms: Math.round(performance.now() - t0), vfc: vfc - vfcBefore }
+                              const darkIndex = time < 0.55 ? 4 : 8
+                              let tries = 0, row = null, ok = false
+                              const rowsSeen = new Set()
+                              for (; tries < 50 && !ok; tries++) {
+                                  ctx.clearRect(0, 0, 1800, 1200); ctx.drawImage(video, 0, 0)
+                                  row = [...ctx.getImageData(899, 600, 4, 1).data]
+                                  rowsSeen.add([row[0], row[4], row[8], row[12]].join(','))
+                                  ok = darkIndex === 4 ? darkAt(row, 4) && brightAt(row, 0) && brightAt(row, 8) : darkAt(row, 8) && brightAt(row, 0) && brightAt(row, 4)
+                                  if (!ok) await new Promise(r => setTimeout(r, 100))
+                              }
+                              log.seeks.push({ time, atSeeked, tries, ok, row: [row[0], row[4], row[8], row[12]], rowsSeen: [...rowsSeen], end: state(), vfc: vfc - vfcBefore, lastMediaTime, events: [...events] })
+                              if (!ok) break
+                              await session.render(time / video.duration)
+                          }
+                      } finally { await session.dispose() }
+                      return log
+                  }, fixture)
+              } finally {
+                  await context.close()
+              }
+          }
+          const browser = await pw[engine].launch({ headless: process.env.DIAG_HEADED !== '1' })
+          let failed = 0
+          try {
+              for (let run = 0; run < runs; run += parallel) {
+                  const batch = Array.from({ length: Math.min(parallel, runs - run) }, (_, i) => replay(browser)
+                      .then((log) => ({ run: run + i, log }), (error) => ({ run: run + i, error: error.message })))
+                  for (const { run: n, log, error } of await Promise.all(batch)) {
+                      const ok = !error && log.seeks.every((s) => s.ok)
+                      if (!ok) failed++
+                      console.log(`${ok ? 'OK  ' : 'FAIL'} run ${n}: ${JSON.stringify(error ? { error } : log)}`)
+                  }
+              }
+          } finally {
+              await browser.close()
+          }
+          console.log(`runs ${runs}, failed ${failed}, engine ${engine}, headed ${process.env.DIAG_HEADED === '1'}, parallel ${parallel}`)
+          process.exitCode = failed ? 1 : 0
+          EOF
+          npx --no-install http-server public -a 127.0.0.1 -p 3102 -c-1 > test-results/diag-server.log 2>&1 &
+          server=$!
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:3102/ > /dev/null && break; sleep 1; done
+          status=0
+          xvfb-run -a node "$RUNNER_TEMP/diag.mjs" "$PWD" http://localhost:3102/ 30 webkit 1 > test-results/diag-webkit-parallel1.log 2>&1 || status=1
+          xvfb-run -a node "$RUNNER_TEMP/diag.mjs" "$PWD" http://localhost:3102/ 30 webkit 2 > test-results/diag-webkit-parallel2.log 2>&1 || status=1
+          kill "$server"
+          tail -n 1 test-results/diag-webkit-parallel1.log test-results/diag-webkit-parallel2.log
+          exit "$status"
+      - name: Preserve browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: browser-repeat-${{ inputs.browser }}-${{ github.run_id }}
+          path: |
+            layers/playwright-report/
+            layers/test-results/
+          retention-days: 14
